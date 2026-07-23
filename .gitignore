@@ -21,4 +21,6 @@ smb.dSYM
 3ds/*.elf
 3ds/*.smdh
 3ds/source/chr_rom.h
+platform/neogeo/build/
 _build/
+__pycache__/
