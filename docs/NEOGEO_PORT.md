@@ -4,8 +4,8 @@
 
 The current milestone is a bootable, visually verified Neo Geo cartridge
 proof of concept. It runs the upstream translated C game core on the MC68000,
-uses Neo Geo graphics hardware directly, reads player-one input through the
-BIOS, and packages a cartridge from a user-owned SMB dump.
+uses Neo Geo graphics hardware directly, reads active-low Neo Geo controller
+registers directly, and packages a cartridge from a user-owned SMB dump.
 
 Completed:
 
@@ -75,11 +75,9 @@ Only 161 SCB3 words (322 bytes) are staged in work RAM. During VBlank the
 renderer updates live palettes/FIX entries, hides the old set, and uploads the
 staged SCB3 words to reveal the new set.
 
-This is the reusable lesson taken from the local Doom64KB work: organize data
-in the hardware's upload order, precompute control words, update a hidden
-display set, and keep the live swap bounded to VBlank. The Mario
-implementation is independent C code for a tile renderer; no GPL Doom source
-was copied into this Apache-2.0 project.
+The renderer organizes data in the hardware's upload order, precomputes
+control words, updates a hidden display set, and keeps the live swap bounded
+to VBlank. The implementation is independent C code for a tile renderer.
 
 ## Measured memory and ROM size
 

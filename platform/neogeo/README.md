@@ -32,3 +32,18 @@ Generated output is intentionally ignored:
 
 The repository contains no Nintendo graphics. The local cartridge does, so it
 must not be redistributed.
+
+## Controls
+
+The port reads the active-low Neo Geo controller registers directly. Its
+desktop bindings are:
+
+- arrow keys: directional joystick
+- `A`: Neo Geo A / NES A (jump)
+- `S`: Neo Geo B / NES B (run/fire)
+- `Q`, `W`: Neo Geo C/D (currently unused by SMB)
+- `1`: player-one Start / NES Start
+- `2`: player-two Start / NES Select
+
+Press `1` at the title screen before trying to move Mario. The attract-mode
+demo does not accept movement input.

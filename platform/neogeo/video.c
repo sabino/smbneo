@@ -433,31 +433,39 @@ static void show_next_sprite_set(uint8_t set) {
 
 uint8_t neogeo_read_controller1(void) {
     uint8_t state = 0;
-    uint8_t controls = bios_p1current;
-    uint8_t system = bios_statcurnt;
+    /*
+     * Read the Neo Geo ports themselves. Both registers are active-low, so a
+     * cleared bit means "pressed".
+     *
+     * REG_STATUS_B's player-two Start bit is used as NES Select.  This is
+     * a practical keyboard/joystick convention that keeps Select available
+     * even when running an AES/home-system BIOS.
+     */
+    uint8_t controls = *REG_P1CNT;
+    uint8_t system = *REG_STATUS_B;
 
-    if ((controls & CNT_RIGHT) != 0u) {
+    if ((controls & CNT_RIGHT) == 0u) {
         state |= NES_RIGHT;
     }
-    if ((controls & CNT_LEFT) != 0u) {
+    if ((controls & CNT_LEFT) == 0u) {
         state |= NES_LEFT;
     }
-    if ((controls & CNT_DOWN) != 0u) {
+    if ((controls & CNT_DOWN) == 0u) {
         state |= NES_DOWN;
     }
-    if ((controls & CNT_UP) != 0u) {
+    if ((controls & CNT_UP) == 0u) {
         state |= NES_UP;
     }
-    if ((controls & CNT_A) != 0u) {
+    if ((controls & CNT_A) == 0u) {
         state |= NES_A;
     }
-    if ((controls & CNT_B) != 0u) {
+    if ((controls & CNT_B) == 0u) {
         state |= NES_B;
     }
-    if ((system & CNT_START1) != 0u) {
+    if ((system & CNT_START1) == 0u) {
         state |= NES_START;
     }
-    if ((system & CNT_SELECT1) != 0u) {
+    if ((system & CNT_START2) == 0u) {
         state |= NES_SELECT;
     }
     return state;

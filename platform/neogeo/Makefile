@@ -53,6 +53,9 @@ CART := $(ROMDIR)/$(GAMEROM).zip
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
+GNGEO ?= ngdevkit-gngeo
+GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
+GNGEO_P2 ?= START=K50
 
 .DEFAULT_GOAL := elf
 
@@ -128,7 +131,9 @@ cart: $(TARGET) | $(ROMDIR) $(ASSETDIR)
 	@echo "Built $(CART)"
 
 run: cart
-	ngdevkit-gngeo --screen320 --system home \
+	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --no-sound \
+		--system home --p1control "$(GNGEO_P1)" \
+		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
 
 clean:

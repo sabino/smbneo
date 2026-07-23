@@ -59,7 +59,9 @@ The supported ROM revision has SHA-1
 cartridge or graphics files.
 
 Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
-Select. Audio is intentionally silent in this milestone; see
+Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
+respectively. Press `1` at the title screen before trying to move. Audio is
+intentionally silent in this milestone; see
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, verification evidence, and remaining work.
 
