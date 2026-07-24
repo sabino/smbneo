@@ -5,9 +5,9 @@ documentation are welcome.
 
 Before opening a pull request:
 
-1. Run `make test`.
+1. Run `make ci`.
 2. If the Neo Geo toolchain is installed, run
-   `make -C platform/neogeo verify`.
+   `make verify`.
 3. Keep generated C synchronized with its MoonBit source. Do not edit only
    `codegen/lib/` when the generator is the authoritative source.
 4. Explain any performance claim with a repeatable stock-clock benchmark and

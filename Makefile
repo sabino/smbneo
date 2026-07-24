@@ -1,48 +1,26 @@
-CC = clang
+.DEFAULT_GOAL := test
 
-CFLAGS = -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-value -Wconversion -Wsign-conversion -Wno-missing-braces
-CFLAGS += -I./raylib-quickstart/build/external/raylib-master/src
-CFLAGS += -O3 -std=c99
-CFLAGS += -ferror-limit=0
+.PHONY: \
+	all ci test verify codegen cart run replay-cart replay-run \
+	replay-rendered-evidence clean
 
-# Platform-specific flags
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-    RAYLIB_FLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-else ifeq ($(UNAME_S),Darwin) # macOS
-    RAYLIB_FLAGS = -framework OpenGL -framework Cocoa -framework IOKit -framework CoreFoundation -lm -lpthread
-endif
+all: test
 
-OBJECTS = raylib-quickstart/bin/Debug/libraylib.a
+ci: test
 
-SOURCES += codegen/lib/instructions.c
-SOURCES += codegen/lib/code.c
-SOURCES += codegen/lib/data.c
-SOURCES += codegen/lib/cpu.c
-SOURCES += codegen/lib/ppu.c
-SOURCES += codegen/lib/apu.c
-SOURCES += codegen/lib/state.c
-MAIN = codegen/main.c
+# ROM-free host regression suite. PKG_CONFIG=true prevents the cross-toolchain
+# probe from being required for tests that compile and run on the host.
+test:
+	$(MAKE) -C platform/neogeo PKG_CONFIG=true test
 
-.PHONY: codegen build wasm hash test ci clean
+# Full target verification requires MoonBit and the ngdevkit cross-toolchain.
+verify:
+	$(MAKE) -C platform/neogeo verify
 
 codegen:
 	moon run src/main
 
-build: clean
-	$(CC) $(CFLAGS) -o smb ${MAIN} $(SOURCES) codegen/lib/common.c $(RAYLIB_FLAGS) $(OBJECTS)
-
-wasm: clean
-	$(CC) -O3 --target=wasm32 -nostdlib -Wl,--import-memory -Wl,--export-all -Wl,--no-entry -Wl,--allow-undefined -o web/smb.wasm $(SOURCES)
-
-hash: clean
-	$(CC) $(CFLAGS) -o hash codegen/hash.c $(SOURCES) codegen/lib/rec.c codegen/lib/common.c
-
-test:
-	$(MAKE) -C platform/neogeo PKG_CONFIG=true test
-
-ci: test wasm
-	test -s web/smb.wasm
-
-clean:
-	rm -f smb hash smb.wasm web/smb.wasm
+# Command-line variables such as SMB_ROM, REPLAY_FM2, and GNGEO are forwarded
+# automatically by recursive Make.
+cart run replay-cart replay-run replay-rendered-evidence clean:
+	$(MAKE) -C platform/neogeo $@

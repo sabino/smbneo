@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate desktop RGB and Neo Geo words from one pinned NES palette."""
+"""Generate host-reference RGB and Neo Geo words from one pinned NES palette."""
 
 from __future__ import annotations
 
@@ -201,7 +201,7 @@ def main() -> int:
     try:
         if arguments.write:
             write_generated()
-            print("Generated desktop and Neo Geo palette includes")
+            print("Generated host-reference and Neo Geo palette includes")
         else:
             check_generated()
             print(f"Generated palette includes: OK ({PALETTE_NAME})")

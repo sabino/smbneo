@@ -231,7 +231,7 @@ waveform, decode error, loop seam, padding, and hash.
 ## Controls
 
 The port reads the active-low Neo Geo controller registers directly. Its
-desktop bindings are:
+default GnGeo keyboard bindings are:
 
 - arrow keys: directional joystick
 - `A`: Neo Geo A / NES A (jump)

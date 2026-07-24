@@ -4,13 +4,13 @@
 > pure-C MC68000 target with a direct Neo Geo tile/sprite renderer and a
 > native Z80/YM2610 audio bridge.
 > It does not allocate a software framebuffer, copy CHR graphics into work RAM,
-> or run the desktop software mixer.
+> or run a host software mixer.
 
 This is an unofficial preservation/engineering project built on
 [`nathsou/smb`](https://github.com/nathsou/smb), which statically recompiles
 the game from [doppelganger's disassembly](https://www.romhacking.net/documents/344/).
-The original desktop and web targets remain in the tree, but the Neo Geo
-target is the focus of this branch.
+This fork's active branch is intentionally Neo Geo-only. The upstream project
+retains its desktop, WebAssembly, and 3DS frontends.
 
 No game ROM, Neo Geo BIOS, or generated cartridge is included. Point the
 build at your own local game image; converted graphics and cartridge files
@@ -22,27 +22,21 @@ credits.
 
 ## Controls
 
-- D-Pad: WASD
-- B: K
-- A: L
-- start: Enter
-- select: Space
-- z: Save state
-- x: Load state
+- Hardware: joystick, A (jump), B (run/fire), Start, and Select.
+- GnGeo defaults: arrow keys, `A`, `S`, `1`, and `2`.
+- Press `1` at the title screen before trying to move.
+- Impossible left+right or up+down input pairs are neutralized.
 
-## Checkpoints
+## Current status
 
-- [x] Static translation of the disassembly to low-level C
-- [x] PPU & APU emulation layers
-- [x] Convert subroutines to C functions
-- [x] Convert most gotos to if statements
-- [ ] Remove unused flag updates
-- [ ] Replace PPU with direct draw calls
-- [ ] Manually rewrite portions of the code to higher level C
+- Playable cartridge with the original title/menu and all-world progression.
+- Direct FIX/sprite/palette renderer with no software framebuffer.
+- Native Z80/YM2610 audio bridge.
+- Stock-clock interactive pacing and regression coverage for crowded scenes.
+- Deterministic replay, audio, cadence, memory, and reproducibility gates.
+- Physical AES/MVS-compatible hardware validation remains open.
 
-## Building
-
-### Neo Geo (ngdevkit)
+## Build and run
 
 The optimized playable milestone cross-compiles, links, packages, and boots
 in ngdevkit-gngeo. Its direct hardware renderer keeps one persistent
@@ -50,15 +44,15 @@ in ngdevkit-gngeo. Its direct hardware renderer keeps one persistent
 steady-state scenes fit one game tick per display VBlank at the stock
 emulated 68000 clock; enemy-heavy scenes have separate exact regression
 windows instead of being covered by that bounded smoke result. Graphics are
-generated locally from a user-supplied Super Mario Bros. (World) image and
-remain under the ignored `platform/neogeo/build/` directory.
+generated locally from a supported user-supplied game image and remain under
+the ignored `platform/neogeo/build/` directory.
 
 ```bash
 # Generator consistency, pure-C/audio tests, ELF/RAM and Z80 map guards
-make -C platform/neogeo verify
+make verify
 
 # Complete cartridge from a raw .nes file or a ZIP containing one .nes file
-make -C platform/neogeo cart \
+make cart \
   SMB_ROM="/path/to/smb.zip"
 
 # Prove two isolated cartridge builds are byte-for-byte identical
@@ -74,11 +68,11 @@ python3 tools/measure_neogeo_cadence.py \
   --assert-zero-missed
 
 # Launch the generated cartridge in ngdevkit-gngeo
-make -C platform/neogeo run \
+make run \
   SMB_ROM="/path/to/smb.zip"
 
 # Build a gate-only cartridge from a locally downloaded text FM2 movie
-make -C platform/neogeo replay-cart \
+make replay-cart \
   SMB_ROM="/path/to/smb.zip" \
   REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
   REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
@@ -88,7 +82,7 @@ python3 tools/run_neogeo_replay_gate.py \
   --68k-overclock 10000 --timeout 2400
 
 # Build the rendered variant and retain every stage transition/settled pair
-make -C platform/neogeo replay-rendered-evidence \
+make replay-rendered-evidence \
   SMB_ROM="/path/to/smb.zip" \
   REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
   REPLAY_HARDWARE_PLAYABLE=1 \
@@ -133,11 +127,6 @@ centered original title panel and one/two-player menu are therefore restored
 without a tracked bitmap or ROM-derived source file. Do not redistribute
 generated cartridge or graphics files.
 
-Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
-Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
-respectively. Press `1` at the title screen before trying to move. Impossible
-left+right or up+down keyboard pairs are neutralized.
-
 Native audio maps the two pulse voices to YM2610 SSG A/B, percussion noise to
 SSG C, and the triangle voice to an independently pitched looping ADPCM-B
 waveform. A custom Z80 M1 driver receives acknowledged, coalesced port-A
@@ -175,30 +164,6 @@ lane with 32 transition/settled pairs and the terminal capture. See
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, recommended published TAS inputs, verification evidence, and
 remaining work.
-
-### Linux & MacOS
-
-1. Fetch the submodules:
-```bash
-$ git submodule update --init --recursive
-```
-
-2. Build raylib, follow the instructions [here](https://github.com/raylib-extras/raylib-quickstart)
-
-3. Run `make build` in the root folder:
-```bash
-$ make build
-```
-
-4. Place a local SMB image called `smb.nes` in the root folder to extract graphics data from. You are responsible for complying with the laws that apply to you.
-5. You can now run `./smb`
-
-## WebAssembly
-
-1. Install a recent version of `clang` with support for the `wasm32` target
-2. Run `make wasm`
-3. Run an HTTP server in the `web/` folder and open `index.html` in your browser
-4. Select a local SMB image to extract graphics data from. You are responsible for complying with the laws that apply to you.
 
 ## Codegen
 

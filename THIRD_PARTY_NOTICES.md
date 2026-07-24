@@ -8,8 +8,10 @@ SNK, and it does not include a game ROM, BIOS, or generated cartridge.
 The repository began as a fork of
 [`nathsou/smb`](https://github.com/nathsou/smb). That project includes an
 Apache License 2.0 file, which is retained as [LICENSE](LICENSE), and provides
-the MoonBit translator, generated C runtime, desktop/web targets, and project
-structure. Neo Geo-specific changes are modifications made after that fork.
+the MoonBit translator, generated C runtime, and project structure. Neo
+Geo-specific changes are modifications made after that fork. The upstream
+repository retains its desktop, WebAssembly, and 3DS frontends; they are not
+part of this target-focused branch.
 
 ## SMBDIS and underlying game logic/data
 
@@ -18,15 +20,6 @@ disassembly as its source and preserves its original notice. The translated
 files under `codegen/` are generated from that input. The project license does
 not grant rights to Nintendo names, characters, graphics, audio, or other game
 assets.
-
-## raylib-quickstart
-
-The optional desktop target references
-[`raylib-extras/raylib-quickstart`](https://github.com/raylib-extras/raylib-quickstart)
-as a Git submodule pinned at
-`759d3ff61a88381fbb063bb3c8d9393ce330d278`. Its own repository contains the
-applicable license and bundled-dependency notices. GitHub-generated source
-archives do not include submodule contents.
 
 ## ngdevkit and GnGeo
 

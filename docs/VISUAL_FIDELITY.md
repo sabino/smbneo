@@ -45,7 +45,7 @@ signal and display decoder are analog variables.
 
 `tools/gen_neogeo_palette.py` is the single source for:
 
-- the desktop renderer's 64 RGB triples; and
+- the host-reference renderer's 64 RGB triples; and
 - the Neo Geo renderer's 64 nearest representable color words.
 
 The encoder tests both states of the Neo Geo's shared low color bit, chooses

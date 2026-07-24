@@ -17,17 +17,16 @@ The optimized port was last fully verified on 2026-07-24 with:
 These versions describe one validated workstation; they are not a strict
 dependency lock.
 
-The ROM-free host lane needs only GNU Make, a C compiler, Clang, LLD,
-Python 3, and Pillow:
+The ROM-free host lane needs only GNU Make, a C compiler, Python 3, and
+Pillow:
 
 ```bash
-make test
-make wasm
+make ci
 ```
 
 The full cross-target lane additionally needs MoonBit, ngdevkit, its MC68000
 and Z80 toolchains, and the local GnGeo package:
 
 ```bash
-make -C platform/neogeo verify
+make verify
 ```
