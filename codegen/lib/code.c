@@ -11582,40 +11582,22 @@ void EnemiesCollision(void) {
 }
 
 void ECLoop(void) {
+  
+ECLoopBody:
   ram[0x1] = x; // save enemy object buffer offset for second enemy here
   tya(); // save first enemy's bounding box offset to stack
   pha();
   lda_zpx(Enemy_Flag); // check enemy object enable flag
-  // branch if flag not set
-  if (zero_flag) {
-    ReadyNextEnemy();
-    return;
-  }
+  if (zero_flag) { goto ReadyNextEnemy; } // branch if flag not set
   lda_zpx(Enemy_ID);
   cmp_imm(0x15); // check for enemy object => $15
-  // branch if true
-  if (carry_flag) {
-    ReadyNextEnemy();
-    return;
-  }
+  if (carry_flag) { goto ReadyNextEnemy; } // branch if true
   cmp_imm(Lakitu);
-  // branch if enemy object is lakitu
-  if (zero_flag) {
-    ReadyNextEnemy();
-    return;
-  }
+  if (zero_flag) { goto ReadyNextEnemy; } // branch if enemy object is lakitu
   cmp_imm(PiranhaPlant);
-  // branch if enemy object is piranha plant
-  if (zero_flag) {
-    ReadyNextEnemy();
-    return;
-  }
+  if (zero_flag) { goto ReadyNextEnemy; } // branch if enemy object is piranha plant
   lda_absx(EnemyOffscrBitsMasked);
-  // branch if masked offscreen bits set
-  if (!zero_flag) {
-    ReadyNextEnemy();
-    return;
-  }
+  if (!zero_flag) { goto ReadyNextEnemy; } // branch if masked offscreen bits set
   txa(); // get second enemy object's bounding box offset
   asl_acc(); // multiply by four, then add four
   asl_acc();
@@ -11625,46 +11607,33 @@ void ECLoop(void) {
   SprObjectCollisionCore(); // do collision detection using the two enemies here
   ldx_zp(ObjectOffset); // use first enemy offset for X
   ldy_zp(0x1); // use second enemy offset for Y
-  // if carry clear, no collision, branch ahead of this
-  if (carry_flag) {
-    lda_zpx(Enemy_State);
-    ora_zpy(Enemy_State); // check both enemy states for d7 set
-    and_imm(0b10000000);
-    // branch if at least one of them is set
-    if (zero_flag) {
-      lda_absy(Enemy_CollisionBits); // load first enemy's collision-related bits
-      and_absx(SetBitsMask); // check to see if bit connected to second enemy is
-      // already set, and move onto next enemy slot if set
-      if (!zero_flag) {
-        ReadyNextEnemy();
-        return;
-      }
-      lda_absy(Enemy_CollisionBits);
-      ora_absx(SetBitsMask); // if the bit is not set, set it now
-      ram[Enemy_CollisionBits + y] = a;
-    }
-    // YesEC:
-    ProcEnemyCollisions(); // react according to the nature of collision
-    ReadyNextEnemy(); // move onto next enemy slot
-    return;
-  }
-  // NoEnemyCollision:
+  if (!carry_flag) { goto NoEnemyCollision; } // if carry clear, no collision, branch ahead of this
+  lda_zpx(Enemy_State);
+  ora_zpy(Enemy_State); // check both enemy states for d7 set
+  and_imm(0b10000000);
+  if (!zero_flag) { goto YesEC; } // branch if at least one of them is set
+  lda_absy(Enemy_CollisionBits); // load first enemy's collision-related bits
+  and_absx(SetBitsMask); // check to see if bit connected to second enemy is
+  if (!zero_flag) { goto ReadyNextEnemy; } // already set, and move onto next enemy slot if set
+  lda_absy(Enemy_CollisionBits);
+  ora_absx(SetBitsMask); // if the bit is not set, set it now
+  ram[Enemy_CollisionBits + y] = a;
+  
+YesEC:
+  ProcEnemyCollisions(); // react according to the nature of collision
+  goto ReadyNextEnemy; // move onto next enemy slot
+  
+NoEnemyCollision:
   lda_absy(Enemy_CollisionBits); // load first enemy's collision-related bits
   and_absx(ClearBitsMask); // clear bit connected to second enemy
   ram[Enemy_CollisionBits + y] = a; // then move onto next enemy slot
-  ReadyNextEnemy(); // <fallthrough>
-}
-
-void ReadyNextEnemy(void) {
+  
+ReadyNextEnemy:
   pla(); // get first enemy's bounding box offset from the stack
   tay(); // use as Y again
   ldx_zp(0x1); // get and decrement second enemy's object buffer offset
   dex();
-  // loop until all enemy slots have been checked
-  if (!neg_flag) {
-    ECLoop();
-    return;
-  }
+  if (!neg_flag) { goto ECLoopBody; } // loop until all enemy slots have been checked
   ExitECRoutine(); // <fallthrough>
 }
 

@@ -446,7 +446,6 @@ void EnemyFacePlayer(void);
 void SetupFloateyNumber(void);
 void EnemiesCollision(void);
 void ECLoop(void);
-void ReadyNextEnemy(void);
 void ExitECRoutine(void);
 void ProcEnemyCollisions(void);
 void EnemyTurnAround(void);

@@ -11789,6 +11789,7 @@ EnemiesCollision:
         dex                         ;first enemy we're going to compare, then decrement for second
         bmi ExitECRoutine__sub           ;branch to leave if there are no other enemies
 ECLoop__sub:
+ECLoopBody:
         stx $01                     ;save enemy object buffer offset for second enemy here
         tya                         ;save first enemy's bounding box offset to stack
         pha
@@ -11824,8 +11825,7 @@ ECLoop__sub:
         ora SetBitsMask,x           ;if the bit is not set, set it now
         sta Enemy_CollisionBits,y
 YesEC:  jsr ProcEnemyCollisions     ;react according to the nature of collision
-        jsr ReadyNextEnemy          ;move onto next enemy slot
-        rts
+        jmp ReadyNextEnemy          ;move onto next enemy slot
 
 NoEnemyCollision:
       lda Enemy_CollisionBits,y     ;load first enemy's collision-related bits
@@ -11837,7 +11837,7 @@ ReadyNextEnemy:
       tay              ;use as Y again
       ldx $01          ;get and decrement second enemy's object buffer offset
       dex
-      bpl ECLoop__sub       ;loop until all enemy slots have been checked
+      bpl ECLoopBody        ;loop until all enemy slots have been checked
 
 ExitECRoutine__sub:
       ldx ObjectOffset ;get enemy object buffer offset
