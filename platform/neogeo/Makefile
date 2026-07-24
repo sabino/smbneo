@@ -10,12 +10,17 @@ CART_TARGET := $(BUILD)/smbneogeo-cart.elf
 CART_MAP := $(BUILD)/smbneogeo-cart.map
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
+REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
+JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
+ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
+INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 GAMEROM := smbneogeo
 
 CC := m68k-neogeo-elf-gcc
 HOST_CC ?= cc
 OBJCOPY := m68k-neogeo-elf-objcopy
 PYTHON := python3
+MOON ?= moon
 PKG_CONFIG := pkg-config
 ROMTOOL := romtool.py
 Z80_OBJCOPY := z80-neogeo-ihx-sdobjcopy
@@ -74,6 +79,8 @@ REPLAY_FM2 ?=
 REPLAY_FAST ?= 0
 REPLAY_HARDWARE_PLAYABLE ?= 0
 REPLAY_TAIL_FRAMES ?= 1800
+REPLAY_BOOTSTRAP_FRAMES ?= 7
+REPLAY_AREA_INIT_HOLD_FRAMES ?= 1
 GNGEO ?= ngdevkit-gngeo
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
@@ -106,7 +113,8 @@ REPLAY_FAST_FLAG := \
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify assets cart run replay-cart replay-run clean FORCE
+	all elf test verify verify-codegen assets cart run replay-cart replay-run \
+	clean FORCE
 
 all: verify
 
@@ -138,10 +146,13 @@ $(REPLAY_HEADER): FORCE | $(REPLAYDIR)
 		$(REPLAY_POLICY_FLAG) \
 		--output "$@"
 
-$(REPLAY_MAIN_OBJECT): replay_main.c replay_gate.h $(REPLAY_HEADER) | $(REPLAYDIR)
+$(REPLAY_MAIN_OBJECT): \
+		replay_main.c replay_gate.h replay_timing.h $(REPLAY_HEADER) | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) -I$(REPLAYDIR) $(CFLAGS) \
 		$(REPLAY_FAST_FLAG) \
 		-DSMB_NEOGEO_REPLAY_TAIL_FRAMES=$(REPLAY_TAIL_FRAMES) \
+		-DSMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES=$(REPLAY_BOOTSTRAP_FRAMES) \
+		-DSMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES=$(REPLAY_AREA_INIT_HOLD_FRAMES) \
 		-c $< -o $@
 
 $(REPLAY_GATE_OBJECT): replay_gate.c replay_gate.h | $(REPLAYDIR)
@@ -177,13 +188,65 @@ $(REPLAY_GATE_TEST): \
 		$(ROOT)/tools/test_neogeo_replay_gate.c \
 		replay_gate.c -o $@
 
-test: $(PPU_STATE_TEST) $(REPLAY_GATE_TEST)
+$(REPLAY_TIMING_TEST): \
+		$(ROOT)/tools/test_neogeo_replay_timing.c replay_timing.h | $(BUILD)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_replay_timing.c -o $@
+
+$(JUMP_ENGINE_TEST): \
+		$(ROOT)/tools/test_jump_engine_dispatch.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_jump_engine_dispatch.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(ROM_FALLTHROUGH_TEST): \
+		$(ROOT)/tools/test_rom_fallthrough_data.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/data.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_rom_fallthrough_data.c \
+		$(ROOT)/codegen/lib/data.c -o $@
+
+$(INPUT_POLICY_TEST): \
+		$(ROOT)/tools/test_neogeo_input_policy.c input_policy.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_input_policy.c -o $@
+
+test: \
+		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
+		$(REPLAY_TIMING_TEST) $(JUMP_ENGINE_TEST) \
+		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
 	$(REPLAY_GATE_TEST)
+	$(REPLAY_TIMING_TEST)
+	$(JUMP_ENGINE_TEST)
+	$(ROM_FALLTHROUGH_TEST)
+	$(INPUT_POLICY_TEST)
 
-verify: test $(TARGET)
+verify-codegen:
+	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \
+		--moon "$(MOON)"
+
+verify: verify-codegen test $(TARGET)
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(TARGET)
 
 assets: $(TITLE_SOURCE)

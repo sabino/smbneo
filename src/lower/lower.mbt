@@ -37,11 +37,19 @@ fn AsmLowering::detect_table(self: AsmLowering, name: String, index: Int) -> Asm
   let lines: Array[AsmTableLine] = []
   let mut elem_size: @parse.ConstantSize? = None
   let mut length = 0
+  let mut fallthrough_length = 0
+  let mut has_fallthrough = false
   let mut i = index + 1
 
   while i < self.items.length() {
     match self.items[i] {
       Directive(name="db" | "dw" as name, args~) => {
+        if has_fallthrough {
+          raise LoweringError(
+            "ROM fall-through bytes must follow all logical table data",
+          )
+        }
+
         let directive_elem_size: @parse.ConstantSize = if name == "db" { Byte } else { Word }
 
         match elem_size {
@@ -65,10 +73,55 @@ fn AsmLowering::detect_table(self: AsmLowering, name: String, index: Int) -> Asm
 
         lines.push(Data(data~, comment=Ref::new("")))
       }
+      Directive(name="rom_fallthrough", args~) => {
+        if args.is_empty() {
+          raise LoweringError(
+            "ROM fall-through guards require at least one literal byte",
+          )
+        }
+
+        match elem_size {
+          Some(Byte) => ()
+          Some(Word) => {
+            raise LoweringError(
+              "ROM fall-through guards are only supported on byte tables",
+            )
+          }
+          None => {
+            raise LoweringError(
+              "ROM fall-through guard must follow logical table data",
+            )
+          }
+        }
+
+        let data = []
+
+        for arg in args {
+          let typed = self.type_expr(arg)
+
+          match typed {
+            Const(value~, size=Byte, ..) if value >= 0 && value <= 0xff => {
+              data.push(typed)
+            }
+            _ => {
+              raise LoweringError(
+                "ROM fall-through guards require literal byte values",
+              )
+            }
+          }
+        }
+
+        fallthrough_length += data.length()
+        has_fallthrough = true
+        lines.push(RomFallthrough(data~, comment=Ref::new("")))
+      }
       Comment(comment~, is_inline~) => {
         if is_inline {
           match lines.last() {
-            Some(Data(data=_, comment=comment_ref)) => {
+            Some(
+              Data(data=_, comment=comment_ref)
+              | RomFallthrough(data=_, comment=comment_ref)
+            ) => {
               comment_ref.val = comment
             }
             _ => ()
@@ -89,6 +142,7 @@ fn AsmLowering::detect_table(self: AsmLowering, name: String, index: Int) -> Asm
         name,
         offset: self.table_offset,
         size: length * elem_size.byte_size(),
+        storage_size: length * elem_size.byte_size() + fallthrough_length,
         lines,
         elem_size,
         items_count: i - index,
@@ -115,7 +169,7 @@ fn AsmLowering::collect_labels_and_tables(self: AsmLowering) -> Unit raise Lower
         match self.detect_table(name, idx + (if is_alias { 1 } else { 0 })) {
           Some(table) => {
             self.tables.push(table)
-            self.table_offset += table.size
+            self.table_offset += table.storage_size
             self.tables_by_label[table.name] = table
 
             if is_alias {
@@ -276,6 +330,13 @@ fn AsmLowering::collect_instructions(self: AsmLowering) -> Unit raise LoweringEr
       Directive(name="db" | "dw" as name, args~) => {
         if not(inside_table) {
           raise LoweringError("Raw data in code detected: \{name} \{args}")
+        }
+      }
+      Directive(name="rom_fallthrough", args~) => {
+        if not(inside_table) {
+          raise LoweringError(
+            "ROM fall-through guard outside table detected: \{args}",
+          )
         }
       }
       _ => ()

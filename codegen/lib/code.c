@@ -291,6 +291,7 @@ SetMiscOffset:
 
 void OperModeExecutionTree(void) {
   lda_abs(OperMode); // this is the heart of the entire program,
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: TitleScreenMode(); return;
     case 1: GameMode(); return;
@@ -301,6 +302,7 @@ void OperModeExecutionTree(void) {
 
 void TitleScreenMode(void) {
   lda_abs(OperMode_Task);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: InitializeGame(); return;
     case 1: ScreenRoutines(); return;
@@ -435,6 +437,7 @@ void VictoryMode(void) {
 
 void ScreenRoutines(void) {
   lda_abs(ScreenRoutineTask); // run one of the following subroutines
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: InitScreen(); return;
     case 1: SetupIntermediate(); return;
@@ -931,6 +934,7 @@ ISpr0Loop:
 
 void GameOverMode(void) {
   lda_abs(OperMode_Task);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: SetupGameOver(); return;
     case 1: ScreenRoutines(); return;
@@ -998,6 +1002,7 @@ void ContinueGame(void) {
 
 void GameMode(void) {
   lda_abs(OperMode_Task);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: InitializeArea(); return;
     case 1: ScreenRoutines(); return;
@@ -1291,6 +1296,7 @@ DoAction:
 
 void VictoryModeSubroutines(void) {
   lda_abs(OperMode_Task);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: BridgeCollapse(); return;
     case 1: SetupVictoryMode(); return;
@@ -2639,6 +2645,7 @@ void AreaParserTaskHandler(void) {
 }
 
 void AreaParserTasks(void) {
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: IncrementColumnPos(); return;
     case 1: RenderAreaGraphics(); return;
@@ -3092,6 +3099,7 @@ void RunAObj(void) {
   lda_zp(0x0); // get stored value and add offset to it
   carry_flag = false; // then use the jump engine with current contents of A
   adc_zp(0x7);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: VerticalPipe(); return;
     case 1: AreaStyleObject(); return;
@@ -3228,6 +3236,7 @@ FreCompLoop:
 
 void AreaStyleObject(void) {
   lda_abs(AreaStyle); // load level object style and jump to the right sub
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: TreeLedge(); return;
     case 1: MushroomLedge(); return;
@@ -4266,6 +4275,7 @@ void GetScreenPosition(void) {
 
 void GameRoutines(void) {
   lda_zp(GameEngineSubroutine); // run routine based on number (a few of these routines are
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: Entrance_GameTimerSetup(); return;
     case 1: Vine_AutoClimb(); return;
@@ -4793,6 +4803,7 @@ ProcMove:
   ram[ClimbSideTimer] = y; // otherwise reset timer now
   
 MoveSubs:
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: OnGroundStateSub(); return;
     case 1: JumpSwimSub(); return;
@@ -6946,6 +6957,7 @@ void BumpBlock(void) {
       sbc_imm(0x5); // otherwise subtract 5 for second set to get proper number
     }
     // BlockCode:
+    carry_flag = (a & 0x80u) != 0;
     switch (a) {
       case 0: MushFlowerBlock(); return;
       case 1: CoinBlock(); return;
@@ -7711,6 +7723,7 @@ void CheckpointEnemyID(void) {
     tya(); // get identifier back and use as offset for jump engine
   }
   // InitEnemyRoutines:
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: InitNormalEnemy(); return;
     case 1: InitNormalEnemy(); return;
@@ -8509,6 +8522,7 @@ void InitEnemyFrenzy(void) {
   ram[EnemyFrenzyBuffer] = a; // save in enemy frenzy buffer
   carry_flag = true;
   sbc_imm(0x12); // subtract 12 and use as offset for jump engine
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: LakituAndSpinyHandler(); return;
     case 1: NoFrenzyCode(); return;
@@ -8733,6 +8747,7 @@ void RunEnemyObjectsCore(void) {
     sbc_imm(0x14); // as value for jump engine
   }
   // JmpEO:
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: RunNormalEnemies(); return;
     case 1: RunBowserFlame(); return;
@@ -9093,6 +9108,7 @@ void RunStarFlagObj(void) {
     StarFlagExit();
     return;
   }
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: StarFlagExit(); return;
     case 1: GameTimerFireworks(); return;
@@ -9315,6 +9331,7 @@ TooFar:
 
 void EnemyMovementSubs(void) {
   lda_zpx(Enemy_ID);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: MoveNormalEnemy(); return;
     case 1: MoveNormalEnemy(); return;
@@ -9960,6 +9977,7 @@ void LargePlatformSubroutines(void) {
   lda_zpx(Enemy_ID); // subtract $24 to get proper offset for jump table
   carry_flag = true;
   sbc_imm(0x24);
+  carry_flag = (a & 0x80u) != 0;
   switch (a) {
     case 0: BalancePlatform(); return;
     case 1: YMovingPlatform(); return;

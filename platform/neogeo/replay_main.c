@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "ppu.h"
 #include "replay_gate.h"
+#include "replay_timing.h"
 #include "smb_replay_data.h"
 #include "video.h"
 
@@ -18,8 +19,16 @@
 #define SMB_NEOGEO_REPLAY_PROGRESS_FRAMES 1800u
 #endif
 
+#ifndef SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES
+#define SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES 7u
+#endif
+
+#ifndef SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES
+#define SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES 1u
+#endif
+
 #define NEOGEO_REPLAY_STATUS_MAGIC UINT32_C(0x534d4252)
-#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(1)
+#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(2)
 #define NEOGEO_REPLAY_RESULT_INCOMPLETE UINT32_C(0x100)
 
 #if SMB_REPLAY_END_FRAME != SMB_REPLAY_FM2_FRAME_COUNT
@@ -45,6 +54,15 @@ _Static_assert(
         SMB_NEOGEO_REPLAY_PROGRESS_FRAMES <= UINT16_MAX,
     "replay progress interval must fit in uint16_t"
 );
+_Static_assert(
+    SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES <= SMB_REPLAY_END_FRAME,
+    "replay bootstrap interval must fit inside the input movie"
+);
+_Static_assert(
+    (int64_t)SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES >= 0 &&
+        (uint64_t)SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES <= UINT8_MAX,
+    "area-initialization replay hold must fit in uint8_t"
+);
 
 typedef struct NeogeoReplayStatus {
     uint32_t magic;
@@ -67,10 +85,17 @@ typedef struct NeogeoReplayStatus {
     uint32_t hardware_playable;
     uint32_t opposite_direction_transitions;
     uint32_t ram_init_option;
+    uint32_t bootstrap_frames;
+    uint32_t area_init_hold_frames;
+    uint32_t area_init_hold_count;
+    uint32_t core_frames_advanced;
 } NeogeoReplayStatus;
 
 volatile NeogeoReplayStatus neogeo_replay_status
     __attribute__((aligned(4), used, externally_visible));
+
+static NeogeoReplayTiming replay_timing;
+static uint32_t replay_core_frames_advanced;
 
 static void initialize_power_on_ram(void) {
     uint16_t address;
@@ -135,6 +160,14 @@ static void publish_status(
         SMB_REPLAY_OPPOSITE_DIRECTION_TRANSITIONS;
     neogeo_replay_status.ram_init_option =
         SMB_REPLAY_FM2_RAM_INIT_OPTION;
+    neogeo_replay_status.bootstrap_frames =
+        SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES;
+    neogeo_replay_status.area_init_hold_frames =
+        SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES;
+    neogeo_replay_status.area_init_hold_count =
+        replay_timing.area_init_hold_count;
+    neogeo_replay_status.core_frames_advanced =
+        replay_core_frames_advanced;
     neogeo_replay_status.result = result;
 }
 
@@ -150,6 +183,7 @@ static NeogeoReplayGateResult run_replay_frame(
 
     update_controller1(controller_state);
     next_frame();
+    ++replay_core_frames_advanced;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
     ppu_render();
 #endif
@@ -165,6 +199,53 @@ static NeogeoReplayGateResult run_replay_frame(
         controller_state
     );
     return result;
+}
+
+static NeogeoReplayGateResult run_replay_input_frame(
+    NeogeoReplayGate *gate,
+    uint8_t controller_state,
+    uint32_t frame,
+    uint32_t segment_index
+) {
+    NeogeoReplaySnapshot snapshot;
+
+    /*
+     * The translated Start() routine executes synchronously, but an FM2
+     * power-on/reset spends its first video frames inside that routine before
+     * the first NMI. Preserve those source-frame inputs without advancing the
+     * game core, then begin one NMI per movie record at the measured boundary.
+     */
+    if (
+        !neogeo_replay_timing_should_advance(
+            &replay_timing,
+            frame,
+            ram[OperMode],
+            ram[OperMode_Task],
+            SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES,
+            SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES
+        )
+    ) {
+        update_controller1(controller_state);
+        snapshot = snapshot_core();
+        publish_status(
+            gate,
+            &snapshot,
+            NEOGEO_REPLAY_GATE_RUNNING,
+            frame,
+            0,
+            segment_index,
+            controller_state
+        );
+        return NEOGEO_REPLAY_GATE_RUNNING;
+    }
+
+    return run_replay_frame(
+        gate,
+        controller_state,
+        frame,
+        0,
+        segment_index
+    );
 }
 
 void neogeo_replay_pass_trap(void)
@@ -230,11 +311,10 @@ int main(void) {
     );
 
     while (frame < SMB_REPLAY_END_FRAME) {
-        NeogeoReplayGateResult result = run_replay_frame(
+        NeogeoReplayGateResult result = run_replay_input_frame(
             &gate,
             controller_state,
             frame,
-            0,
             segment_index
         );
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import math
 from pathlib import Path
 import subprocess
@@ -19,7 +20,7 @@ NM_OUTPUT = """\
 00003bce 00000004 T neogeo_replay_pass_trap
 00003bd2 00000004 T neogeo_replay_fail_trap
 00003bd6 00000004 T neogeo_replay_progress_trap
-00100130 00000050 B neogeo_replay_status
+00100130 00000060 B neogeo_replay_status
 """
 
 
@@ -40,7 +41,7 @@ def sample_symbols() -> runner.ReplaySymbols:
         status=runner.ElfSymbol(
             "neogeo_replay_status",
             0x100130,
-            80,
+            96,
             "B",
         ),
         progress_point=runner.ElfSymbol(
@@ -62,8 +63,8 @@ def sample_words(
         runner.STATUS_MAGIC,
         runner.STATUS_VERSION,
         result,
-        67117,
-        60,
+        67116,
+        0,
         9118,
         0,
         entered_mask,
@@ -79,6 +80,10 @@ def sample_words(
         0,
         419,
         0,
+        7,
+        1,
+        6,
+        67104,
     ]
 
 
@@ -117,9 +122,9 @@ class SymbolResolutionTests(unittest.TestCase):
         self.assertEqual(symbols.status.size, runner.STATUS_BYTES)
 
     def test_nm_parser_rejects_wrong_mailbox_size_and_alignment(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 80"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 96"):
             runner.replay_symbols_from_nm(
-                NM_OUTPUT.replace("00000050 B", "0000004c B")
+                NM_OUTPUT.replace("00000060 B", "0000005c B")
             )
         with self.assertRaisesRegex(runner.ReplayGateError, "aligned"):
             runner.replay_symbols_from_nm(
@@ -168,17 +173,20 @@ class SymbolResolutionTests(unittest.TestCase):
 
 
 class GdbScriptTests(unittest.TestCase):
-    def test_script_breaks_on_both_raw_traps_and_reads_twenty_words(self) -> None:
+    def test_script_breaks_on_both_raw_traps_and_reads_all_words(self) -> None:
         script = runner.build_gdb_script(sample_symbols())
 
         self.assertIn("break *0x00003bce", script)
         self.assertIn("break *0x00003bd2", script)
         self.assertIn("break *0x00003bd6", script)
         self.assertIn("target remote 127.0.0.1:2159", script)
-        self.assertEqual(script.count("set $mb"), 20)
-        self.assertEqual(script.count("set $progress_mb"), 20)
+        self.assertEqual(script.count("set $mb"), runner.STATUS_WORD_COUNT)
+        self.assertEqual(
+            script.count("set $progress_mb"),
+            runner.STATUS_WORD_COUNT,
+        )
         self.assertNotIn("ignore 3", script)
-        for index in range(20):
+        for index in range(runner.STATUS_WORD_COUNT):
             self.assertIn(f"REPLAY_WORD index={index} ", script)
             self.assertIn(
                 f"*(unsigned int *)0x{0x100130 + index * 4:08x}",
@@ -208,7 +216,7 @@ class GdbScriptTests(unittest.TestCase):
 
 
 class MailboxTests(unittest.TestCase):
-    def test_mailbox_parser_maps_exactly_twenty_uint32_values(self) -> None:
+    def test_mailbox_parser_maps_every_uint32_value(self) -> None:
         status = runner.parse_mailbox_words(sample_words())
 
         self.assertEqual(status.magic, runner.STATUS_MAGIC)
@@ -216,9 +224,13 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(status.entered_mask, 0xFFFFFFFF)
         self.assertEqual(status.current_stage, 31)
         self.assertEqual(status.ram_init_option, 0)
+        self.assertEqual(status.bootstrap_frames, 7)
+        self.assertEqual(status.area_init_hold_frames, 1)
+        self.assertEqual(status.area_init_hold_count, 6)
+        self.assertEqual(status.core_frames_advanced, 67104)
 
     def test_mailbox_parser_rejects_size_magic_version_and_range(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "19 words"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "23 words"):
             runner.parse_mailbox_words(sample_words()[:-1])
 
         bad_magic = sample_words()
@@ -227,7 +239,7 @@ class MailboxTests(unittest.TestCase):
             runner.parse_mailbox_words(bad_magic)
 
         bad_version = sample_words()
-        bad_version[1] = 2
+        bad_version[1] = 1
         with self.assertRaisesRegex(runner.ReplayGateError, "version"):
             runner.parse_mailbox_words(bad_version)
 
@@ -235,6 +247,73 @@ class MailboxTests(unittest.TestCase):
         bad_range[5] = 1 << 32
         with self.assertRaisesRegex(runner.ReplayGateError, "uint32"):
             runner.parse_mailbox_words(bad_range)
+
+    def test_mailbox_parser_rejects_impossible_scheduler_accounting(
+        self,
+    ) -> None:
+        invalid_cases = [
+            (20, 67118, "bootstrap"),
+            (21, 256, "hold interval"),
+            (22, 67117, "hold count"),
+            (23, 0xFFFFFFFF, "core-frame accounting"),
+        ]
+        for index, value, message in invalid_cases:
+            with self.subTest(index=index, value=value):
+                words = sample_words()
+                words[index] = value
+                with self.assertRaisesRegex(
+                    runner.ReplayGateError,
+                    message,
+                ):
+                    runner.parse_mailbox_words(words)
+
+    def test_mailbox_parser_accepts_pre_stage_and_invalid_stage_states(
+        self,
+    ) -> None:
+        pre_stage = sample_words(result=0, entered_mask=0, completed_mask=0)
+        pre_stage[9] = runner.NO_STAGE
+        pre_stage[10] = 0
+        pre_stage[11] = 0
+        pre_stage[12] = 0
+        pre_stage[13] = 0
+        pre_stage[14] = 0
+        parsed = runner.parse_mailbox_words(pre_stage)
+        self.assertEqual(parsed.current_stage, runner.NO_STAGE)
+
+        invalid_stage = pre_stage.copy()
+        invalid_stage[2] = runner.INVALID_STAGE_RESULT
+        invalid_stage[13] = 8
+        parsed = runner.parse_mailbox_words(invalid_stage)
+        self.assertEqual(parsed.result, runner.INVALID_STAGE_RESULT)
+
+        invalid_stage[13] = 0
+        with self.assertRaisesRegex(
+            runner.ReplayGateError,
+            "valid world/level",
+        ):
+            runner.parse_mailbox_words(invalid_stage)
+
+    def test_mailbox_parser_validates_tail_frame_accounting(self) -> None:
+        tail_pass = sample_words()
+        tail_pass[3] = tail_pass[16] + 2
+        tail_pass[4] = 2
+        tail_pass[23] = 67104 + 3
+        parsed = runner.parse_mailbox_words(tail_pass)
+        self.assertEqual(parsed.tail_frame, 2)
+
+        incomplete = tail_pass.copy()
+        incomplete[2] = runner.INCOMPLETE_RESULT
+        incomplete[23] = 67104 + 2
+        parsed = runner.parse_mailbox_words(incomplete)
+        self.assertEqual(parsed.result, runner.INCOMPLETE_RESULT)
+
+        inconsistent = tail_pass.copy()
+        inconsistent[3] += 1
+        with self.assertRaisesRegex(
+            runner.ReplayGateError,
+            "frame/tail accounting",
+        ):
+            runner.parse_mailbox_words(inconsistent)
 
     def test_gdb_output_requires_one_trap_and_all_words_once(self) -> None:
         lines = ["REPLAY_TRAP kind=pass pc=0x00003bce"]
@@ -244,7 +323,7 @@ class MailboxTests(unittest.TestCase):
         )
         parsed = runner.parse_gdb_output("\n".join(lines), sample_symbols())
         self.assertEqual(parsed.trap_kind, "pass")
-        self.assertEqual(parsed.status.frame, 67117)
+        self.assertEqual(parsed.status.frame, 67116)
 
         with self.assertRaisesRegex(runner.ReplayGateError, "missing"):
             runner.parse_gdb_output("\n".join(lines[:-1]), sample_symbols())
@@ -269,6 +348,7 @@ class MailboxTests(unittest.TestCase):
         for sample, frame in ((1, 1799), (2, 3599)):
             words = sample_words()
             words[3] = frame
+            words[23] = frame + 1 - words[20] - words[22]
             lines.extend(
                 "REPLAY_PROGRESS_WORD "
                 f"sample={sample} index={index} value=0x{value:08x}"
@@ -313,12 +393,36 @@ class ClassificationTests(unittest.TestCase):
         cases = [
             capture(trap_kind="fail"),
             capture(result=0),
-            capture(entered_mask=0x7FFFFFFF),
+            capture(
+                entered_mask=0x7FFFFFFF,
+                completed_mask=0x7FFFFFFF,
+            ),
             capture(completed_mask=0x7FFFFFFF),
         ]
         for candidate in cases:
             with self.subTest(candidate=candidate):
                 self.assertFalse(runner.classify_result(candidate).passed)
+
+    def test_complete_result_requires_the_final_stable_victory_state(
+        self,
+    ) -> None:
+        valid = capture()
+        fields = {
+            "current_stage": 0,
+            "victory_stable_frames": 0,
+            "oper_mode": 1,
+            "oper_mode_task": 3,
+            "world": 0,
+            "level": 0,
+            "world_end_timer": 1,
+        }
+        for field, value in fields.items():
+            with self.subTest(field=field):
+                status = replace(valid.status, **{field: value})
+                malformed = replace(valid, status=status)
+                self.assertFalse(
+                    runner.classify_result(malformed).passed
+                )
 
     def test_incomplete_and_gate_failures_are_distinguished(self) -> None:
         incomplete = runner.classify_result(

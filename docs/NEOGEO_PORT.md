@@ -24,6 +24,14 @@ Completed:
   local FM2 input-log importer.
 - A separate FM2-driven cartridge, sequential 32-stage/final-victory tracker,
   raw debugger mailbox, and bounded isolated runner for progression evidence.
+- A passing hardware-direction-safe full-game replay through all 32 stages
+  and a 60-frame stable final-victory condition.
+- Measured FM2 source-frame bootstrap/area-load timing, versioned replay
+  accounting, and exact FCEUX-versus-C state transcript tooling.
+- Restored carry semantics for every translated assembly jump dispatcher,
+  with generated-code and gameplay-state regression tests.
+- Neutralized impossible opposite keyboard directions before they can corrupt
+  the original game's single-stick direction state.
 - Sustained one-game-frame-per-VBlank cadence at stock emulated clock after
   the cold-start cache fill.
 - Automated architecture, translated-core reachability, forbidden-symbol,
@@ -31,9 +39,6 @@ Completed:
 
 Not completed:
 
-- A passing deterministic proof of progression through all 32 stages. The
-  harness is complete, but an imported run must still remain synchronized
-  with this frame-at-a-time translated core through the final victory state.
 - YM2610 sound/music. `apu_null.c` currently discards NES APU writes.
 - Real AES/MVS or flash-cartridge validation.
 - Cycle/scanline-accurate PPU behavior. This port intentionally follows the
@@ -115,7 +120,7 @@ VBlank before swapping SCB3. The repeated display frame is preferable to
 crossing into active scanout.
 
 The final linked ELF (SHA-256
-`1c2f093adcfa48725efd5b53f2f8b7a2d3f1fc5b63f55ce8a3c17963368317e3`)
+`8a3894ea0cf378d33eee451893fdce76c53e051f71252d6b3926a56fe2fda7d0`)
 was audited instruction by instruction with these worst-case MC68000 cycle
 bounds, including a successful VBlank-poll iteration:
 
@@ -139,7 +144,7 @@ hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 180,534 |
+| MC68000 text + read-only data | 180,830 |
 | Initialized work RAM (`.data`) | 4 |
 | Zeroed work RAM (`.bss`) | 16,112 |
 | Static user work RAM total | 16,116 |
@@ -185,9 +190,9 @@ cartridge ZIP, and GnGeo hash data. All derived assets live below the ignored
 
 For the final audited program, the two isolated builds produced identical
 1 MiB P regions with SHA-256
-`5799b073ae3744dd4153b538db461b90021c0e004281032fb1a3f6029120c38d`
-and identical 104,898-byte cartridge ZIPs with SHA-256
-`11e12daaa15129daed997839be7d0c6a4afd8dd61e3dd74d715d5f68064b62f6`.
+`d8ea97f3e05846467d298e9287bbf49567cc2799c8d16d8cf2aeac1153046b50`
+and identical 105,220-byte cartridge ZIPs with SHA-256
+`352e4e0272a59d10e7f52014196ed2a35dac5a90a5a08e56ac1a58f3818b98fb`.
 
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
@@ -202,6 +207,87 @@ without a `RAMInitOption` are labeled as legacy option 0, matching that
 version's deterministic `00 00 00 00 ff ff ff ff` power-on pattern; explicit
 zero-fill option 2 is also supported. Fill-FF, random, malformed, or ambiguous
 initialization is rejected instead of being silently imported.
+
+## Core-state transcript and source-frame scheduling
+
+An FM2 row is a source video-frame record, not a promise that the game CPU
+received an NMI on that row. The original reset path also spends several video
+frames before its first game NMI, while the translated `Start()` routine runs
+synchronously. An exact FCEUX 2.2.1 comparison measured the resulting adapter:
+
+- translated row 0 aligns with reference/FM2 row 7;
+- the first seven FM2 inputs are retained without advancing the C core; and
+- one no-NMI input hold is inserted on each continuous game-mode,
+  area-initialization task-0 entry.
+
+The replay cartridge defaults are therefore
+`REPLAY_BOOTSTRAP_FRAMES=7` and `REPLAY_AREA_INIT_HOLD_FRAMES=1`. They are
+compile-time parameters rather than hidden constants. Debugger mailbox version
+2 reports both parameters, the number of area holds actually consumed, and the
+number of core frames actually advanced. The host runner rejects internally
+inconsistent frame, tail, bootstrap, hold, or core-advance accounting before
+classifying a pass.
+
+The cartridge adapter is intentionally small. For instruction-level drift
+diagnosis, `tools/core_state_trace.py` uses the reference emulator's explicit
+lag markers instead of inferring them from already-divergent C state. FCEUX
+marks the row after an extra source boundary as lagged, so the tool holds the
+immediately preceding source row. It consumes one optional reference
+lookahead row to make the final hold decision.
+
+The original 6502 program also contains a few indexed table reads whose valid
+indices extend into physically adjacent tables or instruction bytes. Packing
+only declared `.db` data into C silently changed those reads. The
+`.rom_fallthrough` lowering directive now retains such bytes as physical
+storage without pretending they enlarge the logical table. Generator and
+native regressions cover the fireball direction byte, full-byte bubble
+scratch index, firebar mirror index, and flying-enemy random windows.
+
+A bounded comparison can be produced with local ROM and movie files:
+
+```bash
+# Print, but do not execute, the exact reference environment and argv.
+python3 tools/core_state_trace.py fceux-command \
+  --fceux /path/to/fceux-2.2.1 \
+  --rom /path/to/owned/smb.nes \
+  --fm2 /path/to/no-opposite-warpless.fm2 \
+  --output /tmp/smb-reference-000000-004101.csv \
+  --frames 4102
+
+# After executing that printed reference command:
+python3 tools/core_state_trace.py emit-translated \
+  --fm2 /path/to/no-opposite-warpless.fm2 \
+  --output /tmp/smb-translated-000007-004100.csv \
+  --input-frame-offset 7 \
+  --frames 4094 \
+  --hold-schedule-reference /tmp/smb-reference-000000-004101.csv
+
+python3 tools/core_state_trace.py compare \
+  --translated /tmp/smb-translated-000007-004100.csv \
+  --reference /tmp/smb-reference-000000-004101.csv \
+  --reference-frame-offset 7 \
+  --skip-scheduled-holds \
+  --result-json /tmp/smb-state-comparison.json
+```
+
+Every output path is create-only: the Python command, Lua extractor, and
+optional native RAM dump refuse to overwrite an existing file. A complete
+CSV carries an explicit schema, contiguous frame numbers, frame semantics,
+source metadata, and a final completion marker. The pass domain compares
+controller input, OAM, and selected persistent gameplay fields. Whole-RAM,
+zero-page, stack, and work-buffer hashes remain diagnostic because the static
+C translation deliberately does not model the instruction stack and retains
+some transient buffers differently. Reference traces, RAM dumps, ROMs, and
+FM2 files are external evidence and are not tracked.
+
+The printed reference command records the emulator executable's SHA-256 and
+runs it through `exec-fceux-verified`. That wrapper reopens and hashes the
+binary immediately before executing the same verified file descriptor, so a
+later pathname replacement cannot be mislabeled as the measured build. The
+Lua side requires and embeds the matching label and digest. If a streamed
+write itself fails, its exclusively created partial file is deliberately
+retained; the missing completion marker makes it invalid evidence and avoids
+unsafe pathname cleanup.
 
 ## Published TAS regression lanes
 
@@ -247,8 +333,8 @@ make -C platform/neogeo replay-cart \
   REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
 
 python3 tools/run_neogeo_replay_gate.py \
-  --68k-overclock 1000 \
-  --timeout 900
+  --68k-overclock 10000 \
+  --timeout 2400
 ```
 
 The generated header stores compact `uint16_t` durations and `uint8_t`
@@ -270,44 +356,45 @@ the debugger therefore does not need to stop and round-trip on every frame.
 
 ### Current replay result
 
-On 2026-07-23, both full-game lanes were built into separate fast gate
-cartridges and executed through the raw debugger traps. Neither timed out, and
-neither passed:
+On 2026-07-24, the preferred no-opposite 67,677-frame warpless movie passed
+the fast cartridge gate through every stage and the final victory state:
 
-| Input | Terminal input frame | Terminal state | Entered/completed stages |
-| --- | ---: | --- | --- |
-| Published 67,117-frame warpless movie | 4,028 | Game over in 1-1 | 1 / 0 |
-| No-opposite 67,677-frame warpless movie | 4,274 | Game over in 1-1 | 1 / 0 |
+| Measurement | Terminal value |
+| --- | ---: |
+| Cartridge frame | 68,631 |
+| Source replay tail frame | 954 |
+| Stages entered | 32 (`0xffffffff`) |
+| Stages completed | 32 (`0xffffffff`) |
+| Stable victory frames | 60 |
+| Bootstrap frames skipped | 7 |
+| Area-initialization holds | 46 |
+| Translated core frames advanced | 68,579 |
+| Opposite-direction transitions | 0 |
 
-The published-movie gate ELF and cartridge SHA-256 values were
-`745bbaad2c76c093e88bf233b98aa1b274d7d4cbd10ed78d0e7811eed9bb669b`
+The terminal mailbox had valid version-2 metadata, retained the exact source
+frame count and hardware-playable direction policy, passed all host-side
+accounting checks, and reached the dedicated pass trap. The bounded
+`result.json` had SHA-256
+`c93dee25ee767ca22cdb0680f47570a04e678af000d6ff806e288d1516b3f731`.
+The exercised replay ELF, cartridge ZIP, and P region had SHA-256 values
+`de4fc801831ad5fae803d45bf73f917c6d91bb49109009d56cfc106e5b377caa`,
+`0897a187323b6cd9696804270c0a887167f53e5d62514b50d2bc3455d8b0a3b1`,
 and
-`267be6e6e0afbedf6f4ae0ee0f4ac5f551c50dc27ea7d481a1ca45b3bcff90c5`.
-The no-opposite equivalents were
-`aa147fd6dae00cf336ccb4ba8a3c64f0b41e4169f1435198331bbdc6d40739b8`
-and
-`17a6504c378f458869c7ad609145187a298f2a262cd275b0e5946fb41923281e`.
-Two isolated builds of the published-movie gate matched byte-for-byte across
-the ELF, every P/C/S/M/V region, GnGeo data, and cartridge ZIP.
-Both terminal mailboxes had valid magic/version values, reported mode 3 task
-0, retained the exact source frame count and direction policy, and reached the
-dedicated fail trap. The stock-controller lane reported zero opposite
-directions.
+`d2f22e4c5dce90a1102676a6e46ea06c7cc09a7522c66a7112c1a1bf295cb86b`,
+respectively.
 
-This is useful negative evidence: the input, cartridge transport, stage
-tracker, emulator runner, and failure capture are working, but the current
-frame-at-a-time core is not synchronized closely enough with either FCEUX
-movie to use those inputs as an all-stage proof. It does not contradict manual
-playability or the separate renderer cadence result. The next correctness
-target is now concrete: capture a reference core-state transcript before
-frame 4,028 and fix the first state divergence rather than tuning inputs by
-guesswork.
+This is a translated-core progression proof, not a rendered-performance or
+physical-hardware claim. The normal rendered cartridge is covered separately
+by the stock-clock cadence probes, and real AES/MVS-compatible hardware
+validation remains pending.
 
 ## Verification performed
 
 The milestone is checked with:
 
 ```bash
+# Includes isolated MoonBit lowering/transpiler tests and a comparison of
+# freshly generated C against every checked-in generator output.
 make -C platform/neogeo verify
 make -C platform/neogeo cart \
   SMB_ROM="/path/to/smb.zip"
@@ -330,7 +417,8 @@ make -C platform/neogeo replay-cart \
   SMB_ROM="/path/to/smb.zip" \
   REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
   REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
-python3 tools/run_neogeo_replay_gate.py --timeout 900
+python3 tools/run_neogeo_replay_gate.py \
+  --68k-overclock 10000 --timeout 2400
 ```
 
 The cadence probe owns an isolated X display and process groups, verifies
@@ -366,12 +454,10 @@ not tracked.
 
 ## Next engineering steps
 
-1. Resolve any full-game FM2 synchronization drift exposed by the cartridge
-   gate and retain a passing all-32-stage/final-victory result.
-2. Add a deterministic core-state transcript so replay drift can be separated
-   from renderer or emulator failures.
-3. Run long rendered replays across every world and retain transition
+1. Run long rendered replays across every world and retain transition
    screenshots/state evidence.
-4. Implement an integer-only event bridge from NES APU writes to a compact
+2. Implement an integer-only event bridge from NES APU writes to a compact
    YM2610 Z80/68K sound driver.
-5. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
+3. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
+4. Tighten the remaining fine-scroll left-edge masking cases.
+5. Add memory-card or save-state support.

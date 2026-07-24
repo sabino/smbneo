@@ -19,6 +19,7 @@ pub(all) enum TypedExpr {
 
 pub(all) enum AsmTableLine {
   Data(data~: Array[TypedExpr], comment~: Ref[String])
+  RomFallthrough(data~: Array[TypedExpr], comment~: Ref[String])
   Comment(String)
 } derive (Show)
 
@@ -26,7 +27,10 @@ pub(all) struct AsmTable {
   name: String
   offset: Int
   lines: Array[AsmTableLine]
+  // Logical bytes declared by .db/.dw and addressable as table contents.
   size: Int
+  // Packed bytes, including original-ROM fall-through guards.
+  storage_size: Int
   elem_size: @parse.ConstantSize
   items_count: Int
 } derive (Show)

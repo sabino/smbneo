@@ -6436,6 +6436,9 @@ BublLoop: stx ObjectOffset            ;store offset
 
 FireballXSpdData:
       .db $40, $c0
+      ;PlayerFacingDir can retain both horizontal direction bits.  Preserve
+      ;the original STX opcode byte reached by the resulting index of two.
+      .rom_fallthrough $86
 
 FireballObjCore:
          stx ObjectOffset             ;store offset as current object
@@ -6546,6 +6549,25 @@ Bubble_MForceData:
 
 BubbleTimerData:
       .db $40, $20
+      ;Entrance_GameTimerSetup calls SetupBubble directly, before BubbleCheck
+      ;refreshes scratch byte $07. Preserve the complete original ROM window
+      ;for every possible stale byte index used by both bubble tables.
+      .rom_fallthrough $ad, $70, $07, $f0, $4f, $a5, $0e, $c9, $08, $90, $49, $c9, $0b, $f0, $45, $a5
+      .rom_fallthrough $b5, $c9, $02, $b0, $3f, $ad, $87, $07, $d0, $3a, $ad, $f8, $07, $0d, $f9, $07
+      .rom_fallthrough $0d, $fa, $07, $f0, $26, $ac, $f8, $07, $88, $d0, $0c, $ad, $f9, $07, $0d, $fa
+      .rom_fallthrough $07, $d0, $04, $a9, $40, $85, $fc, $a9, $18, $8d, $87, $07, $a0, $23, $a9, $ff
+      .rom_fallthrough $8d, $39, $01, $20, $5f, $8f, $a9, $a4, $4c, $06, $8f, $8d, $56, $07, $20, $31
+      .rom_fallthrough $d9, $ee, $59, $07, $60, $ad, $23, $07, $f0, $fa, $a5, $ce, $25, $b5, $d0, $f4
+      .rom_fallthrough $8d, $23, $07, $ee, $d6, $06, $4c, $98, $c9, $ad, $4e, $07, $d0, $37, $8d, $7d
+      .rom_fallthrough $04, $ad, $47, $07, $d0, $2f, $a0, $04, $b9, $71, $04, $18, $79, $77, $04, $85
+      .rom_fallthrough $02, $b9, $6b, $04, $f0, $1c, $69, $00, $85, $01, $a5, $86, $38, $f9, $71, $04
+      .rom_fallthrough $a5, $6d, $f9, $6b, $04, $30, $0b, $a5, $02, $38, $e5, $86, $a5, $01, $e5, $6d
+      .rom_fallthrough $10, $04, $88, $10, $d3, $60, $b9, $77, $04, $4a, $85, $00, $b9, $71, $04, $18
+      .rom_fallthrough $65, $00, $85, $01, $b9, $6b, $04, $69, $00, $85, $00, $a5, $09, $4a, $90, $2c
+      .rom_fallthrough $a5, $01, $38, $e5, $86, $a5, $00, $e5, $6d, $10, $0e, $a5, $86, $38, $e9, $01
+      .rom_fallthrough $85, $86, $a5, $6d, $e9, $00, $4c, $39, $b8, $ad, $90, $04, $4a, $90, $0d, $a5
+      .rom_fallthrough $86, $18, $69, $01, $85, $86, $a5, $6d, $69, $00, $85, $6d, $a9, $10, $85, $00
+      .rom_fallthrough $a9, $01, $8d, $7d, $04, $85, $02, $4a, $aa, $4c, $d7, $bf, $05, $02
 
 ;-------------------------------------------------------------------------------------
 
@@ -9865,6 +9887,11 @@ FirebarTblOffsets:
 
 FirebarYPos:
       .db $0c, $18
+      ;GetFirebarPosition's residual call can inherit any accumulator byte
+      ;before shifting it into a 0..31 mirror index. The declared tables above
+      ;cover indices 0..17; retain the following code bytes for indices 18..31.
+      .rom_fallthrough $20, $af, $f1, $ad, $d1, $03, $29, $08
+      .rom_fallthrough $d0, $74, $ad, $47, $07, $d0
 
 ProcFirebar:
           jsr GetEnemyOffscreenBits   ;get offscreen information
@@ -10086,6 +10113,10 @@ PRandomSubtracter:
 
 FlyCCBPriority:
       .db $20, $20, $20, $00, $00
+      ;MoveFlyingCheepCheep indexes this ROM window with a full high nybble.
+      ;Preserve the original instruction bytes following the logical table.
+      .rom_fallthrough $b5, $1e, $29, $20, $f0, $08
+      .rom_fallthrough $a9, $00, $9d, $c5, $03
 
 MoveFlyingCheepCheep:
         lda Enemy_State,x          ;check cheep-cheep's enemy state

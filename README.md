@@ -43,7 +43,7 @@ Bros. (World) dump and remain under the ignored `platform/neogeo/build/`
 directory.
 
 ```bash
-# Pure-C cross-build, unit tests, ELF architecture check, and RAM guard
+# Generator consistency, pure-C tests/build, ELF architecture check, RAM guard
 make -C platform/neogeo verify
 
 # Complete cartridge from a raw .nes file or a ZIP containing one .nes file
@@ -66,11 +66,12 @@ make -C platform/neogeo run \
 # Build a gate-only cartridge from a locally downloaded text FM2 movie
 make -C platform/neogeo replay-cart \
   SMB_ROM="/path/to/smb.zip" \
-  REPLAY_FM2="/path/to/full-warpless.fm2" \
+  REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
   REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
 
 # Run it to a pass/fail trap and retain a bounded result.json plus logs
-python3 tools/run_neogeo_replay_gate.py --timeout 900
+python3 tools/run_neogeo_replay_gate.py \
+  --68k-overclock 10000 --timeout 2400
 ```
 
 The supported ROM revision has SHA-1
@@ -83,11 +84,16 @@ generated cartridge or graphics files.
 
 Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
 Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
-respectively. Press `1` at the title screen before trying to move. Audio is
-intentionally silent in this milestone. The cartridge replay gate accepts
+respectively. Press `1` at the title screen before trying to move. Impossible
+left+right or up+down keyboard pairs are neutralized. Audio is intentionally
+silent in this milestone. The cartridge replay gate accepts
 strict local FM2 input logs, preserves their hashes and startup metadata, and
-checks sequential entry into all 32 stages plus the final victory state. The
-movie itself is never downloaded or tracked by the build. See
+checks sequential entry into all 32 stages plus the final victory state. Its
+versioned debugger mailbox also records bootstrap skips, area-load holds, and
+the exact number of translated core frames advanced. The movie itself is
+never downloaded or tracked by the build. The preferred no-opposite full-game
+movie has passed this gate through all 32 stages and a stable victory state.
+See
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, recommended published TAS inputs, verification evidence, and
 remaining work.

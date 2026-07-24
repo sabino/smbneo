@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "cpu.h"
 #include "external.h"
+#include "input_policy.h"
 #include "ppu.h"
 #include "ppu_render_state.h"
 
@@ -795,7 +796,7 @@ uint8_t neogeo_read_controller1(void) {
     if ((system & CNT_START2) == 0u) {
         state |= NES_SELECT;
     }
-    return state;
+    return neogeo_input_normalize_directions(state);
 }
 
 void neogeo_video_init(void) {

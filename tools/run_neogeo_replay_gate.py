@@ -23,12 +23,18 @@ import measure_neogeo_cadence as cadence
 DEBUG_HOST = cadence.DEBUG_HOST
 DEBUG_PORT = cadence.DEBUG_PORT
 STATUS_MAGIC = 0x534D4252
-STATUS_VERSION = 1
-STATUS_WORD_COUNT = 20
+STATUS_VERSION = 2
+STATUS_WORD_COUNT = 24
 STATUS_BYTES = STATUS_WORD_COUNT * 4
 COMPLETE_RESULT = 1
+INVALID_STAGE_RESULT = 2
 INCOMPLETE_RESULT = 0x100
 ALL_STAGES_MASK = 0xFFFFFFFF
+FINAL_STAGE = 31
+NO_STAGE = 0xFF
+FINAL_STABLE_FRAMES = 60
+VICTORY_MODE = 2
+VICTORY_TASK = 4
 RESULT_NAMES = {
     0: "running",
     1: "complete",
@@ -120,6 +126,10 @@ class ReplayStatus:
     hardware_playable: int
     opposite_direction_transitions: int
     ram_init_option: int
+    bootstrap_frames: int
+    area_init_hold_frames: int
+    area_init_hold_count: int
+    core_frames_advanced: int
 
 
 @dataclass(frozen=True)
@@ -241,7 +251,7 @@ def build_gdb_script(
     host: str = DEBUG_HOST,
     port: int = DEBUG_PORT,
 ) -> str:
-    """Build a trap probe with exactly twenty raw 32-bit mailbox reads."""
+    """Build a trap probe with every raw 32-bit mailbox word."""
 
     lines = [
         "set pagination off",
@@ -328,7 +338,7 @@ def build_gdb_script(
 
 
 def parse_mailbox_words(words: Sequence[int]) -> ReplayStatus:
-    """Parse and validate one complete 80-byte debugger mailbox snapshot."""
+    """Parse and validate one complete debugger mailbox snapshot."""
 
     if len(words) != STATUS_WORD_COUNT:
         raise ReplayGateError(
@@ -352,6 +362,110 @@ def parse_mailbox_words(words: Sequence[int]) -> ReplayStatus:
         raise ReplayGateError(
             f"mailbox version is {status.version}; "
             f"expected {STATUS_VERSION}"
+        )
+    if status.result not in RESULT_NAMES:
+        raise ReplayGateError(
+            f"mailbox result 0x{status.result:08x} is unknown"
+        )
+    byte_fields = {
+        "controller_state": status.controller_state,
+        "oper_mode": status.oper_mode,
+        "oper_mode_task": status.oper_mode_task,
+        "world": status.world,
+        "level": status.level,
+        "world_end_timer": status.world_end_timer,
+        "victory_stable_frames": status.victory_stable_frames,
+    }
+    for name, value in byte_fields.items():
+        if value > 0xFF:
+            raise ReplayGateError(
+                f"mailbox {name}={value} is outside the uint8 range"
+            )
+    if status.current_stage > FINAL_STAGE and status.current_stage != NO_STAGE:
+        raise ReplayGateError(
+            f"mailbox current_stage={status.current_stage} is invalid"
+        )
+    invalid_coordinates = status.world >= 8 or status.level >= 4
+    if status.result == INVALID_STAGE_RESULT:
+        if not invalid_coordinates:
+            raise ReplayGateError(
+                "invalid-stage mailbox has valid world/level coordinates"
+            )
+    elif invalid_coordinates:
+        raise ReplayGateError(
+            f"mailbox world/level is {status.world}/{status.level}; "
+            "expected zero-based values below 8/4"
+        )
+    if status.victory_stable_frames > FINAL_STABLE_FRAMES:
+        raise ReplayGateError(
+            "mailbox victory-stable interval exceeds the gate limit"
+        )
+    if status.hardware_playable not in (0, 1):
+        raise ReplayGateError(
+            "mailbox hardware_playable must be zero or one"
+        )
+    if (
+        status.hardware_playable == 1
+        and status.opposite_direction_transitions != 0
+    ):
+        raise ReplayGateError(
+            "hardware-playable mailbox reports opposite directions"
+        )
+    if status.ram_init_option not in (0, 2):
+        raise ReplayGateError(
+            f"mailbox RAM initialization option "
+            f"{status.ram_init_option} is unsupported"
+        )
+    if status.replay_end_frame == 0:
+        raise ReplayGateError("mailbox replay_end_frame must be positive")
+    if status.bootstrap_frames > status.replay_end_frame:
+        raise ReplayGateError(
+            "mailbox bootstrap interval exceeds the replay"
+        )
+    if status.area_init_hold_frames > 0xFF:
+        raise ReplayGateError(
+            "mailbox area-init hold interval exceeds uint8"
+        )
+    if status.completed_mask & ~status.entered_mask:
+        raise ReplayGateError(
+            "mailbox completed stages were never entered"
+        )
+
+    if status.frame < status.replay_end_frame:
+        if status.tail_frame != 0:
+            raise ReplayGateError(
+                "mailbox reports tail frames before replay input ended"
+            )
+        source_records = status.frame + 1
+        tail_core_frames = 0
+    else:
+        if status.frame != status.replay_end_frame + status.tail_frame:
+            raise ReplayGateError(
+                "mailbox frame/tail accounting is inconsistent"
+            )
+        source_records = status.replay_end_frame
+        tail_core_frames = (
+            status.tail_frame
+            if status.result == INCOMPLETE_RESULT
+            else status.tail_frame + 1
+        )
+
+    bootstrap_skips = min(source_records, status.bootstrap_frames)
+    available_source_frames = source_records - bootstrap_skips
+    if status.area_init_hold_count > available_source_frames:
+        raise ReplayGateError(
+            "mailbox area-init hold count exceeds available source frames"
+        )
+    expected_core_frames = (
+        available_source_frames
+        - status.area_init_hold_count
+        + tail_core_frames
+    )
+    if status.core_frames_advanced != expected_core_frames:
+        raise ReplayGateError(
+            f"mailbox core-frame accounting is "
+            f"{status.core_frames_advanced}; expected "
+            f"{expected_core_frames}"
         )
     return status
 
@@ -513,6 +627,13 @@ def classify_result(capture: DebuggerCapture) -> GateClassification:
         status.result == COMPLETE_RESULT
         and status.entered_mask == ALL_STAGES_MASK
         and status.completed_mask == ALL_STAGES_MASK
+        and status.current_stage == FINAL_STAGE
+        and status.victory_stable_frames == FINAL_STABLE_FRAMES
+        and status.oper_mode == VICTORY_MODE
+        and status.oper_mode_task == VICTORY_TASK
+        and status.world == 7
+        and status.level == 3
+        and status.world_end_timer == 0
     )
     summary = _status_summary(status)
     if capture.trap_kind == "pass" and gate_complete:

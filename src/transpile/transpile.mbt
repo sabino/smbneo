@@ -155,6 +155,15 @@ fn Emitter::emit_data_c(self: Emitter, low: @lower.AsmLowering) -> Unit {
             _ => self.emit("\{data}, // \{comment.val}")
           }
         }
+        RomFallthrough(data~, comment~) => {
+          self.emit("// Original-ROM fall-through guard; not logical table data.")
+          let data = data.map(show_expr).join(", ")
+
+          match comment.val {
+            "" => self.emit(data + ",")
+            _ => self.emit("\{data}, // \{comment.val}")
+          }
+        }
         Comment(comment) => {
           self.emit("// \{comment}")
         }
@@ -401,6 +410,9 @@ fn Emitter::emit_item(self: Emitter, item: @lower.AsmItem, low: @lower.AsmLoweri
         self.emit(stmt)
       }
       JumpEngine(jump_table~) => {
+        // The assembly dispatcher starts with ASL. The C switch replaces its
+        // table lookup, but callers still depend on ASL updating carry.
+        self.emit("carry_flag = (a & 0x80u) != 0;")
         self.emit("switch (a) {")
         self.indentation += 1
 
