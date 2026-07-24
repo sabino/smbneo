@@ -37,11 +37,13 @@ Static recompilation of Super Mario Bros. using [doppelganger's disassembly](htt
 ### Neo Geo (ngdevkit)
 
 The optimized playable milestone cross-compiles, links, packages, and boots
-in ngdevkit-gngeo. The direct hardware renderer sustains one game frame per
-display VBlank after its cold-start cache fill at the stock emulated 68000
-clock. Graphics are generated locally from a legally obtained Super Mario
-Bros. (World) dump and remain under the ignored `platform/neogeo/build/`
-directory.
+in ngdevkit-gngeo. Its direct hardware renderer keeps one persistent
+33-strip background ring and double-buffers the object sprites. Light,
+steady-state scenes fit one game tick per display VBlank at the stock
+emulated 68000 clock; enemy-heavy scenes have separate exact regression
+windows instead of being covered by that bounded smoke result. Graphics are
+generated locally from a legally obtained Super Mario Bros. (World) dump and
+remain under the ignored `platform/neogeo/build/` directory.
 
 ```bash
 # Generator consistency, pure-C/audio tests, ELF/RAM and Z80 map guards
@@ -58,7 +60,7 @@ python3 tools/check_reproducible_cart.py \
 # Enter gameplay and reject an empty or silent normal-mode PCM capture
 python3 tools/probe_neogeo_audio.py
 
-# Measure stock-clock steady-state cadence without touching a visible run
+# Bounded stock-clock light/steady-state cadence smoke
 python3 tools/measure_neogeo_cadence.py \
   --warmup-vblanks 120 --sample-vblanks 120 \
   --assert-zero-missed
@@ -104,7 +106,8 @@ waits until the VBlank callback has latched the uploaded render generation as
 presented; mailbox version 4 exposes both 16-bit generations and the host
 requires equality. Because the renderer object is shared, that handshake uses
 two 16-bit state words and one 16-bit copy per VBlank in the normal cartridge
-too; linker padding absorbs the words, so measured total BSS is unchanged.
+too. Current linked memory measurements are maintained in
+[`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md).
 After the debugger stops, the host waits another 50 milliseconds by default
 only to let the already-issued SDL/X11 presentation settle before `scrot`.
 `--display-settle-seconds` can tune this host-only allowance from 0 through

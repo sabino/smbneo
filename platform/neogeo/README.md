@@ -7,7 +7,8 @@ MC68000 and replaces the desktop PPU/APU modules with:
   register behavior without full CHR/framebuffer storage. Cartridge builds
   retain only the 314-byte CHR read window used to construct the title menu.
 - `video.c`: direct C-ROM/S-ROM, palette RAM, FIX-map, and SCB1-4 writes with
-  two 161-sprite frame sets, generation caches, and next-VBlank live swaps.
+  one persistent 33-strip background ring, two 64-entry OAM banks on each
+  priority plane, generation caches, sparse uploads, and next-VBlank swaps.
 - `apu_bridge.c`: NES APU register shadowing, envelope/sweep/length/linear
   state, and changed-register coalescing for YM2610 SSG plus ADPCM-B.
 - `apu_neogeo.c`: acknowledged MC68000-to-Z80 transport, startup recovery, and
@@ -18,7 +19,7 @@ MC68000 and replaces the desktop PPU/APU modules with:
   port-A writes for the M1 sound ROM.
 - `tools/gen_neogeo_triangle_vrom.py`: deterministic 64 KiB encoded triangle
   loop inside a padded 512 KiB V1 image.
-- `main.c`: Neo Geo input mapping and the 60 Hz game loop.
+- `main.c`: Neo Geo input mapping and the VBlank-paced game loop.
 
 ## Commands
 
@@ -30,6 +31,7 @@ make -C platform/neogeo cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo run SMB_ROM="/path/to/owned/smb.zip"
 python3 tools/check_reproducible_cart.py --rom="/path/to/owned/smb.zip"
 python3 tools/probe_neogeo_audio.py
+# Bounded light/steady-state smoke; see docs for crowded regression windows
 python3 tools/measure_neogeo_cadence.py \
   --warmup-vblanks 120 --sample-vblanks 120 \
   --assert-zero-missed
@@ -82,8 +84,8 @@ capture/validation provenance, the 65 PNGs, logs, and a manifest bounded to
 128 KiB. A cartridge-side fence first waits for its uploaded and presented
 16-bit generations to match, and mailbox version 4 makes that binding
 host-verifiable. The two shared generation words and one 16-bit copy per
-VBlank also exist in the normal cartridge; linker padding keeps measured
-total BSS unchanged. The host then waits 50
+VBlank also exist in the normal cartridge and are included in the current
+linked-memory measurements in `docs/NEOGEO_PORT.md`. The host then waits 50
 milliseconds by default only for the already-issued SDL/X11 presentation to
 settle before capture; the bounded `--display-settle-seconds` range is 0
 through 0.25 seconds and is recorded in the manifest without adding cartridge

@@ -4,13 +4,13 @@
 #include "cpu.h"
 #include "external.h"
 #include "input_policy.h"
+#include "oam_visibility.h"
 #include "ppu.h"
 #include "ppu_render_state.h"
 
 #include <ngdevkit/neogeo.h>
 
 #define NEO_SCREEN_WIDTH 320u
-#define NEO_SCREEN_HEIGHT 224u
 #define NES_CROP_TOP 8
 #define NES_CONTENT_X ((NEO_SCREEN_WIDTH - SCREEN_WIDTH) / 2u)
 
@@ -76,12 +76,6 @@ typedef struct {
 } BackgroundTileCache;
 
 typedef struct {
-    uint16_t tile;
-    uint16_t attributes;
-    uint16_t x;
-} OamSpriteCache;
-
-typedef struct {
     uint32_t changed_rows;
     uint16_t tile[BACKGROUND_MAX_ROWS];
     uint16_t attributes[BACKGROUND_MAX_ROWS];
@@ -110,7 +104,6 @@ static const uint16_t nes_palette_to_neogeo[64] = {
  * set is hidden; 322 bytes buys a clean VBlank reveal without a framebuffer.
  */
 static uint16_t next_scb3[SPRITES_PER_SET];
-static uint8_t scanline_sprite_count[NEO_SCREEN_HEIGHT];
 static uint8_t visible_set;
 static volatile uint16_t neogeo_vblank_signal;
 
@@ -129,7 +122,6 @@ static BackgroundStripUpdate background_pending[BACKGROUND_STRIPS];
 static uint8_t background_pending_count;
 static uint16_t background_pending_rows;
 
-static OamSpriteCache oam_cache[SPRITE_SET_COUNT][SPRITES_PER_SET];
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
 static uint8_t active_oam_count[SPRITE_SET_COUNT];
 static uint8_t active_background;
@@ -258,7 +250,6 @@ static uint8_t background_palette_index(
 }
 
 static void write_sprite_x(uint16_t sprite, uint16_t x_word) {
-    *REG_VRAMMOD = 1;
     *REG_VRAMADDR = (uint16_t)(ADDR_SCB4 + sprite);
     *REG_VRAMRW = x_word;
 }
@@ -268,7 +259,6 @@ static void write_single_tile_sprite_data(
     uint16_t tile,
     uint16_t attributes
 ) {
-    *REG_VRAMMOD = 1;
     *REG_VRAMADDR = (uint16_t)(ADDR_SCB1 + sprite * 64u);
     *REG_VRAMRW = tile;
     *REG_VRAMRW = attributes;
@@ -724,25 +714,6 @@ static void show_background(void) {
     );
 }
 
-static uint8_t sprite_fits_scanline_budget(int16_t y) {
-    int16_t first = y < 0 ? 0 : y;
-    int16_t last = (int16_t)(y + 8);
-    int16_t line;
-
-    if (last > (int16_t)NEO_SCREEN_HEIGHT) {
-        last = (int16_t)NEO_SCREEN_HEIGHT;
-    }
-    for (line = first; line < last; ++line) {
-        if (scanline_sprite_count[line] >= 8u) {
-            return 0;
-        }
-    }
-    for (line = first; line < last; ++line) {
-        ++scanline_sprite_count[line];
-    }
-    return 1;
-}
-
 static void build_oam_sprites(uint8_t set) {
     uint16_t pattern_base = (ppu_ctrl & 0x08u) ? 256u : 0u;
     uint8_t draw_left_edge = (uint8_t)(ppu_mask & 0x04u);
@@ -753,12 +724,14 @@ static void build_oam_sprites(uint8_t set) {
         return;
     }
 
-    memset(scanline_sprite_count, 0, sizeof(scanline_sprite_count));
+    /* No OAM SCB1/SCB4 path below changes the sequential VRAM modifier. */
+    *REG_VRAMMOD = 1;
 
     /*
-     * NES OAM is evaluated from entry 0 upward and exposes at most eight
-     * sprites per scanline.  Neo Geo priority increases with sprite number,
-     * so reversing each 64-slot bank keeps lower OAM indices in front.
+     * Evaluate every in-range OAM entry. Neo Geo priority increases with
+     * sprite number, so reversing each 64-slot bank keeps lower source OAM
+     * indices in front without reproducing the source hardware's much lower
+     * eight-sprites-per-scanline limit.
      */
     for (oam_index = 0; oam_index < OAM_SPRITES; ++oam_index) {
         uint16_t offset = (uint16_t)oam_index * 4u;
@@ -772,18 +745,16 @@ static void build_oam_sprites(uint8_t set) {
         uint16_t neogeo_tile;
         uint16_t x_word;
         uint16_t neogeo_attributes;
-        OamSpriteCache *cached;
 
-        if (output_y >= (int16_t)NEO_SCREEN_HEIGHT || output_y + 8 <= 0) {
+        if (
+            neogeo_oam_entry_visible(
+                output_y,
+                source_x,
+                draw_left_edge
+            ) == 0u
+        ) {
             continue;
         }
-        if (draw_left_edge == 0u && source_x == 0u) {
-            continue;
-        }
-        if (sprite_fits_scanline_budget(output_y) == 0u) {
-            continue;
-        }
-
         attributes = oam[offset + 2u];
         priority_offset =
             (attributes & 0x20u) ? BEHIND_SPRITE_OFFSET : FRONT_SPRITE_OFFSET;
@@ -797,7 +768,6 @@ static void build_oam_sprites(uint8_t set) {
         neogeo_attributes = (uint16_t)(
             (NEO_SPRITE_PALETTE_BASE + (attributes & 3u)) << 8
         );
-        cached = &oam_cache[set][relative_sprite];
 
         if ((attributes & 0x40u) != 0u) {
             neogeo_attributes |= NEO_ATTR_HORIZONTAL_FLIP;
@@ -806,20 +776,12 @@ static void build_oam_sprites(uint8_t set) {
             neogeo_attributes |= NEO_ATTR_VERTICAL_FLIP;
         }
 
-        if (cached->tile != neogeo_tile ||
-            cached->attributes != neogeo_attributes) {
-            write_single_tile_sprite_data(
-                sprite,
-                neogeo_tile,
-                neogeo_attributes
-            );
-            cached->tile = neogeo_tile;
-            cached->attributes = neogeo_attributes;
-        }
-        if (cached->x != x_word) {
-            write_sprite_x(sprite, x_word);
-            cached->x = x_word;
-        }
+        write_single_tile_sprite_data(
+            sprite,
+            neogeo_tile,
+            neogeo_attributes
+        );
+        write_sprite_x(sprite, x_word);
 
         next_scb3[relative_sprite] = sprite_y_word(output_y, 1u);
         next_oam[next_oam_count++] = (uint8_t)relative_sprite;
@@ -910,28 +872,41 @@ static void upload_hud_changes(void) {
 
 static void hide_sprite_set(uint8_t set) {
     uint8_t i;
+    uint16_t previous_sprite = 0xffffu;
 
-    *REG_VRAMMOD = 1;
+    /*
+     * Source OAM order maps consecutive same-plane entries onto descending
+     * hardware slots. A -1 modifier turns each such run into one address load.
+     */
+    *REG_VRAMMOD = 0xffffu;
     for (i = 0; i < active_oam_count[set]; ++i) {
-        *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB3 + oam_hardware_sprite(set, active_oam[set][i])
-        );
+        uint16_t sprite =
+            oam_hardware_sprite(set, active_oam[set][i]);
+
+        if (sprite + 1u != previous_sprite) {
+            *REG_VRAMADDR = (uint16_t)(ADDR_SCB3 + sprite);
+        }
         *REG_VRAMRW = 0;
+        previous_sprite = sprite;
     }
 }
 
 static void show_next_sprite_set(uint8_t set) {
     uint8_t i;
+    uint16_t previous_sprite = 0xffffu;
 
-    *REG_VRAMMOD = 1;
+    *REG_VRAMMOD = 0xffffu;
     for (i = 0; i < next_oam_count; ++i) {
         uint8_t relative_sprite = next_oam[i];
+        uint16_t sprite = oam_hardware_sprite(set, relative_sprite);
 
-        *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB3 + oam_hardware_sprite(set, relative_sprite)
-        );
+        if (sprite + 1u != previous_sprite) {
+            *REG_VRAMADDR = (uint16_t)(ADDR_SCB3 + sprite);
+        }
         *REG_VRAMRW = next_scb3[relative_sprite];
+        previous_sprite = sprite;
     }
+    *REG_VRAMMOD = 1;
 
     active_oam_count[set] = next_oam_count;
     memcpy(active_oam[set], next_oam, next_oam_count);
@@ -1001,7 +976,6 @@ void neogeo_video_init(void) {
     background_built_generation = 0xffffffffu;
     background_pending_count = 0;
     background_pending_rows = 0;
-    memset(oam_cache, 0xff, sizeof(oam_cache));
     memset(active_oam_count, 0, sizeof(active_oam_count));
     active_background = 0;
     active_background_driver_count = 0;

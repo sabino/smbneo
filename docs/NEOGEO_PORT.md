@@ -2,7 +2,7 @@
 
 ## Milestone status
 
-The current milestone is a bootable, playable, performance-verified Neo Geo
+The current milestone is a bootable, playable, performance-characterized Neo Geo
 cartridge. It runs the upstream translated C game core on the MC68000, uses
 Neo Geo graphics hardware directly, reads active-low Neo Geo controller
 registers directly, and packages a cartridge from a user-owned SMB dump.
@@ -13,10 +13,11 @@ Completed:
 - MC68000 code generation (`-m68000 -mlra`) with `-O3`, LTO, and measured
   inlining of the translated core's hot instruction helpers.
 - Direct background, OAM sprite, palette, FIX HUD, and input backends.
-- Generation-tracked background/HUD/palette caches, rotating hidden
-  background strips, batched SCB4 movement, and active-entry SCB3 swaps.
-- Hidden sprite-set construction and cycle-budgeted, next-VBlank-only
-  live-state updates.
+- One persistent 33-strip background ring with generation-tracked columns,
+  sparse changed-row uploads, a 64-row bulk-rebuild threshold, and one or two
+  sticky chain drivers.
+- Double-buffered OAM around that persistent background, sparse FIX/palette
+  updates, and next-VBlank live-state swaps.
 - Local, asset-clean CHR-to-C-ROM/S-ROM converter with unit tests.
 - Full P/M/V/S/C ROM packaging and ngdevkit-gngeo boot.
 - Byte-for-byte reproducible cartridge checker using two isolated builds.
@@ -32,8 +33,8 @@ Completed:
   with generated-code and gameplay-state regression tests.
 - Neutralized impossible opposite keyboard directions before they can corrupt
   the original game's single-stick direction state.
-- Sustained one-game-frame-per-VBlank cadence at stock emulated clock after
-  the cold-start cache fill.
+- Exact native-reference and port measurements for ordinary and enemy-heavy
+  scenes, including dedicated crowd regression windows.
 - Integer-only NES APU-to-YM2610 SSG bridge with changed-register coalescing,
   acknowledged MC68000/Z80 transport, and a custom M1 sound driver.
 - Per-channel software pulse sweep with exact target overflow muting,
@@ -51,6 +52,8 @@ Not completed:
 - Cycle/scanline-accurate PPU behavior. This port intentionally follows the
   upstream frame-at-a-time timing model.
 - Exact NES left-edge masking in every fine-scroll case.
+- One game tick per stock-clock VBlank throughout the enemy-heavy regression
+  windows.
 - Save state or memory-card support.
 
 ## Why this renderer fits Neo Geo
@@ -75,17 +78,19 @@ At runtime:
 
 - 33 vertical SCB strips cover the scrolling 256-pixel background, including
   the incoming fine-scroll column.
-- Each hidden set keeps a world-column/generation cache. Fine scrolling only
-  changes SCB4, and crossing an eight-pixel boundary normally rebuilds one
-  entering strip instead of all 33.
+- One persistent circular strip bank keeps the world-column/generation cache.
+  Fine scrolling only changes one or two chain-driver SCB4 words, and crossing
+  an eight-pixel boundary normally rebuilds one entering strip instead of all
+  33.
 - The stationary three-row SMB status bar uses FIX tiles.
 - NES OAM entries use one-tile Neo Geo sprites.
 - OAM priority-behind-background sprites are below the background strips;
   normal sprites are above them.
 - Lower NES OAM indices receive higher Neo Geo sprite numbers so their
   priority remains in front.
-- A small per-scanline counter keeps accepted OAM sprites at the NES limit of
-  eight, leaving ample room under the Neo Geo's 96-strip scanline limit.
+- OAM is evaluated from entry zero upward and every in-range entry is sent to
+  the Neo Geo in the same priority order. The port intentionally does not
+  emulate the source hardware's eight-sprites-per-scanline dropout.
 - Opaque FIX tiles mask the 32-pixel side borders, producing a centered
   256x224 viewport with the usual eight-pixel top/bottom overscan crop.
 
@@ -93,24 +98,31 @@ The Neo Geo global backdrop supplies NES background color zero. Because C-ROM
 pen zero is transparent, a behind-background sprite naturally appears through
 transparent NES background pixels and disappears under opaque ones.
 
-## Double buffering without a framebuffer
+## Object double buffering with a persistent background
 
-Each hardware frame set contains:
+The physical hardware layout is:
 
-| Purpose | Sprite slots |
+| Purpose | Hardware slots |
 | --- | ---: |
-| Behind-background OAM bank | 64 |
-| Scrolling background strips | 33 |
-| Front OAM bank | 64 |
-| Total per set | 161 |
+| Behind-background OAM bank A | 64 |
+| Behind-background OAM bank B | 64 |
+| Persistent scrolling background | 33 |
+| Front OAM bank A | 64 |
+| Front OAM bank B | 64 |
+| Total | 289 of 381 |
 
-Two sets consume 322 of the Neo Geo's 381 displayable sprite slots. SCB1,
-SCB2, and SCB4 for the next set are written while its SCB3 height is zero.
-Only 161 SCB3 words (322 bytes) are staged in work RAM. During VBlank the
-renderer uploads changed palette/FIX entries, hides only the old set's active
-background and OAM entries, and reveals only the new set's active entries.
-SCB2 zoom values are initialized once; all 33 background X positions use one
-sequential SCB4 transfer when they change.
+Only OAM is double-buffered. The 33 background strips remain resident and
+form one circular sticky chain, split into two chains only when the ring wraps
+around its physical slot zero. Its one or two driver SCB3 words briefly hide
+the bank while changed SCB1 rows and SCB4 positions are committed, then reveal
+it again in the same VBlank.
+
+The next OAM bank's SCB1 and SCB4 state is prepared while its SCB3 entries are
+hidden. The renderer stages its live SCB3 words in work RAM, then hides only
+the old bank's active entries and reveals only the new bank's in-range/live
+entries. SCB2 zoom values are initialized once for all 289 slots. Hidden-bank
+SCB1/SCB4 data is written directly instead of compared against a work-RAM OAM
+cache, and descending same-plane SCB3 runs share one address setup.
 
 The renderer waits for a display interrupt observed after hidden-set
 construction finishes. If construction crosses an earlier VBlank, it waits
@@ -118,18 +130,19 @@ for the following one rather than writing live state during active display.
 The wait uses an atomic 16-bit signal while separate 32-bit counters retain
 long-running cadence evidence.
 
-The live-update scheduler also bounds the work performed after that wait.
-Palette-only updates share the sprite-set swap. With a clean palette, a HUD
-update affecting at most five FIX cells also shares it. A palette update
-coinciding with a HUD scan, or a HUD update affecting six or more cells,
-uploads the palette/FIX state in one display period and waits for the next
-VBlank before swapping SCB3. The repeated display frame is preferable to
-crossing into active scanout.
+Palette, sparse FIX changes, sparse background rows, OAM SCB3 state, and
+background driver movement begin only after that fresh interrupt. A large
+screen/configuration change affecting more than 64 background rows uses a
+bounded bulk path: hide the background, upload it while invisible, wait for
+one more VBlank, and then reveal it. The repeated display frame is preferable
+to writing a visible strip during active scanout.
 
-The renderer milestone ELF from before native audio was added (SHA-256
+The following table belongs to the older, pre-audio, double-background
+renderer milestone ELF (SHA-256
 `8a3894ea0cf378d33eee451893fdce76c53e051f71252d6b3926a56fe2fda7d0`)
-was audited instruction by instruction with these worst-case MC68000 cycle
-bounds, including a successful VBlank-poll iteration:
+and is retained as historical evidence only. It was audited instruction by
+instruction with these worst-case MC68000 cycle bounds, including a successful
+VBlank-poll iteration:
 
 | Live-update path | Worst-case cycles |
 | --- | ---: |
@@ -141,9 +154,96 @@ bounds, including a successful VBlank-poll iteration:
 All paths stay below the 25,000-cycle post-handler working ceiling. A raw
 NTSC VBlank is approximately 30,720 68000 cycles, so the ceiling reserves
 more than 5,700 cycles for interrupt/BIOS work, recognition latency, and
-hardware wait-state uncertainty. This is a hardware-oriented bound, not a
-substitute for the still-pending measurement on real AES/MVS-compatible
-hardware.
+hardware wait-state uncertainty. It does not characterize the current
+persistent renderer or its enemy-heavy cadence.
+
+## Native reference cadence and crowd behavior
+
+An exact 67,677-record NTSC reference run was measured with FCEUX 2.2.1 and
+cross-checked against FCEUX 2.6.5. On all 57,812 live gameplay frames
+(`OperMode == 1` and task 3), the NMI count advanced once, the game's
+`FrameCounter` advanced once, and FCEUX reported no lagged frame. The full run
+contained 53 lag markers, all during boot or transitions; 46 were in
+game-mode area-loading task 1. Mean CPU time was 29,780.500007 cycles per
+video frame, approximately 60.0988 Hz.
+
+Therefore native crowd pressure does not throttle gameplay logic in the
+measured run. It causes first-eight-per-scanline sprite dropout and flicker.
+The port instead sends every in-range OAM entry to the substantially larger
+Neo Geo sprite engine: the target is one translated game tick per hardware
+VBlank without intentionally reproducing that flicker. The nominal Neo Geo
+and source NTSC refresh rates are slightly different, so this target
+prioritizes stable hardware pacing over fractional double-tick jitter.
+
+Enemy/object-buffer occupancy and source PPU rejection were:
+
+| Active enemy slots | Live frames | Frames with rejected OAM entries |
+| ---: | ---: | ---: |
+| 0 | 5,683 | 0 |
+| 1 | 6,713 | 1 |
+| 2 | 19,713 | 3 |
+| 3 | 13,179 | 131 |
+| 4 | 7,902 | 487 |
+| 5 | 4,530 | 386 |
+| 6 | 92 | 0 |
+
+Six active object slots do not imply overflow: the source hardware limit is
+eight sprites intersecting one scanline, not six objects anywhere on screen.
+
+The zero-based FM2 crowd regression windows are:
+
+| Source frames | Stage | Reference behavior |
+| --- | --- | --- |
+| `3707..3712` | 1-2 | First early overflow onset |
+| `3739..3751` | 1-2 | Five active slots and continuous rotating dropout |
+| `19780..19809` | 3-2 | 30 consecutive overflow frames |
+| `30384..30488` | 4-3 | 105 consecutive overflow frames |
+| `32587..32620` | 4-4 | 34 consecutive overflow frames |
+
+At frames 3739 through 3742, the rejected whole OAM-entry indices rotate as
+`[56,57]`, `[36,37]`, `[58,59]`, and `[56,57]`. Every one of those frames
+still advances exactly one native game tick.
+
+The committed persistent-background baseline was measured at the stock
+emulated MC68000 clock with host pacing, sound, VSync, and overclock disabled.
+Each interval followed a 240-frame complete renderer/audio warmup, and three
+independent launches reproduced the early values exactly:
+
+| Inclusive source window | Native ticks / frames | Port ticks / VBlanks |
+| --- | ---: | ---: |
+| `3435..3554` | 120 / 120 | 120 / 226 |
+| `11806..11925` | 120 / 120 | 120 / 225 |
+| `3707..3751` | 45 / 45 | 45 / 90 |
+| `3739..3751` | 13 / 13 | 13 / 26 |
+
+Those ratios are the explicit optimization gate for the old software-culling
+baseline. A light-load 120/120 cadence smoke does not override them. The
+renderer screenshot at source frame 3742 was identical across all three
+baseline runs.
+
+The cacheless all-sprite renderer was then measured over the exact
+`3435..3554` World 1-2 pipe window:
+
+| Renderer configuration | Game ticks / VBlanks | Missed VBlanks |
+| --- | ---: | ---: |
+| Persistent-background baseline with software culling | 120 / 226 | 106 |
+| All in-range sprites with the old OAM cache | 120 / 203 | 83 |
+| Cacheless all-sprite renderer with batched SCB3 runs | 120 / 177 | 57 |
+
+The endpoint screenshot was byte-identical in all three runs, and the
+translated game/RAM endpoint matched. With the established 53-hold source
+schedule, the CSV header and all 67,677 non-comment state rows also matched
+byte-for-byte between baseline and all-sprite builds; the complete files
+differ only in scheduling metadata. The new policy deliberately restores
+sprites that the source PPU would reject on overflow frames while leaving the
+translated gameplay state unchanged.
+
+Native hardware behavior is documented by the
+[NES PPU frame timing](https://www.nesdev.org/wiki/PPU_frame_timing),
+[sprite evaluation](https://www.nesdev.org/wiki/PPU_sprite_evaluation), and
+[OAM](https://www.nesdev.org/wiki/PPU_OAM) references; the target display rate
+is documented by the
+[Neo Geo development wiki](https://wiki.neogeodev.org/index.php?title=Framerate).
 
 ## Native audio bridge
 
@@ -324,12 +424,12 @@ or electrical/timing validation on physical AES/MVS-compatible hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 199,902 |
+| MC68000 text + read-only data | 181,086 |
 | Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 16,200 |
-| Static user work RAM total | 16,204 |
+| Zeroed work RAM (`.bss`) | 14,100 |
+| Static user work RAM total | 14,104 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 46,004 |
+| Remaining stack/heap headroom | 48,104 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -586,8 +686,7 @@ live sprite/FIX/palette state, the renderer increments a 16-bit generation;
 the following VBlank callback latches it as presented, and screenshot traps
 wait for equality without advancing the translated core or renderer frame.
 Those two shared words and one 16-bit callback copy also exist in normal
-cartridges. Existing linker padding absorbs the words; the later native-audio
-and cadence state brings the measured final BSS to 16,200 bytes.
+cartridges and are included in the measured 14,100-byte BSS above.
 
 Immediately before invoking `scrot`, the host also applies a bounded display
 settling allowance: 50 milliseconds by default, configurable from 0 through
@@ -753,16 +852,14 @@ ngdevkit-gngeo, initialized the AES BIOS and 68000, and produced stable
 - Mario and other OAM sprites; and
 - live palette/scroll updates across successive frames.
 
-At the stock emulated 68000 cycle budget with host pacing disabled, the
-blanking-budgeted renderer completed 89 game frames during its first 120
-emulated display periods while the cartridge and renderer caches warmed. The
-following 120-display-period sample completed 120 game frames with zero
-misses. A separate active-input run pressed Start, held Right+B, and repeated
-jumps. Its 300-display-period warmup completed 269 game frames, and the
-following 120-display-period gameplay sample completed 120 game frames with
-zero misses. This keeps title-screen idling from standing in for gameplay
-workload, but it is a guest-budget result rather than a host wall-clock-rate
-result. Interactive and audio runs exercise the separate 60 Hz pacing policy.
+The earlier bounded light-load probe completed 89 game frames during its
+first 120 emulated display periods while caches warmed, followed by 120/120.
+An active-input smoke completed 269/300 during warmup and then 120/120. These
+remain useful build and ordinary-scene checks, but they predate the exact
+enemy-heavy windows above and must not be generalized into a full-game
+one-tick-per-VBlank claim. All cadence probes measure guest work per emulated
+VBlank rather than host wall-clock rate; interactive and audio runs exercise
+the separate real-time pacing policy.
 
 Emulator captures and generated ROMs are verification artifacts only and are
 not tracked. The normal-mode audio probe establishes non-silent emulator PCM
@@ -772,11 +869,13 @@ operation on physical hardware.
 
 ## Next engineering steps
 
-1. Test audio and video on actual AES/MVS-compatible hardware, confirm the
+1. Reach one tick per stock-clock VBlank in every enemy-heavy regression
+   window while rendering every in-range OAM entry.
+2. Test audio and video on actual AES/MVS-compatible hardware, confirm the
    ADPCM-B V1 bus mapping, and tune output level plus visible-area offsets.
-2. Evaluate pulse-duty and short-noise approximations without consuming the
+3. Evaluate pulse-duty and short-noise approximations without consuming the
    remaining Z80 stack margin.
-3. Tighten the remaining fine-scroll left-edge masking cases.
-4. Add pixel-level reference captures for the remaining renderer fidelity
+4. Tighten the remaining fine-scroll left-edge masking cases.
+5. Add pixel-level reference captures for the remaining renderer fidelity
    differences.
-5. Add memory-card or save-state support.
+6. Add memory-card or save-state support.
