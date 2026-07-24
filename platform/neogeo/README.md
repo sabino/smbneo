@@ -6,7 +6,7 @@ MC68000 and replaces the desktop PPU/APU modules with:
 - `ppu_direct.c`: 2 KiB nametable, 256-byte OAM, 32-byte palette, and PPU
   register behavior without CHR/framebuffer storage.
 - `video.c`: direct C-ROM/S-ROM, palette RAM, FIX-map, and SCB1-4 writes with
-  two 161-sprite frame sets.
+  two 161-sprite frame sets, generation caches, and next-VBlank live swaps.
 - `apu_null.c`: a zero-allocation placeholder for a future YM2610 driver.
 - `main.c`: Neo Geo input mapping and the 60 Hz game loop.
 
@@ -18,10 +18,16 @@ From the repository root:
 make -C platform/neogeo verify
 make -C platform/neogeo cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo run SMB_ROM="/path/to/owned/smb.zip"
+python3 tools/check_reproducible_cart.py --rom="/path/to/owned/smb.zip"
+python3 tools/measure_neogeo_cadence.py \
+  --warmup-vblanks 120 --sample-vblanks 120 \
+  --assert-zero-missed
 ```
 
 `verify` does not need an SMB ROM. `cart` and `run` accept either a raw iNES
-file or a ZIP with exactly one `.nes` member.
+file or a ZIP with exactly one `.nes` member. The cadence probe uses an
+isolated X display, positively verifies ownership of the emulator's fixed
+debugger listener, and applies a finite sampling deadline.
 
 Generated output is intentionally ignored:
 

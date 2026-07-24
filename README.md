@@ -35,10 +35,12 @@ Static recompilation of Super Mario Bros. using [doppelganger's disassembly](htt
 
 ### Neo Geo (ngdevkit)
 
-The first playable-video milestone cross-compiles, links, packages, and boots
-in ngdevkit-gngeo. Graphics are generated locally from a legally obtained
-Super Mario Bros. (World) dump and remain under the ignored
-`platform/neogeo/build/` directory.
+The optimized playable milestone cross-compiles, links, packages, and boots
+in ngdevkit-gngeo. The direct hardware renderer sustains one game frame per
+display VBlank after its cold-start cache fill at the stock emulated 68000
+clock. Graphics are generated locally from a legally obtained Super Mario
+Bros. (World) dump and remain under the ignored `platform/neogeo/build/`
+directory.
 
 ```bash
 # Pure-C cross-build, unit tests, ELF architecture check, and RAM guard
@@ -47,6 +49,15 @@ make -C platform/neogeo verify
 # Complete cartridge from a raw .nes file or a ZIP containing one .nes file
 make -C platform/neogeo cart \
   SMB_ROM="/path/to/smb.zip"
+
+# Prove two isolated cartridge builds are byte-for-byte identical
+python3 tools/check_reproducible_cart.py \
+  --rom "/path/to/smb.zip"
+
+# Measure stock-clock steady-state cadence without touching a visible run
+python3 tools/measure_neogeo_cadence.py \
+  --warmup-vblanks 120 --sample-vblanks 120 \
+  --assert-zero-missed
 
 # Launch the generated cartridge in ngdevkit-gngeo
 make -C platform/neogeo run \
@@ -61,7 +72,8 @@ cartridge or graphics files.
 Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
 Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
 respectively. Press `1` at the title screen before trying to move. Audio is
-intentionally silent in this milestone; see
+intentionally silent in this milestone, and deterministic verification of all
+32 stages is still in progress; see
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, verification evidence, and remaining work.
 

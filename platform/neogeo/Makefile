@@ -5,9 +5,11 @@ ASSETDIR := $(BUILD)/assets
 
 TARGET := $(BUILD)/smbneogeo.elf
 MAP := $(BUILD)/smbneogeo.map
+PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 GAMEROM := smbneogeo
 
 CC := m68k-neogeo-elf-gcc
+HOST_CC ?= cc
 OBJCOPY := m68k-neogeo-elf-objcopy
 PYTHON := python3
 PKG_CONFIG := pkg-config
@@ -18,22 +20,26 @@ NG_CFLAGS := $(shell $(PKG_CONFIG) --cflags ngdevkit)
 NG_LIBS := $(shell $(PKG_CONFIG) --libs ngdevkit)
 NG_SHARE := $(shell $(PKG_CONFIG) --variable=sharedir ngdevkit)
 
-CPPFLAGS := $(NG_CFLAGS) -I. -I$(ROOT)/codegen/lib
-ARCH_FLAGS := -m68000
-OPT_FLAGS ?= -Os
+CPPFLAGS := \
+	$(NG_CFLAGS) -I. -I$(ROOT)/codegen/lib \
+	-DSMB_NEOGEO_FAST_CORE
+ARCH_FLAGS := -m68000 -mlra
+OPT_FLAGS ?= -O3
+TUNE_FLAGS := \
+	-fira-loop-pressure -frename-registers -fweb -fipa-pta
 LTO_FLAGS ?= -flto -fwhole-program
 WARN_FLAGS := \
 	-Wall -Wextra \
 	-Wno-unused-function -Wno-unused-label -Wno-unused-parameter \
 	-Wno-unused-value -Wno-unused-variable
 CFLAGS := \
-	$(ARCH_FLAGS) $(OPT_FLAGS) $(LTO_FLAGS) \
+	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
 	-std=gnu11 -fgnu89-inline -fomit-frame-pointer \
 	-ffunction-sections -fdata-sections \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-MMD -MP $(WARN_FLAGS)
 LDFLAGS := \
-	$(ARCH_FLAGS) $(LTO_FLAGS) \
+	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
 	-Wl,-Map,$(MAP)
 
 LOCAL_SOURCES := main.c video.c ppu_direct.c apu_null.c
@@ -56,6 +62,7 @@ SMB_ROM ?=
 GNGEO ?= ngdevkit-gngeo
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
+CARTRIDGE_TIMESTAMP ?= 202601010000.00
 
 .DEFAULT_GOAL := elf
 
@@ -80,8 +87,18 @@ $(BUILD)/%.o: $(ROOT)/codegen/lib/%.c | $(BUILD)
 $(TARGET): $(OBJECTS)
 	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(NG_LIBS)
 
-test:
-	$(PYTHON) $(ROOT)/tools/test_gen_neogeo_assets.py
+$(PPU_STATE_TEST): \
+		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
+		ppu_direct.c ppu_render_state.h video.h | $(BUILD)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
+		ppu_direct.c -o $@
+
+test: $(PPU_STATE_TEST)
+	$(PYTHON) -m unittest discover \
+		-s $(ROOT)/tools -p 'test_*.py'
+	$(PPU_STATE_TEST)
 
 verify: test $(TARGET)
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(TARGET)
@@ -114,7 +131,10 @@ cart: $(TARGET) | $(ROMDIR) $(ASSETDIR)
 		$(NG_SHARE)/nullsound_driver.ihx $(MROM1) \
 		--pad-to 131072
 	truncate -s 524288 $(VROM1)
-	$(ROMTOOL) -b cartridge -f zip \
+	chmod 0644 $(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
+	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
+		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
+	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
 		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo proof of concept" \

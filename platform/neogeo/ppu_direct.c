@@ -3,6 +3,7 @@
 #include "cpu.h"
 #include "external.h"
 #include "video.h"
+#include "ppu_render_state.h"
 
 uint8_t nametable[NAMETABLE_SIZE];
 Palette palette;
@@ -24,6 +25,10 @@ uint8_t vram_internal_buffer;
 uint8_t oam_dma;
 
 static uint8_t status_phase;
+
+uint32_t neogeo_ppu_column_generation[64];
+uint32_t neogeo_ppu_hud_generation;
+uint32_t neogeo_ppu_palette_generation;
 
 static uint16_t normalize_ppu_address(uint16_t addr) {
     return (uint16_t)(addr & 0x3fffu);
@@ -50,6 +55,35 @@ static uint8_t palette_index(uint16_t addr) {
     return index;
 }
 
+static void mark_nametable_changed(uint16_t index) {
+    uint16_t table_offset = (uint16_t)(index & 0x03ffu);
+    uint8_t table_column_base = (index & 0x0400u) ? 32u : 0u;
+
+    if (table_offset < 960u) {
+        uint8_t column =
+            (uint8_t)(table_column_base + (table_offset & 31u));
+        uint8_t row = (uint8_t)(table_offset >> 5);
+
+        ++neogeo_ppu_column_generation[column];
+        if (table_column_base == 0u && row >= 1u && row <= 3u) {
+            ++neogeo_ppu_hud_generation;
+        }
+    } else {
+        uint8_t attribute =
+            (uint8_t)(table_offset - 960u);
+        uint8_t first_column =
+            (uint8_t)(table_column_base + (attribute & 7u) * 4u);
+        uint8_t i;
+
+        for (i = 0; i < 4u; ++i) {
+            ++neogeo_ppu_column_generation[first_column + i];
+        }
+        if (table_column_base == 0u && (attribute >> 3) == 0u) {
+            ++neogeo_ppu_hud_generation;
+        }
+    }
+}
+
 void ppu_init(uint8_t *chr) {
     (void)chr;
 
@@ -70,6 +104,13 @@ void ppu_init(uint8_t *chr) {
     vram_internal_buffer = 0;
     oam_dma = 0;
     status_phase = 0;
+    memset(
+        neogeo_ppu_column_generation,
+        0,
+        sizeof(neogeo_ppu_column_generation)
+    );
+    neogeo_ppu_hud_generation = 0;
+    neogeo_ppu_palette_generation = 0;
 }
 
 uint8_t ppu_read_register(uint16_t addr) {
@@ -159,9 +200,20 @@ void ppu_write(uint16_t addr, uint8_t value) {
     addr = normalize_ppu_address(addr);
 
     if (addr >= 0x2000u && addr < 0x3f00u) {
-        nametable[nametable_index(addr)] = value;
+        uint16_t index = nametable_index(addr);
+
+        if (nametable[index] != value) {
+            nametable[index] = value;
+            mark_nametable_changed(index);
+        }
     } else if (addr >= 0x3f00u) {
-        palette.u8[palette_index(addr)] = (uint8_t)(value & 0x3fu);
+        uint8_t index = palette_index(addr);
+        uint8_t color = (uint8_t)(value & 0x3fu);
+
+        if (palette.u8[index] != color) {
+            palette.u8[index] = color;
+            ++neogeo_ppu_palette_generation;
+        }
     }
 }
 
