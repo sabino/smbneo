@@ -392,13 +392,13 @@ cart: \
 	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
-		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo proof of concept" \
+		-n $(GAMEROM) -l "SMBNeo" \
 		-y 2026 --publisher "Community port" \
 		-o $(CART)
 	$(ROMTOOL) -b hash -f gngeo \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
-		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo proof of concept" \
+		-n $(GAMEROM) -l "SMBNeo" \
 		-x gngeo.data=$(GNGEO_SUPPORT_DATA) \
 		-o $(GNGEO_DATA)
 	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
@@ -450,13 +450,13 @@ replay-cart: \
 	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
 		-p $(REPLAY_PROM) -c $(REPLAY_CROM1) $(REPLAY_CROM2) \
 		-v $(REPLAY_VROM1) -s $(REPLAY_SROM1) -m $(REPLAY_MROM1) \
-		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo TAS replay gate" \
+		-n $(GAMEROM) -l "SMBNeo TAS replay gate" \
 		-y 2026 --publisher "Community port" \
 		-o $(REPLAY_CART)
 	$(ROMTOOL) -b hash -f gngeo \
 		-p $(REPLAY_PROM) -c $(REPLAY_CROM1) $(REPLAY_CROM2) \
 		-v $(REPLAY_VROM1) -s $(REPLAY_SROM1) -m $(REPLAY_MROM1) \
-		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo TAS replay gate" \
+		-n $(GAMEROM) -l "SMBNeo TAS replay gate" \
 		-x gngeo.data=$(GNGEO_SUPPORT_DATA) \
 		-o $(REPLAY_GNGEO_DATA)
 	cp $(NG_SHARE)/aes.zip $(REPLAY_ROMDIR)/

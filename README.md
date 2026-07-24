@@ -1,7 +1,8 @@
-# Super Mario Bros. — Neo Geo port
+# SMBNeo
 
-> **Playable work in progress.** This branch adds a pure-C MC68000 target with
-> a direct Neo Geo tile/sprite renderer and a native Z80/YM2610 audio bridge.
+> **Super Mario Bros. for Neo Geo.** This playable work in progress adds a
+> pure-C MC68000 target with a direct Neo Geo tile/sprite renderer and a
+> native Z80/YM2610 audio bridge.
 > It does not allocate a software framebuffer, copy CHR graphics into work RAM,
 > or run the desktop software mixer.
 

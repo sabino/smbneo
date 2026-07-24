@@ -5,9 +5,9 @@
     "moonbitlang/x": "0.4.38"
   },
   "readme": "README.md",
-  "repository": "",
+  "repository": "https://github.com/sabino/smbneo",
   "license": "Apache-2.0",
-  "keywords": [],
-  "description": "",
+  "keywords": ["neo-geo", "m68k", "static-recompilation", "retro-gaming"],
+  "description": "A playable pure-C port of Super Mario Bros. for Neo Geo hardware.",
   "source": "src"
 }

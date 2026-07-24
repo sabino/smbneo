@@ -1,4 +1,4 @@
-# Neo Geo target
+# SMBNeo target
 
 This target statically compiles the translated SMB C core for the Neo Geo
 MC68000 and replaces the desktop PPU/APU modules with:
