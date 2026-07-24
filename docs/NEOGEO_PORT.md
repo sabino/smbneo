@@ -64,9 +64,20 @@ the 12 MHz 68000 on work already handled by the sprite hardware.
 
 The port converts each NES 8x8 2bpp CHR tile in two ways at build time:
 
-1. C-ROM: pixels are expanded 2x to a 16x16 4bpp Neo Geo tile. SCB2 shrink
-   value `$077f` displays it at 8x8.
+1. C-ROM: pixels are expanded 2x to a 16x16 4bpp Neo Geo tile. Single-tile
+   OAM uses SCB2 `$077e`; background chains use `$077f`. Both select the same
+   eight in-tile rows, while `$077e` avoids a ninth-row GnGeo DDA artifact on
+   one-tile objects.
 2. S-ROM: the original 8x8 pixels are encoded directly for the FIX layer.
+
+The 2x expansion followed by the in-tile SCB2 shrink map is a lossless
+sampling pair: the hardware selects one pixel from each duplicated 2x2 block.
+A ROM-free
+regression locks that transform and the zoom word. Color indices are also
+preserved. `tools/gen_neogeo_palette.py` converts the named FCEUX 2.2.1
+reference profile into the nearest representable Neo Geo color words, with at
+most four 8-bit levels of per-channel error. See
+[visual fidelity](VISUAL_FIDELITY.md) for the exact geometry and color gates.
 
 The game also reads 314 bytes at CHR `$1ec0-$1ff9` to construct its title
 nametable. Cartridge builds generate a small read-only C array for that
@@ -229,14 +240,22 @@ The cacheless all-sprite renderer was then measured over the exact
 | Persistent-background baseline with software culling | 120 / 226 | 106 |
 | All in-range sprites with the old OAM cache | 120 / 203 | 83 |
 | Cacheless all-sprite renderer with batched SCB3 runs | 120 / 177 | 57 |
+| Current integrated renderer and flattened collision scan | 120 / 174 | 54 |
 
-The endpoint screenshot was byte-identical in all three runs, and the
-translated game/RAM endpoint matched. With the established 53-hold source
+The endpoint screenshot was byte-identical in all four runs, and the
+translated game/RAM endpoint matched. The integrated result removes 52 of the
+baseline's 106 missed display periods in this window. With the established
+53-hold source
 schedule, the CSV header and all 67,677 non-comment state rows also matched
 byte-for-byte between baseline and all-sprite builds; the complete files
 differ only in scheduling metadata. The new policy deliberately restores
 sprites that the source PPU would reject on overflow frames while leaving the
 translated gameplay state unchanged.
+
+A field-major SCB1/SCB4 prototype reduced the modeled OAM register-store count
+from 25,895 to 20,762 over this window but regressed real stock-clock cadence
+to 120 / 197. It was rejected and is not present in the renderer. No assembly
+replacement has been accepted without a measured stock-clock win.
 
 Native hardware behavior is documented by the
 [NES PPU frame timing](https://www.nesdev.org/wiki/PPU_frame_timing),
@@ -876,6 +895,6 @@ operation on physical hardware.
 3. Evaluate pulse-duty and short-noise approximations without consuming the
    remaining Z80 stack margin.
 4. Tighten the remaining fine-scroll left-edge masking cases.
-5. Add pixel-level reference captures for the remaining renderer fidelity
-   differences.
+5. Extend the ROM-free pixel-transform and palette checks to more composite
+   sprite poses without tracking game-derived captures.
 6. Add memory-card or save-state support.

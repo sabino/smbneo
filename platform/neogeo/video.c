@@ -26,7 +26,15 @@
 #define CROM_BLANK_TILE 256u
 #define CROM_NES_TILE_BASE 257u
 
-#define NEO_ZOOM_8X8 0x077fu
+/*
+ * GnGeo's full-frame DDA emits nine rows for vertical zoom 0x7f on a
+ * one-tile object, duplicating the first source row. The 0x7e and 0x7f L0
+ * tables select the same eight in-tile rows on hardware; 0x7e also keeps the
+ * emulator at exactly eight output rows. Multi-tile background strips retain
+ * 0x7f because their vertical chain uses the following table entries.
+ */
+#define NEO_ZOOM_OAM_8X8 0x077eu
+#define NEO_ZOOM_BACKGROUND_8X8 0x077fu
 #define NEO_BG_PALETTE_BASE 16u
 #define NEO_SPRITE_PALETTE_BASE 20u
 
@@ -84,19 +92,12 @@ typedef struct {
 } BackgroundStripUpdate;
 
 /*
- * The baseline port's 64-color RGB table converted once to the Neo Geo's
- * packed 15-bit palette format.  Keeping this in ROM costs 128 bytes and
- * avoids an RGB framebuffer or per-frame color conversion.
+ * The pinned visual-reference palette, converted offline to the Neo Geo's
+ * 5-bit-per-channel plus shared-low-bit color format. Keeping this in ROM
+ * costs 128 bytes and avoids an RGB framebuffer or per-frame conversion.
  */
 static const uint16_t nes_palette_to_neogeo[64] = {
-    0x8888u, 0x203au, 0x801bu, 0x0409u, 0x1a05u, 0x1c02u, 0x4b00u, 0x4810u,
-    0x6520u, 0x0140u, 0x2040u, 0x1042u, 0x0046u, 0x8000u, 0x0000u, 0x0000u,
-    0x0cccu, 0x107fu, 0x125fu, 0x183fu, 0x6e2bu, 0x6f25u, 0x4f20u, 0x0d30u,
-    0x0c60u, 0x0380u, 0x2080u, 0x2085u, 0x309cu, 0x8222u, 0xf000u, 0xf000u,
-    0x7fffu, 0x50dfu, 0x56afu, 0x1d8fu, 0x4f4fu, 0x5f68u, 0x6f83u, 0x6f91u,
-    0x6fb2u, 0x59e0u, 0x42f3u, 0x40fau, 0x30ffu, 0x7555u, 0x7000u, 0x7000u,
-    0x7fffu, 0x3affu, 0x3befu, 0xfdaeu, 0x7fafu, 0x6fabu, 0x4fdbu, 0x6feau,
-    0x5ff9u, 0x2de9u, 0x3aeau, 0x9afdu, 0x79ffu, 0x7dddu, 0x8111u, 0x8111u,
+#include "nes_palette_neogeo.inc"
 };
 
 /*
@@ -286,8 +287,26 @@ static void clear_hardware_sprites(void) {
     }
 
     *REG_VRAMADDR = (uint16_t)(ADDR_SCB2 + FIRST_GAME_SPRITE);
-    for (sprite = FIRST_GAME_SPRITE; sprite <= LAST_GAME_SPRITE; ++sprite) {
-        *REG_VRAMRW = NEO_ZOOM_8X8;
+    for (
+        sprite = BEHIND_SPRITE_BASE;
+        sprite < BACKGROUND_SPRITE_BASE;
+        ++sprite
+    ) {
+        *REG_VRAMRW = NEO_ZOOM_OAM_8X8;
+    }
+    for (
+        sprite = BACKGROUND_SPRITE_BASE;
+        sprite < FRONT_SPRITE_BASE;
+        ++sprite
+    ) {
+        *REG_VRAMRW = NEO_ZOOM_BACKGROUND_8X8;
+    }
+    for (
+        sprite = FRONT_SPRITE_BASE;
+        sprite <= LAST_GAME_SPRITE;
+        ++sprite
+    ) {
+        *REG_VRAMRW = NEO_ZOOM_OAM_8X8;
     }
 }
 

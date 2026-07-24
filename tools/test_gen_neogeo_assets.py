@@ -13,6 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_neogeo_assets as assets  # noqa: E402
 
 
+ROOT = Path(__file__).resolve().parents[1]
+NEOGEO_VIDEO = ROOT / "platform" / "neogeo" / "video.c"
+
+
 def encode_nes_tile(pixels: bytes) -> bytes:
     output = bytearray(16)
     for y in range(8):
@@ -75,6 +79,28 @@ class AssetConversionTests(unittest.TestCase):
         self.assertEqual(len(crom1), 64)
         self.assertEqual(len(crom2), 64)
         self.assertEqual(decode_crom_tile(crom1, crom2), expanded)
+
+    def test_hardware_shrink_recovers_every_source_pixel(self) -> None:
+        video_source = NEOGEO_VIDEO.read_text(encoding="utf-8")
+        self.assertRegex(
+            video_source,
+            r"(?m)^#define NEO_ZOOM_OAM_8X8 0x077eu$",
+        )
+        self.assertRegex(
+            video_source,
+            r"(?m)^#define NEO_ZOOM_BACKGROUND_8X8 0x077fu$",
+        )
+
+        expanded = assets.expand_2x(self.tile)
+        # The in-tile portion of both documented vertical shrink maps selects
+        # the even source rows; horizontal zoom 7 selects even columns.
+        # expand_2x duplicates each pixel into that exact 2x2 footprint.
+        hardware_output = bytes(
+            expanded[y * 16 + x]
+            for y in range(0, 16, 2)
+            for x in range(0, 16, 2)
+        )
+        self.assertEqual(hardware_output, self.tile)
 
     def test_srom_round_trip(self) -> None:
         encoded = assets.encode_srom_tile(self.tile)
