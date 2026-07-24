@@ -23,7 +23,7 @@ NM_OUTPUT = """\
 00003bd6 00000004 T neogeo_replay_progress_trap
 00003bda 00000004 T neogeo_replay_stage_trap
 00003bde 00000004 T neogeo_replay_transition_trap
-00100130 00000070 B neogeo_replay_status
+00100130 00000078 B neogeo_replay_status
 """
 
 
@@ -44,7 +44,7 @@ def sample_symbols() -> runner.ReplaySymbols:
         status=runner.ElfSymbol(
             "neogeo_replay_status",
             0x100130,
-            112,
+            120,
             "B",
         ),
         progress_point=runner.ElfSymbol(
@@ -103,6 +103,8 @@ def sample_words(
         67104,
         67120,
         2,
+        67104 & 0xFFFF,
+        67104 & 0xFFFF,
     ]
 
 
@@ -132,6 +134,8 @@ def stage_words(stage: int, *, frame: int) -> list[int]:
     words[23] = frame + 1 - words[20] - words[22]
     words[25] = words[23]
     words[26] = words[25] + 2
+    words[28] = words[25] & 0xFFFF
+    words[29] = words[28]
     return words
 
 
@@ -253,9 +257,9 @@ class SymbolResolutionTests(unittest.TestCase):
         self.assertEqual(symbols.status.size, runner.STATUS_BYTES)
 
     def test_nm_parser_rejects_wrong_mailbox_size_and_alignment(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 112"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 120"):
             runner.replay_symbols_from_nm(
-                NM_OUTPUT.replace("00000070 B", "0000006c B")
+                NM_OUTPUT.replace("00000078 B", "00000074 B")
             )
         with self.assertRaisesRegex(runner.ReplayGateError, "aligned"):
             runner.replay_symbols_from_nm(
@@ -349,6 +353,7 @@ class GdbScriptTests(unittest.TestCase):
             scrot="/usr/bin/scrot",
             directory=Path("/work/evidence frames"),
             timeout_seconds=7.5,
+            display_settle_seconds=0.125,
             maximum_bytes=123456,
         )
 
@@ -364,6 +369,7 @@ class GdbScriptTests(unittest.TestCase):
         self.assertIn("'/work/evidence frames/stages'", script)
         self.assertIn("'/work/evidence frames/transitions'", script)
         self.assertIn("--timeout 7.5", script)
+        self.assertEqual(script.count("--display-settle-seconds 0.125"), 4)
         self.assertIn("--max-bytes 123456", script)
 
         with self.assertRaisesRegex(runner.ReplayGateError, "newlines"):
@@ -412,9 +418,11 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(status.game_frame_count, 67104)
         self.assertEqual(status.vblank_count, 67120)
         self.assertEqual(status.stage_settle_frames, 2)
+        self.assertEqual(status.render_generation, 67104 & 0xFFFF)
+        self.assertEqual(status.presented_generation, 67104 & 0xFFFF)
 
     def test_mailbox_parser_rejects_size_magic_version_and_range(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "27 words"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "29 words"):
             runner.parse_mailbox_words(sample_words()[:-1])
 
         bad_magic = sample_words()
@@ -459,6 +467,9 @@ class MailboxTests(unittest.TestCase):
             (25, 0, "rendered-frame accounting"),
             (26, 10, "VBlank count"),
             (27, 256, "stage-settle"),
+            (28, 0x10000, "uint16"),
+            (28, (67104 - 1) & 0xFFFF, "render generation"),
+            (29, (67104 - 2) & 0xFFFF, "more than one render"),
         ]
         for index, value, message in invalid_cases:
             with self.subTest(index=index):
@@ -473,6 +484,8 @@ class MailboxTests(unittest.TestCase):
         fast = sample_words()
         fast[24] = 0
         fast[25] = 0
+        fast[28] = 0
+        fast[29] = 0
         parsed = runner.parse_mailbox_words(fast)
         self.assertEqual(parsed.rendering_enabled, 0)
 
@@ -516,6 +529,8 @@ class MailboxTests(unittest.TestCase):
         tail_pass[23] = 67104 + 3
         tail_pass[25] = tail_pass[23]
         tail_pass[26] = tail_pass[25] + 2
+        tail_pass[28] = tail_pass[25] & 0xFFFF
+        tail_pass[29] = tail_pass[28]
         parsed = runner.parse_mailbox_words(tail_pass)
         self.assertEqual(parsed.tail_frame, 2)
 
@@ -524,6 +539,8 @@ class MailboxTests(unittest.TestCase):
         incomplete[23] = 67104 + 2
         incomplete[25] = incomplete[23]
         incomplete[26] = incomplete[25] + 2
+        incomplete[28] = incomplete[25] & 0xFFFF
+        incomplete[29] = incomplete[28]
         parsed = runner.parse_mailbox_words(incomplete)
         self.assertEqual(parsed.result, runner.INCOMPLETE_RESULT)
 
@@ -571,6 +588,8 @@ class MailboxTests(unittest.TestCase):
             words[23] = frame + 1 - words[20] - words[22]
             words[25] = words[23]
             words[26] = words[25] + 2
+            words[28] = words[25] & 0xFFFF
+            words[29] = (words[28] - 1) & 0xFFFF
             lines.extend(
                 "REPLAY_PROGRESS_WORD "
                 f"sample={sample} index={index} value=0x{value:08x}"
@@ -696,7 +715,88 @@ class RenderedEvidenceTests(unittest.TestCase):
             result["stages"][5]["game_frame_count"],
             result["stages"][5]["core_frames_advanced"],
         )
+        self.assertEqual(
+            result["stages"][5]["render_generation"],
+            result["stages"][5]["presented_generation"],
+        )
         self.assertEqual(result["terminal"]["image"]["width"], 1024)
+
+    def test_rendered_evidence_requires_presented_generation_binding(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            stages = stage_captures()
+            stages[0] = replace(
+                stages[0],
+                status=replace(
+                    stages[0].status,
+                    presented_generation=(
+                        stages[0].status.presented_generation - 1
+                    ) & 0xFFFF,
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "not bound",
+            ):
+                runner._rendered_evidence_result(
+                    stages,
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+    def test_stage_pair_generation_delta_is_wrap_safe(self) -> None:
+        transition = transition_captures(1)[0]
+        settled = stage_captures(1)[0]
+        transition = replace(
+            transition,
+            status=replace(
+                transition.status,
+                frame=70000,
+                core_frames_advanced=0xFFFF,
+                game_frame_count=0xFFFF,
+                vblank_count=90000,
+                render_generation=0xFFFF,
+                presented_generation=0xFFFF,
+            ),
+        )
+        settled = replace(
+            settled,
+            status=replace(
+                settled.status,
+                frame=70002,
+                core_frames_advanced=0x10001,
+                game_frame_count=0x10001,
+                vblank_count=90002,
+                render_generation=1,
+                presented_generation=1,
+            ),
+        )
+
+        runner._validate_rendered_stage_pair(settled, transition, 0)
+
+        with self.assertRaisesRegex(
+            runner.ReplayGateError,
+            "settling counters",
+        ):
+            runner._validate_rendered_stage_pair(
+                replace(
+                    settled,
+                    status=replace(
+                        settled.status,
+                        render_generation=0,
+                        presented_generation=0,
+                    ),
+                ),
+                transition,
+                0,
+            )
 
     def test_complete_result_manifest_fits_its_hard_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1051,6 +1151,10 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
         self.assertEqual(args.timeout, 90)
         self.assertEqual(args.m68k_overclock, 500)
         self.assertFalse(args.rendered_evidence)
+        self.assertEqual(
+            args.display_settle_seconds,
+            runner.DEFAULT_DISPLAY_SETTLE_SECONDS,
+        )
 
     def test_rendered_mode_selects_rendered_paths_and_records_clock(
         self,
@@ -1069,6 +1173,19 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
             runner.DEFAULT_RENDERED_TIMEOUT_SECONDS,
         )
         self.assertEqual(args.m68k_overclock, 0)
+        self.assertEqual(
+            args.display_settle_seconds,
+            runner.DEFAULT_DISPLAY_SETTLE_SECONDS,
+        )
+        argument_record = runner._argument_record(
+            args,
+            runner.DEFAULT_RENDERED_TIMEOUT_SECONDS,
+            Path("/work/evidence"),
+        )
+        self.assertEqual(
+            argument_record["display_settle_seconds"],
+            runner.DEFAULT_DISPLAY_SETTLE_SECONDS,
+        )
 
         args.timeout = 42
         args.m68k_overclock = 1000
@@ -1098,6 +1215,35 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
             runner._validate_runtime_arguments(
                 replace_namespace(args, screenshot_timeout=61)
             )
+        for value in (
+            -0.001,
+            runner.MAX_DISPLAY_SETTLE_SECONDS + 0.001,
+            math.inf,
+            -math.inf,
+            math.nan,
+        ):
+            with self.subTest(display_settle_seconds=value):
+                with self.assertRaisesRegex(
+                    runner.ReplayGateError,
+                    "display-settle",
+                ):
+                    runner._validate_runtime_arguments(
+                        replace_namespace(
+                            args,
+                            display_settle_seconds=value,
+                        )
+                    )
+        for value in (0.0, runner.MAX_DISPLAY_SETTLE_SECONDS):
+            with self.subTest(display_settle_seconds=value):
+                validated = replace_namespace(
+                    args,
+                    display_settle_seconds=value,
+                )
+                self.assertTrue(
+                    math.isfinite(
+                        runner._validate_runtime_arguments(validated)
+                    )
+                )
 
 
 def replace_namespace(

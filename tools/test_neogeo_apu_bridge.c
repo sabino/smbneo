@@ -49,10 +49,157 @@ static void reset_capture(WriteCapture *capture) {
     capture->fail_at = (size_t)-1;
 }
 
+static void write_pulse_timer(
+    NeogeoApuBridge *bridge,
+    uint8_t channel,
+    uint16_t timer
+) {
+    uint16_t base = channel == 0u ? 0x4000u : 0x4004u;
+
+    neogeo_apu_bridge_write(
+        bridge,
+        (uint16_t)(base + 2u),
+        (uint8_t)timer
+    );
+    neogeo_apu_bridge_write(
+        bridge,
+        (uint16_t)(base + 3u),
+        (uint8_t)(timer >> 8)
+    );
+}
+
+static void test_pulse_sweep_targets_and_cadence(void) {
+    NeogeoApuBridge bridge;
+
+    /* Period-zero positive sweep clocks twice per 60 Hz bridge step. */
+    neogeo_apu_bridge_init(&bridge);
+    write_pulse_timer(&bridge, 0, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0x81u);
+    assert(bridge.pulse_sweep_mute[0] == 0u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 225u);
+
+    /* A zero shift continuously checks mute but never updates the timer. */
+    neogeo_apu_bridge_init(&bridge);
+    write_pulse_timer(&bridge, 0, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0x80u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 100u);
+    assert(bridge.pulse_sweep_reload[0] == 0u);
+
+    /*
+     * Negative pulse 1 uses one's-complement subtraction, while pulse 2
+     * uses two's-complement subtraction. Two clocks retain the one-unit gap.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    write_pulse_timer(&bridge, 0, 100u);
+    write_pulse_timer(&bridge, 1, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0x89u);
+    neogeo_apu_bridge_write(&bridge, 0x4005u, 0x89u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 24u);
+    assert(bridge.pulse_timer[1] == 25u);
+
+    /*
+     * Divider period two updates on the first zero, then every third
+     * half-frame clock. A write reloads after, rather than before, the
+     * current divider's update decision.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    write_pulse_timer(&bridge, 0, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0xa1u);
+    assert(bridge.pulse_sweep_reload[0] == 1u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 150u);
+    assert(bridge.pulse_sweep_divider[0] == 1u);
+    assert(bridge.pulse_sweep_reload[0] == 0u);
+
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0xa1u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 150u);
+    assert(bridge.pulse_sweep_divider[0] == 1u);
+    assert(bridge.pulse_sweep_reload[0] == 0u);
+
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 225u);
+    assert(bridge.pulse_sweep_divider[0] == 2u);
+}
+
+static void test_pulse_sweep_mute_and_coalescing(void) {
+    NeogeoApuBridge bridge;
+    WriteCapture capture;
+
+    /*
+     * A valid positive target can become an overflow after one update.
+     * The continuous mute calculation must stop the second half-frame clock.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    write_pulse_timer(&bridge, 0, 0x0550u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0x81u);
+    assert(bridge.pulse_sweep_mute[0] == 0u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 0x07f8u);
+    assert(bridge.pulse_sweep_mute[0] == 1u);
+
+    /* Positive overflow and timer periods below eight mute immediately. */
+    neogeo_apu_bridge_init(&bridge);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x01u);
+    neogeo_apu_bridge_write(&bridge, 0x4000u, 0x1fu);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0x87u);
+    write_pulse_timer(&bridge, 0, 0x07ffu);
+    assert(bridge.pulse_sweep_mute[0] == 1u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 7) == 0x3fu);
+    assert(captured_value(&capture, 8) == 0u);
+
+    write_pulse_timer(&bridge, 0, 0x0700u);
+    assert(bridge.pulse_sweep_mute[0] == 0u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 7) == 0x3eu);
+    assert(captured_value(&capture, 8) == 0x0fu);
+    assert(bridge.pulse_sweep_mute[0] == 0u);
+
+    write_pulse_timer(&bridge, 0, 7u);
+    assert(bridge.pulse_sweep_mute[0] == 1u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 7) == 0x3fu);
+    write_pulse_timer(&bridge, 0, 8u);
+    assert(bridge.pulse_sweep_mute[0] == 0u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 7) == 0x3eu);
+
+    /*
+     * Sweep changes still use the existing changed-register coalescer. This
+     * timer range changes only SSG A's fine period byte between emissions.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x01u);
+    neogeo_apu_bridge_write(&bridge, 0x4000u, 0x1fu);
+    write_pulse_timer(&bridge, 0, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0xa1u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(capture.count == NEOGEO_APU_YM_REGISTER_COUNT);
+    assert(bridge.pulse_timer[0] == 150u);
+
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(capture.count == 1u);
+    assert(capture.regs[0] == 0u);
+    assert(bridge.pulse_timer[0] == 225u);
+}
+
 int main(void) {
     NeogeoApuBridge bridge;
     WriteCapture capture;
     uint16_t expected_period;
+
+    test_pulse_sweep_targets_and_cadence();
+    test_pulse_sweep_mute_and_coalescing();
 
     reset_capture(&capture);
     neogeo_apu_bridge_init(&bridge);

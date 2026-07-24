@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import struct
 import subprocess
@@ -64,6 +65,35 @@ class PngInspectionTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_display_settle_default_and_bounds(self) -> None:
+        args = capture.build_argument_parser().parse_args(
+            ["--output", "/work/frame.png", "--scrot", "scrot"]
+        )
+        self.assertEqual(
+            args.display_settle_seconds,
+            capture.DEFAULT_DISPLAY_SETTLE_SECONDS,
+        )
+
+        for value in (0.0, capture.MAX_DISPLAY_SETTLE_SECONDS):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    capture.validate_display_settle_seconds(value),
+                    value,
+                )
+        for value in (
+            -0.001,
+            capture.MAX_DISPLAY_SETTLE_SECONDS + 0.001,
+            math.inf,
+            -math.inf,
+            math.nan,
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    capture.CaptureError,
+                    "display-settle",
+                ):
+                    capture.validate_display_settle_seconds(value)
+
     def test_sequence_is_strict_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -79,27 +109,45 @@ class CaptureTests(unittest.TestCase):
             with self.assertRaisesRegex(capture.CaptureError, "integer"):
                 capture.next_sequence_path(directory)
 
-    @mock.patch.object(capture.subprocess, "run")
     def test_capture_validates_then_atomically_finalizes(
         self,
-        run: mock.Mock,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "stage-0001.png"
+            events: list[str] = []
 
             def fake_run(command: list[str], **_kwargs: object) -> object:
+                events.append("scrot")
                 Path(command[-1]).write_bytes(png_bytes())
                 return subprocess.CompletedProcess(command, 0, "")
 
-            run.side_effect = fake_run
-            dimensions = capture.capture_frame(
-                "scrot",
-                output,
-                3.0,
-                1_000_000,
-            )
+            with (
+                mock.patch.object(
+                    capture.time,
+                    "sleep",
+                    side_effect=lambda seconds: events.append(
+                        f"sleep:{seconds:g}"
+                    ),
+                ) as sleep,
+                mock.patch.object(
+                    capture.subprocess,
+                    "run",
+                    side_effect=fake_run,
+                ),
+            ):
+                dimensions = capture.capture_frame(
+                    "scrot",
+                    output,
+                    3.0,
+                    1_000_000,
+                    capture.DEFAULT_DISPLAY_SETTLE_SECONDS,
+                )
 
             self.assertEqual(dimensions[:2], (320, 224))
+            self.assertEqual(events, ["sleep:0.05", "scrot"])
+            sleep.assert_called_once_with(
+                capture.DEFAULT_DISPLAY_SETTLE_SECONDS
+            )
             self.assertTrue(output.is_file())
             self.assertFalse(
                 output.with_name("stage-0001.partial.png").exists()
@@ -114,16 +162,16 @@ class CaptureTests(unittest.TestCase):
             output = Path(temporary) / "frame.png"
             run.return_value = subprocess.CompletedProcess([], 2, "bad")
             with self.assertRaisesRegex(capture.CaptureError, "status 2"):
-                capture.capture_frame("scrot", output, 1, 1000)
+                capture.capture_frame("scrot", output, 1, 1000, 0)
 
             run.side_effect = subprocess.TimeoutExpired([], 1)
             with self.assertRaisesRegex(capture.CaptureError, "timed out"):
-                capture.capture_frame("scrot", output, 1, 1000)
+                capture.capture_frame("scrot", output, 1, 1000, 0)
 
             run.side_effect = None
             output.write_bytes(png_bytes())
             with self.assertRaisesRegex(capture.CaptureError, "overwrite"):
-                capture.capture_frame("scrot", output, 1, 1000)
+                capture.capture_frame("scrot", output, 1, 1000, 0)
 
 
 if __name__ == "__main__":

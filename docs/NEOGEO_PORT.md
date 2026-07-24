@@ -36,8 +36,10 @@ Completed:
   the cold-start cache fill.
 - Integer-only NES APU-to-YM2610 SSG bridge with changed-register coalescing,
   acknowledged MC68000/Z80 transport, and a custom M1 sound driver.
-- Host regressions for pitch, envelope, mixer, noise, write ordering, and
-  transport retry plus an enforced Z80 ROM/RAM/stack linker-map budget.
+- Per-channel software pulse sweep with exact target overflow muting,
+  divider/reload ordering, and pulse-1/pulse-2 negate asymmetry.
+- Host regressions for pitch, sweep, envelope, mixer, noise, write ordering,
+  and transport retry plus an enforced Z80 ROM/RAM/stack linker-map budget.
 - Automated architecture, translated-core reachability, forbidden-symbol,
   and work-RAM guards.
 
@@ -163,6 +165,13 @@ maps noise periods. Software envelope state is clocked four quarter-frame
 times per game frame. The bridge therefore adds no PCM buffers, floating
 point, or division to the MC68000 frame loop.
 
+Writes to the two source pulse-sweep registers are retained as compact
+MC68000 state. Each 60 Hz bridge step clocks both sweep units twice, applies
+the source divider/reload order, continuously mutes invalid targets, and
+distinguishes pulse 1's one's-complement negate from pulse 2's two's-
+complement negate. The resulting tone-period changes still pass through the
+existing changed-register coalescer and generic Z80 command path.
+
 The YM2610 is driven by the Z80 rather than directly by the MC68000. Each SSG
 register update uses three commands below `$80`: a register selector, a high
 data nibble, and a low data nibble that commits the write. The MC68000 waits
@@ -182,8 +191,11 @@ delays and interrupt-safe port restoration.
 This is the native audio MVP, not a claim of source-chip fidelity:
 
 - SSG tones have a fixed 50-percent duty cycle, so pulse duty is not retained.
-- Pulse sweep, hardware length counters, short-noise mode, and direct DAC/DMC
-  behavior are not implemented.
+- Hardware length counters, the triangle linear counter, short-noise mode,
+  and direct DAC/DMC behavior are not implemented.
+- Sweep control is advanced with two half-frame clocks, but changed SSG tone
+  periods are emitted at the next 60 Hz bridge boundary rather than at a
+  source-chip sub-frame instant.
 - Triangle is represented by a square tone. Very low triangle periods clamp to
   the SSG's 12-bit maximum.
 - Triangle and noise share SSG C and one volume. When both are enabled, the SSG
@@ -228,12 +240,13 @@ at `$f800` or reaches the `$fffd` stack start, and less than 64 bytes of stack
 headroom. Its parser and every rejection path have Python unit coverage.
 
 `tools/test_neogeo_apu_bridge.c` verifies initial mute, changed-register
-coalescing, A4 and general period conversion, envelope decay, master
-disable/re-enable behavior, triangle/noise mixer state, representative noise
-periods, coarse-before-fine tone updates, and dirty-register retry after a
-transport failure. These host tests and the emulator-oriented packaging
-checks do not replace listening tests or electrical/timing validation on
-physical AES/MVS-compatible hardware.
+coalescing, A4 and general period conversion, positive and negative sweep
+targets, per-channel negate behavior, divider/reload cadence, sweep overflow
+muting, envelope decay, master disable/re-enable behavior, triangle/noise
+mixer state, representative noise periods, coarse-before-fine tone updates,
+and dirty-register retry after a transport failure. These host tests and the
+emulator-oriented packaging checks do not replace listening tests or
+electrical/timing validation on physical AES/MVS-compatible hardware.
 
 ## Measured memory and ROM size
 
@@ -241,12 +254,12 @@ physical AES/MVS-compatible hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 210,954 |
+| MC68000 text + read-only data | 214,614 |
 | Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 16,164 |
-| Static user work RAM total | 16,168 |
+| Zeroed work RAM (`.bss`) | 16,172 |
+| Static user work RAM total | 16,176 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 46,040 |
+| Remaining stack/heap headroom | 46,032 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -325,7 +338,7 @@ synchronously. An exact FCEUX 2.2.1 comparison measured the resulting adapter:
 The replay cartridge defaults are therefore
 `REPLAY_BOOTSTRAP_FRAMES=7` and `REPLAY_AREA_INIT_HOLD_FRAMES=1`. They are
 compile-time parameters rather than hidden constants. Debugger mailbox version
-2 reports both parameters, the number of area holds actually consumed, and the
+4 reports both parameters, the number of area holds actually consumed, and the
 number of core frames actually advanced. The host runner rejects internally
 inconsistent frame, tail, bootstrap, hold, or core-advance accounting before
 classifying a pass.
@@ -475,8 +488,9 @@ round-trip on every frame.
 The rendered-evidence lane adds two distinct traps per newly entered stage.
 The first records the immediate transition state. The second fires after two
 additional calls have completed the direct renderer and its VBlank swap. Its
-version-3 mailbox identifies the rendered build and records the direct
-renderer game-frame count, VBlank count, and configured settle interval.
+version-4 mailbox identifies the rendered build and records the direct
+renderer game-frame count, VBlank count, configured settle interval, and
+16-bit uploaded/presented render generations.
 Before a rendered pass is accepted, the host requires:
 
 - a hardware-playable FM2 with zero opposite-direction transitions;
@@ -484,7 +498,9 @@ Before a rendered pass is accepted, the host requires:
   masks and matching world/level coordinates;
 - renderer game frames equal to translated core frames at every checkpoint;
 - at least one VBlank per rendered frame, with an exact two-rendered-frame
-  source/core/game-frame delta between each transition and settled pair;
+  source/core/game-frame and modulo-65,536 render-generation delta between
+  each transition and settled pair;
+- equal uploaded and presented generations at every screenshot-bearing trap;
 - 32 valid diagnostic transition PNGs plus 32 non-blank settled-stage PNGs,
   with every settled playfield distinct from its paired transition and no two
   consecutive settled stages pixel-identical; and
@@ -492,7 +508,21 @@ Before a rendered pass is accepted, the host requires:
 
 The synchronous screenshot helper writes through a temporary PNG, validates
 its signature, dimensions, and per-file size bound, then atomically publishes
-it. The final manifest records both file and centered 320x224 pixel hashes.
+it. The correctness boundary is inside the cartridge: after uploading the
+live sprite/FIX/palette state, the renderer increments a 16-bit generation;
+the following VBlank callback latches it as presented, and screenshot traps
+wait for equality without advancing the translated core or renderer frame.
+Those two shared words and one 16-bit callback copy also exist in normal
+cartridges. Existing linker padding absorbs the words, so the measured final
+BSS remains 16,172 bytes.
+
+Immediately before invoking `scrot`, the host also applies a bounded display
+settling allowance: 50 milliseconds by default, configurable from 0 through
+0.25 seconds with `--display-settle-seconds`. This does not establish frame
+identity; it only lets the already-issued SDL/X11 presentation reach the X
+window while the debugger is stopped. The selected allowance is validated and
+recorded in `result.json` and adds no cartridge work or memory. The final
+manifest records both file and centered 320x224 pixel hashes.
 It also records a playfield-only hash below the 32-pixel HUD region and
 requires the terminal playfield to differ from the settled 8-4 entrance.
 The evidence directory also contains immutable, hashed snapshots of the
@@ -534,9 +564,12 @@ and
 `409b8234902d48387d8edd08430925d1a71992be6071dfa1c6f64752468ce04f`,
 respectively.
 
-The same movie also passed the direct-renderer evidence lane at the stock
-emulated MC68000 clock. Its version-3 terminal mailbox and capture manifest
-reported:
+The same movie also completed the direct-renderer lane at the stock emulated
+MC68000 clock under the earlier version-3 protocol. That run remains evidence
+of full-game renderer endurance and ordered progression, but its screenshots
+were captured one host presentation behind their mailbox state. The following
+figures are therefore retained as historical endurance measurements, not as
+current state-bound image evidence:
 
 | Measurement | Terminal value |
 | --- | ---: |
@@ -553,11 +586,9 @@ reported:
 | Opposite-direction transitions | 0 |
 
 All 32 ordered transition/settled pairs had exact source/core/renderer frame
-deltas of two and a VBlank delta of seven. Every settled playfield differed
-from its paired transition, consecutive settled viewports were distinct, and
-the terminal playfield differed from the settled 8-4 capture. The 65 decoded
-PNGs and all nine immutable provenance artifacts passed independent
-current-source validation. The bounded 78,356-byte `result.json` had SHA-256
+deltas of two and a VBlank delta of seven. The 65 decoded PNGs and all nine
+immutable provenance artifacts passed the then-current version-3 validator.
+The bounded 78,356-byte `result.json` had SHA-256
 `7a67f2fb11bd646e7f160c3b8522ba853be819bcaff96b4bff899a90d1ebfd65`.
 The exercised rendered ELF and cartridge had SHA-256 values
 `d4d87d31520f72aafcfe27f3e59c32419a682f4498e92a4f3a0b9fad559c62d7`
@@ -565,9 +596,20 @@ and
 `09f21de1da091bf871b9cd931cd5389123c7f5da1ece6c7e94c23f214afea77d`,
 respectively.
 
-The fast lane is a translated-core progression proof. The rendered lane adds
-stock-clock renderer endurance and state-bound image evidence, but neither is
-a pixel-perfect source-console, audio, or physical-hardware claim. The normal
+The corrected version-4 presentation fence then passed a bounded first-stage
+regression. Its transition mailbox reported source/core/render generation
+550/543/543 and its settled mailbox reported 552/545/545. Uploaded and
+presented generations were equal at both traps, the two-frame modulo-65,536
+delta passed, and the settled PNG visibly contained the player sprite that
+the stale version-3 image omitted. The corrected PNG has SHA-256
+`6966034a78426eea51d7b3e162af2e95970d8f32e480a1fa0548232e79429e36`.
+The bounded run intentionally timed out after collecting that pair, so a new
+32-stage version-4 rendered pass remains outstanding.
+
+The fast lane is a translated-core progression proof. The historical rendered
+run adds stock-clock renderer endurance; the version-4 smoke proves the new
+state-bound presentation mechanism at the first stage. Neither is a
+pixel-perfect source-console, audio, or physical-hardware claim. The normal
 rendered cartridge is covered separately by the stock-clock cadence probes,
 and real AES/MVS-compatible hardware validation remains pending.
 
@@ -653,8 +695,8 @@ operation on physical hardware.
 
 ## Next engineering steps
 
-1. Improve audio fidelity, prioritizing software pulse sweep and an ADPCM-B
-   triangle voice so SSG C can represent noise independently.
+1. Improve audio fidelity with an ADPCM-B triangle voice so SSG C can
+   represent noise independently, then add length/linear-counter gating.
 2. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
 3. Tighten the remaining fine-scroll left-edge masking cases.
 4. Add pixel-level reference captures for the remaining renderer fidelity

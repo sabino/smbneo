@@ -89,6 +89,17 @@ The rendered-evidence target requires `scrot` and the Python Pillow package;
 both are checked before the long emulator run begins. It accepts only a
 hardware-playable input with no simultaneous opposite directions and uses
 exactly two rendered frames between each transition and settled capture.
+Before each screenshot-bearing trap, a cartridge-side presentation fence
+waits until the VBlank callback has latched the uploaded render generation as
+presented; mailbox version 4 exposes both 16-bit generations and the host
+requires equality. Because the renderer object is shared, that handshake uses
+two 16-bit state words and one 16-bit copy per VBlank in the normal cartridge
+too; linker padding absorbs the words, so measured total BSS is unchanged.
+After the debugger stops, the host waits another 50 milliseconds by default
+only to let the already-issued SDL/X11 presentation settle before `scrot`.
+`--display-settle-seconds` can tune this host-only allowance from 0 through
+0.25 seconds; the chosen value is recorded in the manifest and adds no further
+cartridge cost.
 Choose a new external directory below `/tmp` for the evidence rather than a
 path in the repository. The resulting 128 KiB-bounded manifest binds the
 captures to immutable, hashed artifact snapshots and validation provenance.
@@ -110,10 +121,12 @@ The native audio MVP maps the two pulse voices to YM2610 SSG A/B and an
 approximation of the triangle and noise voices to shared SSG C. A custom Z80
 M1 driver receives acknowledged, coalesced register updates from the MC68000;
 the cartridge does not yet use ADPCM samples. This is the native-audio MVP,
-not a cycle- or waveform-exact reproduction: pulse duty and sweep, length
-counters, short-noise mode, and direct DAC behavior remain unsupported, while
-concurrent triangle and noise are constrained by the SSG's shared channel
-mixer. Physical AES/MVS-compatible hardware validation is also still pending.
+not a cycle- or waveform-exact reproduction. Pulse sweep is modeled in
+software with its divider, target-mute, and per-channel negate behavior.
+Pulse duty, length/linear counters, short-noise mode, and direct DAC behavior
+remain unsupported, while concurrent triangle and noise are constrained by
+the SSG's shared channel mixer. Physical AES/MVS-compatible hardware
+validation is also still pending.
 After building the cartridge, `tools/probe_neogeo_audio.py` supplies a bounded
 normal-mode smoke test: it enters gameplay under an isolated emulator
 configuration, records an exact post-activation interval through an SDL disk

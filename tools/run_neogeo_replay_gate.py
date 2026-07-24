@@ -27,8 +27,8 @@ import capture_neogeo_replay_frame as frame_capture
 DEBUG_HOST = cadence.DEBUG_HOST
 DEBUG_PORT = cadence.DEBUG_PORT
 STATUS_MAGIC = 0x534D4252
-STATUS_VERSION = 3
-STATUS_WORD_COUNT = 28
+STATUS_VERSION = 4
+STATUS_WORD_COUNT = 30
 STATUS_BYTES = STATUS_WORD_COUNT * 4
 COMPLETE_RESULT = 1
 INVALID_STAGE_RESULT = 2
@@ -49,7 +49,7 @@ RESULT_NAMES = {
     6: "returned_to_title",
     INCOMPLETE_RESULT: "incomplete",
 }
-RESULT_SCHEMA_VERSION = 3
+RESULT_SCHEMA_VERSION = 4
 DEFAULT_ROM_SET = "smbneogeo"
 DEFAULT_68K_OVERCLOCK = 1000
 DEFAULT_RENDERED_68K_OVERCLOCK = 0
@@ -64,6 +64,10 @@ DEFAULT_HEARTBEAT_SECONDS = 5.0
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
 DEFAULT_SCREENSHOT_TIMEOUT_SECONDS = 10.0
 MAX_SCREENSHOT_TIMEOUT_SECONDS = 60.0
+DEFAULT_DISPLAY_SETTLE_SECONDS = (
+    frame_capture.DEFAULT_DISPLAY_SETTLE_SECONDS
+)
+MAX_DISPLAY_SETTLE_SECONDS = frame_capture.MAX_DISPLAY_SETTLE_SECONDS
 MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 EXPECTED_STAGE_CAPTURES = 32
 REQUIRED_BIOS_FILES = ("aes.zip", "neogeo.zip")
@@ -168,6 +172,8 @@ class ReplayStatus:
     game_frame_count: int
     vblank_count: int
     stage_settle_frames: int
+    render_generation: int
+    presented_generation: int
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,7 @@ class ScreenshotConfig:
     scrot: str
     directory: Path
     timeout_seconds: float
+    display_settle_seconds: float
     maximum_bytes: int
 
 
@@ -351,6 +358,8 @@ def _screenshot_command(
             config.scrot,
             "--timeout",
             f"{config.timeout_seconds:g}",
+            "--display-settle-seconds",
+            f"{config.display_settle_seconds:g}",
             "--max-bytes",
             config.maximum_bytes,
         ]
@@ -674,12 +683,42 @@ def parse_mailbox_words(words: Sequence[int]) -> ReplayStatus:
             raise ReplayGateError(
                 "non-rendered mailbox reports rendered game frames"
             )
+        if (
+            status.render_generation != 0
+            or status.presented_generation != 0
+        ):
+            raise ReplayGateError(
+                "non-rendered mailbox reports presentation generations"
+            )
     else:
         if status.game_frame_count != status.core_frames_advanced:
             raise ReplayGateError(
                 f"mailbox rendered-frame accounting is "
                 f"{status.game_frame_count}; expected "
                 f"{status.core_frames_advanced}"
+            )
+        if status.render_generation > 0xFFFF:
+            raise ReplayGateError(
+                "mailbox render generation exceeds uint16"
+            )
+        if status.presented_generation > 0xFFFF:
+            raise ReplayGateError(
+                "mailbox presented generation exceeds uint16"
+            )
+        expected_render_generation = status.game_frame_count & 0xFFFF
+        if status.render_generation != expected_render_generation:
+            raise ReplayGateError(
+                f"mailbox render generation is "
+                f"{status.render_generation}; expected "
+                f"{expected_render_generation}"
+            )
+        presentation_lag = (
+            status.render_generation - status.presented_generation
+        ) & 0xFFFF
+        if presentation_lag > 1:
+            raise ReplayGateError(
+                "mailbox presented generation is more than one render "
+                "behind"
             )
         minimum_vblanks = status.game_frame_count + 1
         if status.vblank_count < minimum_vblanks:
@@ -1466,6 +1505,11 @@ def _validate_rendered_stage_pair(
         ("transition", transition_status),
         ("settled", status),
     ):
+        if candidate.presented_generation != candidate.render_generation:
+            raise ReplayGateError(
+                f"stage {expected_stage} {label} screenshot is not bound "
+                "to its rendered generation"
+            )
         if (
             candidate.current_stage != expected_stage
             or candidate.world != expected_stage // 4
@@ -1480,6 +1524,9 @@ def _validate_rendered_stage_pair(
                 f"ordered active stage {expected_stage}"
             )
     settle_delta = status.stage_settle_frames
+    render_generation_delta = (
+        status.render_generation - transition_status.render_generation
+    ) & 0xFFFF
     if (
         status.frame - transition_status.frame != settle_delta
         or status.core_frames_advanced
@@ -1488,6 +1535,7 @@ def _validate_rendered_stage_pair(
         or status.game_frame_count
         - transition_status.game_frame_count
         != settle_delta
+        or render_generation_delta != settle_delta
         or status.vblank_count - transition_status.vblank_count
         < settle_delta
     ):
@@ -1544,6 +1592,13 @@ def _rendered_evidence_result(
     if terminal.status.rendering_enabled != 1:
         raise ReplayGateError(
             "rendered evidence was requested from a non-rendered replay"
+        )
+    if (
+        terminal.status.presented_generation
+        != terminal.status.render_generation
+    ):
+        raise ReplayGateError(
+            "terminal screenshot is not bound to its rendered generation"
         )
     if (
         terminal.status.hardware_playable != 1
@@ -1603,6 +1658,8 @@ def _rendered_evidence_result(
                 "core_frames_advanced": status.core_frames_advanced,
                 "game_frame_count": status.game_frame_count,
                 "vblank_count": status.vblank_count,
+                "render_generation": status.render_generation,
+                "presented_generation": status.presented_generation,
                 "entered_mask": f"0x{status.entered_mask:08x}",
                 "completed_mask": f"0x{status.completed_mask:08x}",
                 "transition": {
@@ -1610,6 +1667,10 @@ def _rendered_evidence_result(
                     "game_frame_count":
                         transition_status.game_frame_count,
                     "vblank_count": transition_status.vblank_count,
+                    "render_generation":
+                        transition_status.render_generation,
+                    "presented_generation":
+                        transition_status.presented_generation,
                     "image": transition_image,
                 },
                 "image": image,
@@ -1645,6 +1706,9 @@ def _rendered_evidence_result(
             "core_frames_advanced": terminal.status.core_frames_advanced,
             "game_frame_count": terminal.status.game_frame_count,
             "vblank_count": terminal.status.vblank_count,
+            "render_generation": terminal.status.render_generation,
+            "presented_generation":
+                terminal.status.presented_generation,
             "image": terminal_image,
         },
     }
@@ -1806,6 +1870,7 @@ def _argument_record(
         "startup_timeout_seconds": args.startup_timeout,
         "rendered_evidence": args.rendered_evidence,
         "screenshot_timeout_seconds": args.screenshot_timeout,
+        "display_settle_seconds": args.display_settle_seconds,
         "maximum_screenshot_bytes": MAX_SCREENSHOT_BYTES,
         "gngeo": args.gngeo,
         "gdb": args.gdb,
@@ -1850,6 +1915,15 @@ def _validate_runtime_arguments(args: argparse.Namespace) -> float:
         raise ReplayGateError(
             f"screenshot timeout must be no more than "
             f"{MAX_SCREENSHOT_TIMEOUT_SECONDS:g} seconds"
+        )
+    if (
+        not math.isfinite(args.display_settle_seconds)
+        or args.display_settle_seconds < 0
+        or args.display_settle_seconds > MAX_DISPLAY_SETTLE_SECONDS
+    ):
+        raise ReplayGateError(
+            "display-settle delay must be finite and between 0 and "
+            f"{MAX_DISPLAY_SETTLE_SECONDS:g} seconds inclusive"
         )
     requested_timeout = args.timeout
     if requested_timeout is None and args.rendered_evidence:
@@ -1965,6 +2039,7 @@ def run_probe(args: argparse.Namespace) -> int:
                 scrot=scrot_executable,
                 directory=screenshot_dir,
                 timeout_seconds=args.screenshot_timeout,
+                display_settle_seconds=args.display_settle_seconds,
                 maximum_bytes=MAX_SCREENSHOT_BYTES,
             )
         symbols = resolve_replay_symbols(frozen_elf, nm_executable)
@@ -2308,6 +2383,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--screenshot-timeout",
         type=float,
         default=DEFAULT_SCREENSHOT_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--display-settle-seconds",
+        type=float,
+        default=DEFAULT_DISPLAY_SETTLE_SECONDS,
+        help=(
+            "bounded host-display settling delay applied after each debugger "
+            "break and immediately before screenshot capture"
+        ),
     )
     parser.add_argument("--gngeo", default="ngdevkit-gngeo")
     parser.add_argument("--gdb", default="m68k-neogeo-elf-gdb")

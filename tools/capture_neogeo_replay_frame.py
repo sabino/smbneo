@@ -4,22 +4,39 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import struct
 import subprocess
 import sys
+import time
 from typing import Sequence
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024
+DEFAULT_DISPLAY_SETTLE_SECONDS = 0.05
+MAX_DISPLAY_SETTLE_SECONDS = 0.25
 MAX_SEQUENCE_INDEX = 64
 
 
 class CaptureError(RuntimeError):
     """Raised when a debugger-paused frame cannot be trusted."""
+
+
+def validate_display_settle_seconds(value: float) -> float:
+    if (
+        not math.isfinite(value)
+        or value < 0
+        or value > MAX_DISPLAY_SETTLE_SECONDS
+    ):
+        raise CaptureError(
+            "display-settle delay must be finite and between 0 and "
+            f"{MAX_DISPLAY_SETTLE_SECONDS:g} seconds inclusive"
+        )
+    return value
 
 
 def inspect_png(path: Path, maximum_bytes: int) -> tuple[int, int, int]:
@@ -76,7 +93,11 @@ def capture_frame(
     output: Path,
     timeout_seconds: float,
     maximum_bytes: int,
+    display_settle_seconds: float,
 ) -> tuple[int, int, int]:
+    display_settle_seconds = validate_display_settle_seconds(
+        display_settle_seconds
+    )
     if output.exists():
         raise CaptureError(f"refusing to overwrite capture: {output}")
     temporary = output.with_name(output.stem + ".partial.png")
@@ -84,6 +105,7 @@ def capture_frame(
         raise CaptureError(
             f"refusing to overwrite partial capture: {temporary}"
         )
+    time.sleep(display_settle_seconds)
     try:
         completed = subprocess.run(
             [scrot, "-z", "-o", str(temporary)],
@@ -126,6 +148,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_BYTES,
     )
+    parser.add_argument(
+        "--display-settle-seconds",
+        type=float,
+        default=DEFAULT_DISPLAY_SETTLE_SECONDS,
+    )
     return parser
 
 
@@ -143,6 +170,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "16777216",
             file=sys.stderr,
         )
+        return 2
+    try:
+        validate_display_settle_seconds(args.display_settle_seconds)
+    except CaptureError as error:
+        print(f"frame capture failed: {error}", file=sys.stderr)
         return 2
 
     counter: Path | None = None
@@ -167,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output,
             args.timeout,
             args.max_bytes,
+            args.display_settle_seconds,
         )
         if counter is not None and index is not None:
             counter.write_text(f"{index + 1}\n", encoding="ascii")

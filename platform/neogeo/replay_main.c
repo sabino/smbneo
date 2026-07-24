@@ -33,7 +33,7 @@
 #endif
 
 #define NEOGEO_REPLAY_STATUS_MAGIC UINT32_C(0x534d4252)
-#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(3)
+#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(4)
 #define NEOGEO_REPLAY_RESULT_INCOMPLETE UINT32_C(0x100)
 
 #if defined(SMB_NEOGEO_REPLAY_FAST)
@@ -116,6 +116,8 @@ typedef struct NeogeoReplayStatus {
     uint32_t game_frame_count;
     uint32_t vblank_count;
     uint32_t stage_settle_frames;
+    uint32_t render_generation;
+    uint32_t presented_generation;
 } NeogeoReplayStatus;
 
 volatile NeogeoReplayStatus neogeo_replay_status
@@ -123,6 +125,29 @@ volatile NeogeoReplayStatus neogeo_replay_status
 
 static NeogeoReplayTiming replay_timing;
 static uint32_t replay_core_frames_advanced;
+
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+static void present_rendered_checkpoint(void) {
+    uint32_t committed_result = neogeo_replay_status.result;
+
+    neogeo_replay_checkpoint_present(
+        neogeo_video_wait_for_present,
+        &neogeo_replay_status.vblank_count,
+        &neogeo_vblank_count,
+        &neogeo_replay_status.render_generation,
+        &neogeo_render_generation,
+        &neogeo_replay_status.presented_generation,
+        &neogeo_presented_generation
+    );
+    /*
+     * The refreshed presentation counters belong to the same frozen status
+     * snapshot. Recommit result last before the debugger trap.
+     */
+    neogeo_replay_status.result = committed_result;
+}
+#else
+#define present_rendered_checkpoint() ((void)0)
+#endif
 
 static void initialize_power_on_ram(void) {
     uint16_t address;
@@ -203,6 +228,10 @@ static void publish_status(
         neogeo_vblank_count;
     neogeo_replay_status.stage_settle_frames =
         SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES;
+    neogeo_replay_status.render_generation =
+        neogeo_render_generation;
+    neogeo_replay_status.presented_generation =
+        neogeo_presented_generation;
     neogeo_replay_status.result = result;
 }
 
@@ -343,9 +372,11 @@ static void update_stage_checkpoint(
             SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES
         )
     ) {
+        present_rendered_checkpoint();
         neogeo_replay_stage_trap();
     }
     if (stage_changed != 0u) {
+        present_rendered_checkpoint();
         neogeo_replay_transition_trap();
     }
 }
@@ -408,6 +439,7 @@ int main(void) {
         );
 #endif
         if (neogeo_replay_gate_failed(&gate) != 0u) {
+            present_rendered_checkpoint();
             neogeo_replay_fail_trap();
         }
 
@@ -423,6 +455,7 @@ int main(void) {
         }
 
         if (result == NEOGEO_REPLAY_GATE_COMPLETE) {
+            present_rendered_checkpoint();
             neogeo_replay_pass_trap();
         }
     }
@@ -450,9 +483,11 @@ int main(void) {
         );
 #endif
         if (neogeo_replay_gate_failed(&gate) != 0u) {
+            present_rendered_checkpoint();
             neogeo_replay_fail_trap();
         }
         if (result == NEOGEO_REPLAY_GATE_COMPLETE) {
+            present_rendered_checkpoint();
             neogeo_replay_pass_trap();
         }
     }
@@ -467,5 +502,6 @@ int main(void) {
         segment_index,
         controller_state
     );
+    present_rendered_checkpoint();
     neogeo_replay_fail_trap();
 }

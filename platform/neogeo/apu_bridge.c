@@ -4,9 +4,11 @@
 
 enum {
     NES_APU_PULSE1_CONTROL = 0x4000,
+    NES_APU_PULSE1_SWEEP = 0x4001,
     NES_APU_PULSE1_TIMER_LOW = 0x4002,
     NES_APU_PULSE1_TIMER_HIGH = 0x4003,
     NES_APU_PULSE2_CONTROL = 0x4004,
+    NES_APU_PULSE2_SWEEP = 0x4005,
     NES_APU_PULSE2_TIMER_LOW = 0x4006,
     NES_APU_PULSE2_TIMER_HIGH = 0x4007,
     NES_APU_TRIANGLE_CONTROL = 0x4008,
@@ -28,7 +30,13 @@ enum {
     SSG_TONE_C_DISABLED = 0x04,
     SSG_NOISE_C_DISABLED = 0x20,
 
-    NES_ENVELOPE_TICKS_PER_FRAME = 4
+    NES_ENVELOPE_TICKS_PER_FRAME = 4,
+    NES_SWEEP_TICKS_PER_FRAME = 2,
+    NES_SWEEP_ENABLED = 0x80,
+    NES_SWEEP_PERIOD_MASK = 0x70,
+    NES_SWEEP_NEGATE = 0x08,
+    NES_SWEEP_SHIFT_MASK = 0x07,
+    NES_PULSE_TIMER_MAX = 0x07ff
 };
 
 /*
@@ -107,6 +115,110 @@ static void clock_frame_envelopes(NeogeoApuBridge *bridge) {
     }
 }
 
+static uint16_t pulse_sweep_target_period(
+    const NeogeoApuBridge *bridge,
+    uint8_t channel,
+    uint8_t *positive_overflow
+) {
+    uint8_t control = bridge->pulse_sweep_control[channel];
+    uint8_t shift = (uint8_t)(control & NES_SWEEP_SHIFT_MASK);
+    uint16_t timer = bridge->pulse_timer[channel];
+    uint16_t change = (uint16_t)(timer >> shift);
+
+    *positive_overflow = 0;
+    if ((control & NES_SWEEP_NEGATE) != 0u) {
+        uint16_t subtraction = (uint16_t)(
+            change + (channel == 0u ? 1u : 0u)
+        );
+
+        return subtraction > timer
+            ? 0u
+            : (uint16_t)(timer - subtraction);
+    }
+
+    timer = (uint16_t)(timer + change);
+    if (timer > NES_PULSE_TIMER_MAX) {
+        *positive_overflow = 1;
+    }
+    return timer;
+}
+
+static void refresh_pulse_sweep_mute(
+    NeogeoApuBridge *bridge,
+    uint8_t channel
+) {
+    uint8_t positive_overflow;
+
+    (void)pulse_sweep_target_period(
+        bridge,
+        channel,
+        &positive_overflow
+    );
+    bridge->pulse_sweep_mute[channel] = (uint8_t)(
+        bridge->pulse_timer[channel] < 8u ||
+        positive_overflow != 0u
+    );
+}
+
+static void clock_pulse_sweep(
+    NeogeoApuBridge *bridge,
+    uint8_t channel
+) {
+    uint8_t control = bridge->pulse_sweep_control[channel];
+    uint8_t divider_was_zero =
+        bridge->pulse_sweep_divider[channel] == 0u;
+    uint8_t positive_overflow;
+    uint16_t target = pulse_sweep_target_period(
+        bridge,
+        channel,
+        &positive_overflow
+    );
+
+    bridge->pulse_sweep_mute[channel] = (uint8_t)(
+        bridge->pulse_timer[channel] < 8u ||
+        positive_overflow != 0u
+    );
+    if (
+        divider_was_zero != 0u &&
+        (control & NES_SWEEP_ENABLED) != 0u &&
+        (control & NES_SWEEP_SHIFT_MASK) != 0u &&
+        bridge->pulse_sweep_mute[channel] == 0u
+    ) {
+        bridge->pulse_timer[channel] = target;
+        refresh_pulse_sweep_mute(bridge, channel);
+    }
+
+    /*
+     * The target update uses the divider's pre-clock state. Reloading is a
+     * separate, subsequent action, matching the source sweep-unit ordering.
+     */
+    if (
+        divider_was_zero != 0u ||
+        bridge->pulse_sweep_reload[channel] != 0u
+    ) {
+        bridge->pulse_sweep_divider[channel] = (uint8_t)(
+            (control & NES_SWEEP_PERIOD_MASK) >> 4
+        );
+        bridge->pulse_sweep_reload[channel] = 0;
+    } else {
+        --bridge->pulse_sweep_divider[channel];
+    }
+}
+
+static void clock_frame_sweeps(NeogeoApuBridge *bridge) {
+    uint8_t tick;
+
+    for (tick = 0; tick < NES_SWEEP_TICKS_PER_FRAME; ++tick) {
+        clock_pulse_sweep(bridge, 0);
+        clock_pulse_sweep(bridge, 1);
+    }
+}
+
+static void clock_frame_units(NeogeoApuBridge *bridge) {
+    clock_frame_envelopes(bridge);
+    clock_frame_sweeps(bridge);
+}
+
 static uint8_t pulse_is_audible(
     const NeogeoApuBridge *bridge,
     uint8_t channel,
@@ -118,6 +230,7 @@ static uint8_t pulse_is_audible(
         (bridge->master_enable & enable_mask) != 0u &&
         bridge->pulse_active[channel] != 0u &&
         bridge->pulse_timer[channel] >= 8u &&
+        bridge->pulse_sweep_mute[channel] == 0u &&
         volume != 0u
     );
 }
@@ -209,6 +322,8 @@ static void build_ym_registers(
 
 void neogeo_apu_bridge_init(NeogeoApuBridge *bridge) {
     memset(bridge, 0, sizeof(*bridge));
+    refresh_pulse_sweep_mute(bridge, 0);
+    refresh_pulse_sweep_mute(bridge, 1);
 }
 
 void neogeo_apu_bridge_write(
@@ -226,6 +341,15 @@ void neogeo_apu_bridge_write(
             bridge->pulse_control[channel] = value;
             break;
 
+        case NES_APU_PULSE1_SWEEP:
+        case NES_APU_PULSE2_SWEEP:
+            channel =
+                address == NES_APU_PULSE1_SWEEP ? 0u : 1u;
+            bridge->pulse_sweep_control[channel] = value;
+            bridge->pulse_sweep_reload[channel] = 1;
+            refresh_pulse_sweep_mute(bridge, channel);
+            break;
+
         case NES_APU_PULSE1_TIMER_LOW:
         case NES_APU_PULSE2_TIMER_LOW:
             channel =
@@ -234,6 +358,7 @@ void neogeo_apu_bridge_write(
                 (uint16_t)(
                     (bridge->pulse_timer[channel] & 0x0700u) | value
                 );
+            refresh_pulse_sweep_mute(bridge, channel);
             break;
 
         case NES_APU_PULSE1_TIMER_HIGH:
@@ -250,6 +375,7 @@ void neogeo_apu_bridge_write(
                 &bridge->pulse_envelope[channel],
                 bridge->pulse_control[channel]
             );
+            refresh_pulse_sweep_mute(bridge, channel);
             break;
 
         case NES_APU_TRIANGLE_CONTROL:
@@ -339,7 +465,7 @@ bool neogeo_apu_bridge_step(
                 continue;
             }
             if (!writer(context, reg, registers[reg])) {
-                clock_frame_envelopes(bridge);
+                clock_frame_units(bridge);
                 return false;
             }
             bridge->sent_registers[reg] = registers[reg];
@@ -347,7 +473,7 @@ bool neogeo_apu_bridge_step(
         }
     }
 
-    clock_frame_envelopes(bridge);
+    clock_frame_units(bridge);
     return true;
 }
 

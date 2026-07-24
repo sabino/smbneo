@@ -23,6 +23,10 @@ typedef struct {
 
 typedef struct {
     uint8_t pulse_control[2];
+    uint8_t pulse_sweep_control[2];
+    uint8_t pulse_sweep_divider[2];
+    uint8_t pulse_sweep_reload[2];
+    uint8_t pulse_sweep_mute[2];
     uint16_t pulse_timer[2];
     uint8_t pulse_active[2];
     NeogeoApuEnvelope pulse_envelope[2];
@@ -50,8 +54,9 @@ void neogeo_apu_bridge_write(
 
 /*
  * Emit only changed YM2610 SSG registers, then advance the three NES-style
- * volume envelopes by one 60 Hz game frame. A null writer advances state
- * without acknowledging any registers, which is useful while the Z80 starts.
+ * volume envelopes and two pulse sweep units by one 60 Hz game frame. A null
+ * writer advances state without acknowledging any registers, which is useful
+ * while the Z80 starts.
  */
 bool neogeo_apu_bridge_step(
     NeogeoApuBridge *bridge,

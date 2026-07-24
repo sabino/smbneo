@@ -137,6 +137,8 @@ static uint8_t palette_upload_pending;
 
 volatile uint32_t neogeo_vblank_count;
 volatile uint32_t neogeo_game_frame_count;
+volatile uint16_t neogeo_render_generation;
+volatile uint16_t neogeo_presented_generation;
 
 static const uint8_t render_palette_ids[RENDER_PALETTE_COUNT] = {
     0u, 1u, 2u, 3u,
@@ -150,6 +152,12 @@ static const uint8_t render_palette_ids[RENDER_PALETTE_COUNT] = {
  * periods measurable without a software timer or emulator-specific hook.
  */
 void rom_callback_VBlank(void) {
+    /*
+     * The active display that just ended used the last fully uploaded live
+     * generation. Publishing it before waking a waiter binds debugger
+     * evidence to completed scanout instead of merely elapsed VBlanks.
+     */
+    neogeo_presented_generation = neogeo_render_generation;
     ++neogeo_vblank_count;
     ++neogeo_vblank_signal;
 }
@@ -165,6 +173,14 @@ static void wait_for_next_vblank(void) {
      * safe across wraparound.
      */
     while (neogeo_vblank_signal == observed_signal) {
+    }
+}
+
+void neogeo_video_wait_for_present(void) {
+    uint16_t target_generation = neogeo_render_generation;
+
+    while (neogeo_presented_generation != target_generation) {
+        wait_for_next_vblank();
     }
 }
 
@@ -842,6 +858,8 @@ void neogeo_video_init(void) {
 
     visible_set = 0;
     neogeo_game_frame_count = 0;
+    neogeo_render_generation = 0;
+    neogeo_presented_generation = 0;
 }
 
 void neogeo_video_render(void) {
@@ -900,6 +918,7 @@ void neogeo_video_render(void) {
     hide_sprite_set(visible_set);
     show_next_sprite_set(next_set);
     visible_set = next_set;
+    ++neogeo_render_generation;
 #endif
     ++neogeo_game_frame_count;
 }

@@ -69,7 +69,15 @@ mailbox's translated-frame accounting and rejects missing, blank, malformed,
 or consecutively stale settled-stage images. A new external evidence directory
 below `/tmp` retains immutable, hashed snapshots of the exercised artifacts,
 capture/validation provenance, the 65 PNGs, logs, and a manifest bounded to
-128 KiB. GnGeo debugger mode disables its Z80/audio path, so this lane proves
+128 KiB. A cartridge-side fence first waits for its uploaded and presented
+16-bit generations to match, and mailbox version 4 makes that binding
+host-verifiable. The two shared generation words and one 16-bit copy per
+VBlank also exist in the normal cartridge; linker padding keeps measured
+total BSS unchanged. The host then waits 50
+milliseconds by default only for the already-issued SDL/X11 presentation to
+settle before capture; the bounded `--display-settle-seconds` range is 0
+through 0.25 seconds and is recorded in the manifest without adding cartridge
+cost. GnGeo debugger mode disables its Z80/audio path, so this lane proves
 renderer endurance and full-game progression, not audio, pixel-perfect
 source-console fidelity, or physical-hardware behavior; the normal-mode audio
 probe remains separate.
@@ -100,8 +108,13 @@ game frame:
 - pulse 1 and pulse 2 use SSG tone channels A and B;
 - triangle uses SSG tone channel C;
 - noise uses SSG noise on channel C; and
-- software envelope and integer period conversion avoid audio buffers,
-  floating point, and division in the frame loop.
+- software envelope, pulse sweep, and integer period conversion avoid audio
+  buffers, floating point, and division in the frame loop.
+
+The bridge clocks both pulse sweep units twice per game frame, including
+divider/reload ordering, continuous target-overflow muting, and the distinct
+negate arithmetic of the two source pulse channels. Changed target periods
+continue through the same coalesced SSG register transport.
 
 Each target register update is encoded as three commands: register selector,
 high data nibble, and low data nibble/commit. The MC68000 waits for the
@@ -121,8 +134,10 @@ core-progression gate, not an audio test.
 This bridge is intentionally approximate:
 
 - SSG tones have a fixed 50-percent duty cycle, so source pulse duty is lost;
-- pulse sweep, hardware length counters, short-noise mode, and direct DAC/DMC
-  behavior are not implemented;
+- hardware length counters, the triangle linear counter, short-noise mode,
+  and direct DAC/DMC behavior are not implemented;
+- sweep is clocked at two half-frame steps per game frame, while changed SSG
+  periods are transported on the next 60 Hz bridge boundary;
 - the triangle voice is represented by a square tone and very low triangle
   periods clamp to the SSG's 12-bit maximum; and
 - triangle and noise share SSG C's volume and are AND-gated when simultaneous,
