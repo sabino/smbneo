@@ -48,10 +48,16 @@ make -C platform/neogeo replay-rendered-evidence \
 `verify` does not need an SMB ROM. It builds and tests the integer audio
 bridge, links the custom Z80 driver, and rejects a missing or unsafe Z80 linker
 map in addition to the MC68000 checks. `cart` and `run` accept either a raw
-iNES file or a ZIP with exactly one `.nes` member. The grouped Z80 driver/map
-rule requires GNU Make 4.3 or newer. The cadence probe uses an
+iNES file or a ZIP with exactly one `.nes` member. Interactive `run` and
+`replay-run` explicitly use stock CPU-clock adjustments plus
+`--autoframeskip --sleepidle --no-vsync`. GnGeo implements its 60 Hz host wait
+inside the automatic-frame-skip path, so disabling that option also removes
+wall-clock throttling and lets gameplay speed follow host load. The grouped
+Z80 driver/map rule requires GNU Make 4.3 or newer. The cadence probe uses an
 isolated X display, positively verifies ownership of the emulator's fixed
-debugger listener, and applies a finite sampling deadline. `replay-cart`
+debugger listener, and applies a finite sampling deadline. It intentionally
+disables host pacing to measure guest game frames per emulated VBlank; it is
+not the interactive wall-clock-speed gate. `replay-cart`
 requires a local text FM2; it does not download or track the movie. The
 `REPLAY_HARDWARE_PLAYABLE=1` policy rejects simultaneous opposite joystick
 directions. The runner owns an isolated display and emulator process group,
@@ -149,22 +155,22 @@ AES/MVS-compatible hardware.
 
 The bounded normal-mode smoke probe explicitly avoids GnGeo's `-D` debugger
 mode because that emulator mode forcibly disables sound and Z80 execution. It
-uses explicit no-debug and stock-clock flags plus an isolated home/config and
-X display, retries Start until gameplay produces a signal, then starts a new
-exact-duration signed-16-bit stereo evidence segment through SDL's disk
-driver. Finite argument ceilings, command timeouts, an overall deadline, and
-a child file-size limit bound the live run. It rejects empty/silent output,
-retains hashes/logs plus a final-frame screenshot, and deletes the raw PCM
-after a successful check unless `--keep-raw` is requested. A failed probe
-retains its bounded raw capture for diagnosis:
+uses explicit no-debug, stock-clock, and 60 Hz wall-clock-pacing flags plus an
+isolated home/config and X display, retries Start until gameplay produces a
+signal, then starts a new exact-duration signed-16-bit stereo evidence segment
+through SDL's disk driver. Finite argument ceilings, command timeouts, an
+overall deadline, and a child file-size limit bound the live run. It rejects
+empty/silent output, retains hashes/logs plus a final-frame screenshot, and
+deletes the raw PCM after a successful check unless `--keep-raw` is requested.
+A failed probe retains its bounded raw capture for diagnosis:
 
 ```bash
 python3 tools/probe_neogeo_audio.py \
   --evidence-dir /tmp/smb-neogeo-audio-evidence
 ```
 
-The debugger cadence probe remains a separate renderer/game-loop timing gate
-and intentionally runs with sound disabled.
+The debugger cadence probe remains a separate renderer/game-loop VBlank-budget
+gate and intentionally runs with sound and wall-clock pacing disabled.
 
 At this milestone the Z80 linker map reports 10,777 bytes of fixed code,
 1,944 bytes of data, and 101 bytes between static data and the stack start.

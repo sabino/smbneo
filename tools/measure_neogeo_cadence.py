@@ -294,7 +294,7 @@ def build_gngeo_command(
     rom_set: str,
     scale: int,
 ) -> list[str]:
-    """Build the fixed-timing GnGeo command used for cadence evidence."""
+    """Build the unpaced debug command used for guest VBlank-budget evidence."""
 
     if scale <= 0:
         raise ValueError("GnGeo scale must be positive")
@@ -307,6 +307,8 @@ def build_gngeo_command(
         "--no-resize",
         "--no-sound",
         "--no-autoframeskip",
+        "--no-vsync",
+        "--no-sleepidle",
         "--68kclock=0",
         "--system",
         "home",
@@ -976,6 +978,9 @@ def run_probe(args: argparse.Namespace) -> int:
                 },
                 "fixed_timing": {
                     "autoframeskip": False,
+                    "vsync": False,
+                    "sleep_idle": False,
+                    "wall_clock_pacing": False,
                     "m68k_clock_percent_adjustment": 0,
                 },
                 "probe_arguments": {

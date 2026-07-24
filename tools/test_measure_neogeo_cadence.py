@@ -162,6 +162,8 @@ class CommandConstructionTests(unittest.TestCase):
         self.assertEqual(command.count("--no-autoframeskip"), 1)
         self.assertEqual(command.count("--68kclock=0"), 1)
         self.assertNotIn("--autoframeskip", command)
+        self.assertIn("--no-vsync", command)
+        self.assertIn("--no-sleepidle", command)
         self.assertIn("-D", command)
         self.assertIn("--no-sound", command)
         self.assertEqual(command[-1], "smbneogeo")

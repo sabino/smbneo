@@ -85,6 +85,16 @@ make -C platform/neogeo replay-rendered-evidence \
   REPLAY_EVIDENCE_DIR="/tmp/smb-neogeo-rendered-evidence"
 ```
 
+The interactive `run` target pins both emulated CPUs to their stock clock
+adjustments and explicitly enables GnGeo's 60 Hz wall-clock limiter with
+`--autoframeskip --sleepidle --no-vsync`. In the installed GnGeo version, the
+wait-until-next-frame logic is part of
+[`frame_skip()`](https://github.com/dciabrin/gngeo/blob/70121c69accb549f1e9173a41aab46af47619e34/src/frame_skip.c);
+`--no-autoframeskip` therefore makes emulation run as fast as the host permits
+rather than merely disabling dropped video frames. The debugger-only cadence
+and replay gates remain deliberately unpaced because they validate guest
+frame/VBlank accounting, not interactive wall-clock speed.
+
 The rendered-evidence target requires `scrot` and the Python Pillow package;
 both are checked before the long emulator run begins. It accepts only a
 hardware-playable input with no simultaneous opposite directions and uses

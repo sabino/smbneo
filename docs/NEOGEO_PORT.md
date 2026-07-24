@@ -213,17 +213,38 @@ evidence.
 GnGeo's remote-debug mode forcibly disables its sound/Z80 path, even when
 `--sound` is requested. The debugger cadence and replay gates therefore
 cannot observe audio transport. `tools/probe_neogeo_audio.py` launches a
-separate normal-mode instance with fixed stock-clock/no-autoframeskip flags,
-an isolated home/configuration and X display, explicit debugger disablement,
-active gameplay input, and SDL's disk-audio driver. Signal detection is
-separate from evidence: the hashed PCM interval starts only after gameplay
-activation is accepted and contains exactly the requested number of audio
-frames. Finite argument ceilings, per-command timeouts, an overall deadline,
-and a child-process file-size limit bound the run while it is active. The
-probe rejects empty or silent signed-16-bit stereo, records cartridge,
-GnGeo-data, PCM-segment, and screenshot hashes in `result.json`, and deletes
-the raw PCM after a successful check by default. A failed probe retains its
-bounded raw capture with the logs for diagnosis.
+separate normal-mode instance with fixed stock-clock and 60 Hz host-pacing
+flags (`--autoframeskip --sleepidle --no-vsync`), an isolated
+home/configuration and X display, explicit debugger disablement, active
+gameplay input, and SDL's disk-audio driver. Signal detection is separate from
+evidence: the hashed PCM interval starts only after gameplay activation is
+accepted and contains exactly the requested number of audio frames. Finite
+argument ceilings, per-command timeouts, an overall deadline, and a
+child-process file-size limit bound the run while it is active. The probe
+rejects empty or silent signed-16-bit stereo, records cartridge, GnGeo-data,
+PCM-segment, and screenshot hashes in `result.json`, and deletes the raw PCM
+after a successful check by default. A failed probe retains its bounded raw
+capture with the logs for diagnosis.
+
+### Emulator wall-clock pacing
+
+The cartridge itself advances from the Neo Geo VBlank signal. On physical
+hardware that signal is periodic, but the host emulator still has to throttle
+its emulated frame loop. In the installed GnGeo revision, the wait for the
+next 60 Hz deadline is inside `frame_skip()`, guarded by the
+`autoframeskip` option. Consequently, `--no-autoframeskip` removes wall-clock
+throttling entirely: gameplay speeds up when the host is idle and slows down
+when it is busy even though both emulated CPU clock adjustments remain zero.
+
+The interactive Make targets and normal-mode audio probe therefore use
+`--autoframeskip --sleepidle --no-vsync --68kclock=0 --z80clock=0`.
+Automatic frame skipping keeps game time at 60 Hz and may omit a host draw
+only if the machine falls behind; `--sleepidle` avoids a busy wait, and
+`--no-vsync` avoids adding a second display-dependent limiter. The debugger
+cadence and replay tools use the opposite policy intentionally: their
+unpaced, sound-disabled emulator validates guest work per emulated VBlank and
+can finish deterministic evidence faster than real time. That evidence must
+not be described as a wall-clock-speed measurement.
 
 The current Z80 linker map reports:
 
@@ -476,8 +497,9 @@ cartridge, and asset directory, so it cannot contaminate the playable build.
 
 `REPLAY_FAST=1` skips both the hardware renderer and `apu_step_frame()` and is
 appropriate for the translated-core progression gate. Omitting it exercises
-normal rendering but takes display time and is not a substitute for the
-separate stock-clock cadence measurement. The runner accepts a result only
+normal rendering and emulated VBlank accounting but is not a substitute for
+the separate guest VBlank-budget measurement or an interactively paced run.
+The runner accepts a result only
 when it reaches the pass trap with both 32-stage masks complete. Failure,
 incomplete playback, invalid mailbox data, debugger/emulator exit, occupied
 debug port, and timeout all remain non-passing and produce a bounded
@@ -564,8 +586,8 @@ and
 `409b8234902d48387d8edd08430925d1a71992be6071dfa1c6f64752468ce04f`,
 respectively.
 
-The same movie also completed the direct-renderer lane at the stock emulated
-MC68000 clock under the earlier version-3 protocol. That run remains evidence
+The same movie also completed the direct-renderer lane with the stock emulated
+MC68000 cycle budget under the earlier version-3 protocol. That run remains evidence
 of full-game renderer endurance and ordered progression, but its screenshots
 were captured one host presentation behind their mailbox state. The following
 figures are therefore retained as historical endurance measurements, not as
@@ -661,9 +683,12 @@ and the map checker runs on every verification or cartridge invocation.
 
 The cadence probe owns an isolated X display and process groups, verifies
 that the fixed debugger listener belongs to its launched emulator, and has a
-finite sampling deadline. Its `result.json` records the ELF, cartridge, and
-GnGeo-data SHA-256 values together with the full timing/sample arguments, so
-the measurements remain tied to the binaries that were exercised.
+finite sampling deadline. It disables host pacing so its counters measure
+whether one guest game frame fits each emulated VBlank budget rather than how
+fast the host happens to run. Its `result.json` records that policy plus the
+ELF, cartridge, and GnGeo-data SHA-256 values together with the full
+timing/sample arguments, so the measurements remain tied to the binaries that
+were exercised.
 
 The supplied ZIP contained one 40,976-byte iNES file with the supported
 SHA-1. The generated cartridge loaded all P/M/V/S/C regions in
@@ -677,15 +702,16 @@ ngdevkit-gngeo, initialized the AES BIOS and 68000, and produced stable
 - Mario and other OAM sprites; and
 - live palette/scroll updates across successive frames.
 
-At stock emulated 68000 clock with automatic frameskip disabled, the
+At the stock emulated 68000 cycle budget with host pacing disabled, the
 blanking-budgeted renderer completed 89 game frames during its first 120
-display periods while the cartridge and renderer caches warmed. The
+emulated display periods while the cartridge and renderer caches warmed. The
 following 120-display-period sample completed 120 game frames with zero
 misses. A separate active-input run pressed Start, held Right+B, and repeated
 jumps. Its 300-display-period warmup completed 269 game frames, and the
 following 120-display-period gameplay sample completed 120 game frames with
 zero misses. This keeps title-screen idling from standing in for gameplay
-performance.
+workload, but it is a guest-budget result rather than a host wall-clock-rate
+result. Interactive and audio runs exercise the separate 60 Hz pacing policy.
 
 Emulator captures and generated ROMs are verification artifacts only and are
 not tracked. The normal-mode audio probe establishes non-silent emulator PCM

@@ -94,6 +94,9 @@ REPLAY_EVIDENCE_DIR ?=
 GNGEO ?= ngdevkit-gngeo
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
+GNGEO_REALTIME_FLAGS ?= \
+	--autoframeskip --no-vsync --sleepidle \
+	--68kclock=0 --z80clock=0
 CARTRIDGE_TIMESTAMP ?= 202601010000.00
 
 REPLAY_VARIANT := $(if $(filter 1,$(REPLAY_FAST)),fast,rendered)
@@ -353,6 +356,7 @@ cart: assets $(CART_TARGET) verify-sound-driver | $(ROMDIR) $(ASSETDIR)
 
 run: cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
+		$(GNGEO_REALTIME_FLAGS) \
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
@@ -403,6 +407,7 @@ replay-cart: assets $(REPLAY_TARGET) verify-sound-driver | $(REPLAY_ROMDIR)
 
 replay-run: replay-cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
+		$(GNGEO_REALTIME_FLAGS) \
 		--system home \
 		-i $(REPLAY_ROMDIR) -d $(REPLAY_GNGEO_DATA) $(GAMEROM)
 

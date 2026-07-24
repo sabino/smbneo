@@ -129,7 +129,10 @@ class CommandTests(unittest.TestCase):
 
         self.assertIn("--sound", command)
         self.assertIn("--samplerate=22050", command)
-        self.assertIn("--no-autoframeskip", command)
+        self.assertIn("--autoframeskip", command)
+        self.assertNotIn("--no-autoframeskip", command)
+        self.assertIn("--no-vsync", command)
+        self.assertIn("--sleepidle", command)
         self.assertIn("--68kclock=0", command)
         self.assertIn("--z80clock=0", command)
         self.assertIn("--no-debug", command)
