@@ -10,6 +10,16 @@ This repository is a Neo Geo-focused fork of
 [`nathsou/smb`](https://github.com/nathsou/smb). It is still a work in
 progress, but the game is playable from the title screen through the ending.
 
+## Play online
+
+**[Launch SMBNeo in your browser](https://sabino.pro/smbneo/)**
+
+Choose your own supported `.nes` file, ZIP, or locally built
+`smbneogeo.zip`. The file stays in your browser and is never uploaded.
+
+Use the arrow keys to move, `A` to jump, `S` to run or throw fireballs, `1`
+to start, and `2` to select.
+
 ## Screenshots
 
 <p align="center">
@@ -79,9 +89,9 @@ maps the game's background tiles and objects onto Neo Geo sprites and uses
 the FIX layer for the status display. This keeps memory use low and lets the
 graphics hardware do most of the drawing.
 
-During the build, the graphics needed by the port are converted from the
-user-supplied game image. No game ROM, BIOS, generated graphics, or packaged
-cartridge is included in this repository.
+During a local build or browser launch, the graphics needed by the port are
+converted from the user-supplied game image. No game ROM, generated graphics,
+or packaged cartridge is included in this repository.
 
 ## Project status
 

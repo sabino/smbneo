@@ -41,6 +41,10 @@
 #define OAM_SPRITES 64u
 #define BACKGROUND_STRIPS 33u
 #define BACKGROUND_MAX_ROWS 28u
+#if defined(SMB_NEOGEO_FBNEO)
+#define BACKGROUND_FBNEO_HALF_ROWS 16u
+#define BACKGROUND_FBNEO_CHAIN_ROWS 32u
+#endif
 #define BEHIND_SPRITE_OFFSET 0u
 #define BACKGROUND_OFFSET (BEHIND_SPRITE_OFFSET + OAM_SPRITES)
 #define FRONT_SPRITE_OFFSET (BACKGROUND_OFFSET + BACKGROUND_STRIPS)
@@ -230,6 +234,14 @@ static uint16_t sprite_y_word(int16_t y, uint16_t height_tiles) {
 static uint16_t sprite_x_word(uint16_t x) {
     return (uint16_t)(x << 7);
 }
+
+#if defined(SMB_NEOGEO_FBNEO)
+static uint8_t background_scb1_row(uint8_t logical_row) {
+    return logical_row < BACKGROUND_FBNEO_HALF_ROWS
+        ? (uint8_t)(logical_row + BACKGROUND_FBNEO_HALF_ROWS)
+        : (uint8_t)(logical_row - BACKGROUND_FBNEO_HALF_ROWS);
+}
+#endif
 
 static uint16_t neogeo_color(uint8_t nes_color) {
     return nes_palette_to_neogeo[nes_color & 0x3fu];
@@ -585,8 +597,26 @@ static void build_background(uint8_t show_hud) {
         next_background_drivers[1] = 0;
         next_background_driver_count = 2;
     }
+#if defined(SMB_NEOGEO_FBNEO)
+    /*
+     * FBNeo evaluates a chain longer than 16 tiles across both halves of the
+     * Neo Geo shrink table. Put logical rows 16+ before rows 0..15 in SCB1,
+     * then start the 32-tile wrapped chain 128 pixels lower so the visible
+     * result retains the native row positions.
+     */
+    if (tile_rows > BACKGROUND_FBNEO_HALF_ROWS) {
+        next_background_y_word = sprite_y_word(
+            (int16_t)(output_y + BACKGROUND_FBNEO_HALF_ROWS * 8u),
+            BACKGROUND_FBNEO_CHAIN_ROWS
+        );
+    } else {
+        next_background_y_word =
+            sprite_y_word((int16_t)output_y, tile_rows);
+    }
+#else
     next_background_y_word =
         sprite_y_word((int16_t)output_y, tile_rows);
+#endif
 
     for (strip = 0; strip < next_background_driver_count; ++strip) {
         uint8_t physical_strip = next_background_drivers[strip];
@@ -620,6 +650,22 @@ static void upload_background_changes(void) {
         );
         uint8_t row = 0;
 
+#if defined(SMB_NEOGEO_FBNEO)
+        if (pending->tile_rows > BACKGROUND_FBNEO_HALF_ROWS) {
+            uint8_t blank_row =
+                (uint8_t)(pending->tile_rows - BACKGROUND_FBNEO_HALF_ROWS);
+
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB1 + sprite * 64u + (uint16_t)blank_row * 2u
+            );
+            while (blank_row < BACKGROUND_FBNEO_HALF_ROWS) {
+                *REG_VRAMRW = CROM_BLANK_TILE;
+                *REG_VRAMRW = 0;
+                ++blank_row;
+            }
+        }
+#endif
+
         while (row < pending->tile_rows) {
             while (
                 row < pending->tile_rows &&
@@ -631,7 +677,12 @@ static void upload_background_changes(void) {
                 break;
             }
             *REG_VRAMADDR = (uint16_t)(
-                ADDR_SCB1 + sprite * 64u + (uint16_t)row * 2u
+                ADDR_SCB1 + sprite * 64u +
+#if defined(SMB_NEOGEO_FBNEO)
+                (uint16_t)background_scb1_row(row) * 2u
+#else
+                (uint16_t)row * 2u
+#endif
             );
             do {
                 BackgroundTileCache *cached =
@@ -645,6 +696,9 @@ static void upload_background_changes(void) {
             } while (
                 row < pending->tile_rows &&
                 (pending->changed_rows & ((uint32_t)1u << row)) != 0u
+#if defined(SMB_NEOGEO_FBNEO)
+                && row != BACKGROUND_FBNEO_HALF_ROWS
+#endif
             );
         }
     }

@@ -1,0 +1,70 @@
+name: Play Online
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run browser compatibility tests
+        run: make web-test
+
+      - name: Install the Neo Geo toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            software-properties-common
+          sudo add-apt-repository -y ppa:dciabrin/ngdevkit
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ngdevkit
+
+      - name: Build the ROM-free browser player
+        run: |
+          make web
+          jq -e '
+            .project == "SMBNeo" and
+            .privacy.game_image_included == false and
+            .privacy.generated_graphics_included == false and
+            .privacy.generated_cartridge_included == false
+          ' dist/pages/build-manifest.json
+          test -s dist/pages/index.html
+          test -s dist/pages/assets/smbneo-template.zip
+          test -s dist/pages/assets/neogeo.zip
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist/pages
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

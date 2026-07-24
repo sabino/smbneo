@@ -1,7 +1,8 @@
 # Third-party notices
 
 This is an unofficial open-source port. It is not affiliated with Nintendo or
-SNK, and it does not include a game ROM, BIOS, or generated cartridge.
+SNK, and the repository does not include a game ROM, BIOS, or generated
+cartridge.
 
 ## nathsou/smb
 
@@ -21,13 +22,25 @@ files under `codegen/` are generated from that input. The project license does
 not grant rights to Nintendo names, characters, graphics, audio, or other game
 assets.
 
-## ngdevkit and GnGeo
+## ngdevkit, NullBIOS, and GnGeo
 
 The Neo Geo target builds against external
 [`ngdevkit`](https://github.com/dciabrin/ngdevkit) and uses its GnGeo package
 for emulator testing. Those tools are not vendored here and retain their own
-licenses and component notices. BIOS/support archives are local runtime
-dependencies and are not part of this project.
+licenses and component notices. The web build packages ngdevkit's open-source
+NullBIOS into its generated deployment artifact; no commercial BIOS is
+included in the repository or site.
+
+## Browser player
+
+The optional web player loads
+[`EmulatorJS 4.2.3`](https://github.com/EmulatorJS/EmulatorJS), including its
+FBNeo core, and [`fflate 0.8.2`](https://github.com/101arrowz/fflate) from
+public CDNs. These projects are not vendored here and retain their own license
+terms. EmulatorJS is distributed under GPL-3.0 and fflate under MIT.
+
+Files selected in the browser are processed locally and are not uploaded by
+SMBNeo.
 
 ## FCEUX visual-reference palette
 

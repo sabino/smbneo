@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#131b3a">
+  <meta
+    name="description"
+    content="Play the SMBNeo Neo Geo port in your browser using your own local game image."
+  >
+  <link rel="icon" href="title.png">
+  <link rel="preconnect" href="https://cdn.emulatorjs.org" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="style.css">
+  <title>SMBNeo — Play in Browser</title>
+</head>
+<body>
+  <main>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">Neo Geo Edition</p>
+        <h1>SMBNeo</h1>
+      </div>
+      <nav aria-label="Project links">
+        <a href="https://github.com/sabino/smbneo">Source code</a>
+        <a href="https://github.com/sabino/smbneo#build-and-play">Build locally</a>
+      </nav>
+    </header>
+
+    <section class="intro" aria-labelledby="intro-title">
+      <div>
+        <p class="eyebrow">Browser player</p>
+        <h2 id="intro-title">Play the Neo Geo port online</h2>
+      </div>
+      <p>
+        Choose your own supported <code>.nes</code> file, a ZIP containing it,
+        or a locally built <code>smbneogeo.zip</code>. The file is processed
+        entirely inside your browser and is never uploaded.
+      </p>
+    </section>
+
+    <section class="player-section" aria-label="SMBNeo browser emulator">
+      <div id="game-wrap">
+        <div id="launcher">
+          <img
+            class="launcher-art"
+            src="title.png"
+            width="320"
+            height="224"
+            alt="SMBNeo title screen"
+          >
+          <div class="launcher-panel">
+            <p class="launcher-title">Ready when you are</p>
+            <p class="launcher-copy">
+              Select your local game image to prepare the Neo Geo cartridge.
+            </p>
+            <label class="file-button" for="game-file">
+              Choose game file
+            </label>
+            <input
+              id="game-file"
+              type="file"
+              accept=".nes,.zip,application/zip,application/x-nes-rom"
+            >
+            <p id="load-status" class="status" role="status" aria-live="polite">
+              Waiting for a local file.
+            </p>
+          </div>
+        </div>
+        <div id="game" hidden></div>
+      </div>
+      <p class="focus-note">
+        When the player appears, select <strong>Play SMBNeo</strong>, then
+        press <kbd>1</kbd> at the title screen. Click the game if keyboard
+        focus moves away.
+      </p>
+    </section>
+
+    <section class="controls" aria-labelledby="controls-title">
+      <div>
+        <p class="eyebrow">Keyboard</p>
+        <h2 id="controls-title">Controls</h2>
+      </div>
+      <dl class="control-grid">
+        <div>
+          <dt>Move</dt>
+          <dd>
+            <kbd aria-label="Left arrow">←</kbd>
+            <kbd aria-label="Up arrow">↑</kbd>
+            <kbd aria-label="Down arrow">↓</kbd>
+            <kbd aria-label="Right arrow">→</kbd>
+          </dd>
+        </div>
+        <div><dt>Jump / swim</dt><dd><kbd>A</kbd></dd></div>
+        <div><dt>Run / fire</dt><dd><kbd>S</kbd></dd></div>
+        <div><dt>Start</dt><dd><kbd>1</kbd></dd></div>
+        <div><dt>Select</dt><dd><kbd>2</kbd></dd></div>
+      </dl>
+      <p class="controller-note">
+        Gamepads and touch controls are also supported and can be remapped
+        from the player toolbar.
+      </p>
+    </section>
+
+    <section class="privacy" aria-labelledby="privacy-title">
+      <h2 id="privacy-title">Bring your own game</h2>
+      <p>
+        This site contains the open-source port and an open Neo Geo BIOS, but
+        no original game ROM or generated cartridge. Graphics are created in
+        memory from the file you select and disappear when the page is closed.
+      </p>
+    </section>
+
+    <footer>
+      <p>
+        Powered by
+        <a href="https://emulatorjs.org/">EmulatorJS</a>,
+        the FBNeo core, and ngdevkit's open-source
+        <a href="https://github.com/dciabrin/ngdevkit">NullBIOS</a>.
+      </p>
+      <p class="build">Web build __BUILD_ID__</p>
+    </footer>
+  </main>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"
+    integrity="sha384-DT0Ls0mO7JmjTnT+oBuMhEJzYJO1zUqzuuMXNdnOmOQRIpN2BgSjvBV/j50NngIT"
+    crossorigin="anonymous"
+  ></script>
+  <script type="module" src="player.mjs"></script>
+</body>
+</html>

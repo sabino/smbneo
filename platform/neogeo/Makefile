@@ -8,6 +8,14 @@ TARGET := $(BUILD)/smbneogeo.elf
 MAP := $(BUILD)/smbneogeo.map
 CART_TARGET := $(BUILD)/smbneogeo-cart.elf
 CART_MAP := $(BUILD)/smbneogeo-cart.map
+WEB_BUILD := $(BUILD)/web
+WEB_TARGET := $(WEB_BUILD)/smbneogeo-web.elf
+WEB_MAP := $(WEB_BUILD)/smbneogeo-web.map
+WEB_VIDEO_OBJECT := $(WEB_BUILD)/video.o
+WEB_PROM := $(WEB_BUILD)/smbneogeo-p1.p1
+WEB_MROM := $(WEB_BUILD)/smbneogeo-m1.m1
+WEB_VROM := $(WEB_BUILD)/smbneogeo-v1.v1
+WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
@@ -24,6 +32,7 @@ GAMEROM := smbneogeo
 CC := m68k-neogeo-elf-gcc
 HOST_CC ?= cc
 OBJCOPY := m68k-neogeo-elf-objcopy
+NM := m68k-neogeo-elf-nm
 Z80_AS := z80-neogeo-ihx-sdasz80
 Z80_LD := z80-neogeo-ihx-sdldz80
 PYTHON := python3
@@ -68,8 +77,13 @@ ENGINE_OBJECTS := \
 BASE_OBJECTS := $(BUILD)/main.o $(ENGINE_OBJECTS)
 ELF_OBJECTS := $(BASE_OBJECTS) $(BUILD)/title_data_stub.o
 CART_OBJECTS := $(BASE_OBJECTS) $(BUILD)/smbneogeo-title.o
+WEB_OBJECTS := \
+	$(BUILD)/main.o $(WEB_VIDEO_OBJECT) \
+	$(filter-out $(BUILD)/video.o,$(ENGINE_OBJECTS)) \
+	$(BUILD)/title_data_stub.o
 DEPENDENCIES = \
 	$(BASE_OBJECTS:.o=.d) \
+	$(WEB_VIDEO_OBJECT:.o=.d) \
 	$(BUILD)/title_data_stub.d \
 	$(BUILD)/smbneogeo-title.d \
 	$(REPLAY_MAIN_OBJECT:.o=.d) \
@@ -137,6 +151,8 @@ SOUND_DRIVER_CHECKER := $(ROOT)/tools/check_neogeo_sound_driver.py
 SOUND_DRIVER_LIBRARY := $(NG_Z80_LIB)/nullsound.lib
 SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
 TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
+WEB_PLAYER_BUILDER := $(ROOT)/tools/build_web_player.py
+WEB_BIOS ?= $(NG_SHARE)/neogeo.zip
 TRIANGLE_VROM_SHA256 := \
 	c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7
 REPLAY_POLICY_FLAG := \
@@ -147,7 +163,7 @@ REPLAY_FAST_FLAG := \
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen verify-sound-driver assets cart run \
+	all elf test verify verify-codegen verify-sound-driver assets cart run web \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
 all: verify
@@ -157,7 +173,7 @@ elf: $(TARGET)
 $(BUILD):
 	mkdir -p $@
 
-$(ROMDIR) $(ASSETDIR) $(REPLAYDIR) $(REPLAY_ROMDIR):
+$(ROMDIR) $(ASSETDIR) $(WEB_BUILD) $(REPLAYDIR) $(REPLAY_ROMDIR):
 	mkdir -p $@
 
 $(BUILD)/%.o: %.c | $(BUILD)
@@ -165,6 +181,9 @@ $(BUILD)/%.o: %.c | $(BUILD)
 
 $(BUILD)/%.o: $(ROOT)/codegen/lib/%.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(WEB_VIDEO_OBJECT): video.c | $(WEB_BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DSMB_NEOGEO_FBNEO -c $< -o $@
 
 $(SOUND_DRIVER_OBJECT): sound_driver.s $(SOUND_DRIVER_HELPERS) | $(BUILD)
 	$(Z80_AS) -g -l -p -u \
@@ -218,6 +237,10 @@ $(TARGET): $(ELF_OBJECTS)
 $(CART_TARGET): $(CART_OBJECTS)
 	$(CC) -o $@ $(CART_OBJECTS) $(LDFLAGS) \
 		-Wl,-Map,$(CART_MAP) $(NG_LIBS)
+
+$(WEB_TARGET): $(WEB_OBJECTS)
+	$(CC) -o $@ $(WEB_OBJECTS) $(LDFLAGS) \
+		-Wl,-Map,$(WEB_MAP) $(NG_LIBS)
 
 $(REPLAY_TARGET): $(REPLAY_OBJECTS)
 	$(CC) -o $@ $(REPLAY_OBJECTS) $(LDFLAGS) \
@@ -411,6 +434,40 @@ run: cart
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
+
+$(WEB_PROM): $(WEB_TARGET) | $(WEB_BUILD)
+	$(OBJCOPY) -O binary -S -R .text2 \
+		--gap-fill 0xff --pad-to 1048576 \
+		$(WEB_TARGET) $@
+	dd if=$@ of=$@ conv=notrunc,swab status=none
+	chmod 0644 $@
+
+$(WEB_MROM): $(SOUND_DRIVER) | $(WEB_BUILD)
+	$(Z80_OBJCOPY) -I ihex -O binary \
+		$(SOUND_DRIVER) $@ \
+		--pad-to 131072
+	chmod 0644 $@
+
+$(WEB_VROM): $(TRIANGLE_VROM) | $(WEB_BUILD)
+	cp $(TRIANGLE_VROM) $@
+	chmod 0644 $@
+
+web: $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) verify-sound-driver
+	@test -f "$(WEB_BIOS)" || { \
+		echo "ngdevkit NullBIOS is missing: $(WEB_BIOS)" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(WEB_TARGET)
+	$(PYTHON) $(WEB_PLAYER_BUILDER) \
+		--elf $(WEB_TARGET) \
+		--prom $(WEB_PROM) \
+		--mrom $(WEB_MROM) \
+		--vrom $(WEB_VROM) \
+		--bios "$(WEB_BIOS)" \
+		--nm $(NM) \
+		--templates $(ROOT)/web \
+		--title-image $(ROOT)/docs/screenshots/title-screen.png \
+		--output $(WEB_SITE)
 
 replay-cart: \
 		assets $(REPLAY_TARGET) verify-sound-driver $(TRIANGLE_VROM) \

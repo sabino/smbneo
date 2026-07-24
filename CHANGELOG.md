@@ -10,5 +10,7 @@
 - Added deterministic replay, cadence, audio, memory, cartridge, and
   reproducibility gates.
 - Added ROM-free host CI.
+- Added a ROM-free browser player with local game conversion, arrow-key
+  controls, and GitHub Pages deployment.
 - Focused the active fork branch on Neo Geo and removed the upstream desktop,
-  WebAssembly, and 3DS frontends.
+  original WebAssembly, and 3DS frontends.
