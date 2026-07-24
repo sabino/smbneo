@@ -1,9 +1,10 @@
 # SMB
 
 > **Neo Geo port in progress.** This fork now has a pure-C MC68000 target with
-> a direct Neo Geo tile/sprite renderer. It does not allocate a software
-> framebuffer or copy CHR graphics into work RAM. The original desktop and web
-> targets remain available.
+> a direct Neo Geo tile/sprite renderer and a native Z80/YM2610 audio bridge.
+> It does not allocate a software framebuffer, copy CHR graphics into work RAM,
+> or run the desktop software mixer. The original desktop and web targets
+> remain available.
 
 [Play it online](https://nathsou.github.io/smb/)
 
@@ -43,7 +44,7 @@ Bros. (World) dump and remain under the ignored `platform/neogeo/build/`
 directory.
 
 ```bash
-# Generator consistency, pure-C tests/build, ELF architecture check, RAM guard
+# Generator consistency, pure-C/audio tests, ELF/RAM and Z80 map guards
 make -C platform/neogeo verify
 
 # Complete cartridge from a raw .nes file or a ZIP containing one .nes file
@@ -53,6 +54,9 @@ make -C platform/neogeo cart \
 # Prove two isolated cartridge builds are byte-for-byte identical
 python3 tools/check_reproducible_cart.py \
   --rom "/path/to/smb.zip"
+
+# Enter gameplay and reject an empty or silent normal-mode PCM capture
+python3 tools/probe_neogeo_audio.py
 
 # Measure stock-clock steady-state cadence without touching a visible run
 python3 tools/measure_neogeo_cadence.py \
@@ -85,15 +89,30 @@ generated cartridge or graphics files.
 Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
 Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
 respectively. Press `1` at the title screen before trying to move. Impossible
-left+right or up+down keyboard pairs are neutralized. Audio is intentionally
-silent in this milestone. The cartridge replay gate accepts
-strict local FM2 input logs, preserves their hashes and startup metadata, and
-checks sequential entry into all 32 stages plus the final victory state. Its
-versioned debugger mailbox also records bootstrap skips, area-load holds, and
-the exact number of translated core frames advanced. The movie itself is
-never downloaded or tracked by the build. The preferred no-opposite full-game
-movie has passed this gate through all 32 stages and a stable victory state.
-See
+left+right or up+down keyboard pairs are neutralized.
+
+The native audio MVP maps the two pulse voices to YM2610 SSG A/B and an
+approximation of the triangle and noise voices to shared SSG C. A custom Z80
+M1 driver receives acknowledged, coalesced register updates from the MC68000;
+the cartridge does not yet use ADPCM samples. This is the native-audio MVP,
+not a cycle- or waveform-exact reproduction: pulse duty and sweep, length
+counters, short-noise mode, and direct DAC behavior remain unsupported, while
+concurrent triangle and noise are constrained by the SSG's shared channel
+mixer. Physical AES/MVS-compatible hardware validation is also still pending.
+After building the cartridge, `tools/probe_neogeo_audio.py` supplies a bounded
+normal-mode smoke test: it enters gameplay under an isolated emulator
+configuration, records an exact post-activation interval through an SDL disk
+sink, rejects silence, saves a final-frame screenshot plus hashed JSON
+evidence, and removes the raw PCM after a successful check by default. A
+failed run retains its bounded capture for diagnosis.
+
+The cartridge replay gate accepts strict local FM2 input logs, preserves their
+hashes and startup metadata, and checks sequential entry into all 32 stages
+plus the final victory state. Its versioned debugger mailbox also records
+bootstrap skips, area-load holds, and the exact number of translated core
+frames advanced. The movie itself is never downloaded or tracked by the
+build. The preferred no-opposite full-game movie has passed this gate through
+all 32 stages and a stable victory state. See
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, recommended published TAS inputs, verification evidence, and
 remaining work.

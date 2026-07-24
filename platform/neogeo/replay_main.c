@@ -185,6 +185,7 @@ static NeogeoReplayGateResult run_replay_frame(
     next_frame();
     ++replay_core_frames_advanced;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
+    apu_step_frame();
     ppu_render();
 #endif
     snapshot = snapshot_core();

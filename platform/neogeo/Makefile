@@ -14,11 +14,14 @@ REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
 JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
+APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
 GAMEROM := smbneogeo
 
 CC := m68k-neogeo-elf-gcc
 HOST_CC ?= cc
 OBJCOPY := m68k-neogeo-elf-objcopy
+Z80_AS := z80-neogeo-ihx-sdasz80
+Z80_LD := z80-neogeo-ihx-sdldz80
 PYTHON := python3
 MOON ?= moon
 PKG_CONFIG := pkg-config
@@ -28,6 +31,8 @@ Z80_OBJCOPY := z80-neogeo-ihx-sdobjcopy
 NG_CFLAGS := $(shell $(PKG_CONFIG) --cflags ngdevkit)
 NG_LIBS := $(shell $(PKG_CONFIG) --libs ngdevkit)
 NG_SHARE := $(shell $(PKG_CONFIG) --variable=sharedir ngdevkit)
+NG_Z80_INCLUDE := $(shell $(PKG_CONFIG) --variable=z80includedir ngdevkit)
+NG_Z80_LIB := $(shell $(PKG_CONFIG) --variable=z80libdir ngdevkit)
 
 CPPFLAGS := \
 	$(NG_CFLAGS) -I. -I$(ROOT)/codegen/lib \
@@ -50,7 +55,7 @@ CFLAGS := \
 LDFLAGS := \
 	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS)
 
-ENGINE_SOURCES := video.c ppu_direct.c apu_null.c
+ENGINE_SOURCES := video.c ppu_direct.c apu_bridge.c apu_neogeo.c
 CORE_NAMES := instructions code data cpu
 ENGINE_OBJECTS := \
 	$(ENGINE_SOURCES:%.c=$(BUILD)/%.o) \
@@ -105,6 +110,14 @@ REPLAY_MROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-m1.m1
 REPLAY_VROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-v1.v1
 REPLAY_CART := $(REPLAY_ROMDIR)/$(GAMEROM).zip
 REPLAY_GNGEO_DATA := $(REPLAY_ROMDIR)/gngeo_data.zip
+SOUND_DRIVER_OBJECT := $(BUILD)/sound_driver.rel
+SOUND_DRIVER := $(BUILD)/smbneogeo-sound.ihx
+SOUND_DRIVER_MAP := $(BUILD)/smbneogeo-sound.map
+SOUND_DRIVER_CHECKER := $(ROOT)/tools/check_neogeo_sound_driver.py
+SOUND_DRIVER_LIBRARY := $(NG_Z80_LIB)/nullsound.lib
+SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
+ZERO_VROM_SHA256 := \
+	07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541
 REPLAY_POLICY_FLAG := \
 	$(if $(filter 1,$(REPLAY_HARDWARE_PLAYABLE)),--hardware-playable,)
 REPLAY_FAST_FLAG := \
@@ -113,8 +126,8 @@ REPLAY_FAST_FLAG := \
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen assets cart run replay-cart replay-run \
-	clean FORCE
+	all elf test verify verify-codegen verify-sound-driver assets cart run \
+	replay-cart replay-run clean FORCE
 
 all: verify
 
@@ -131,6 +144,19 @@ $(BUILD)/%.o: %.c | $(BUILD)
 
 $(BUILD)/%.o: $(ROOT)/codegen/lib/%.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(SOUND_DRIVER_OBJECT): sound_driver.s $(SOUND_DRIVER_HELPERS) | $(BUILD)
+	$(Z80_AS) -g -l -p -u \
+		-I$(NG_Z80_INCLUDE)/nullsound -I. -o $@ $<
+
+$(SOUND_DRIVER) $(SOUND_DRIVER_MAP) &: \
+		$(SOUND_DRIVER_OBJECT) $(SOUND_DRIVER_LIBRARY)
+	$(Z80_LD) -b DATA=0xf800 -i -m -w $(SOUND_DRIVER) \
+		$(SOUND_DRIVER_LIBRARY) $(SOUND_DRIVER_OBJECT)
+
+verify-sound-driver: \
+		$(SOUND_DRIVER) $(SOUND_DRIVER_MAP) $(SOUND_DRIVER_CHECKER)
+	$(PYTHON) $(SOUND_DRIVER_CHECKER) $(SOUND_DRIVER_MAP)
 
 $(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -229,10 +255,19 @@ $(INPUT_POLICY_TEST): \
 		-I. \
 		$(ROOT)/tools/test_neogeo_input_policy.c -o $@
 
+$(APU_BRIDGE_TEST): \
+		$(ROOT)/tools/test_neogeo_apu_bridge.c \
+		apu_bridge.c apu_bridge.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_apu_bridge.c \
+		apu_bridge.c -o $@
+
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(JUMP_ENGINE_TEST) \
-		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST)
+		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
+		$(APU_BRIDGE_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
@@ -241,12 +276,13 @@ test: \
 	$(JUMP_ENGINE_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
+	$(APU_BRIDGE_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \
 		--moon "$(MOON)"
 
-verify: verify-codegen test $(TARGET)
+verify: verify-codegen test $(TARGET) verify-sound-driver
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(TARGET)
 
 assets: $(TITLE_SOURCE)
@@ -262,7 +298,7 @@ $(TITLE_SOURCE): FORCE | $(ASSETDIR)
 
 FORCE:
 
-cart: assets $(CART_TARGET) | $(ROMDIR) $(ASSETDIR)
+cart: assets $(CART_TARGET) verify-sound-driver | $(ROMDIR) $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
@@ -276,9 +312,10 @@ cart: assets $(CART_TARGET) | $(ROMDIR) $(ASSETDIR)
 	cp $(ASSETDIR)/$(GAMEROM)-c2.c2 $(CROM2)
 	cp $(ASSETDIR)/$(GAMEROM)-s1.s1 $(SROM1)
 	$(Z80_OBJCOPY) -I ihex -O binary \
-		$(NG_SHARE)/nullsound_driver.ihx $(MROM1) \
+		$(SOUND_DRIVER) $(MROM1) \
 		--pad-to 131072
-	truncate -s 524288 $(VROM1)
+	dd if=/dev/zero of=$(VROM1) bs=524288 count=1 status=none
+	echo "$(ZERO_VROM_SHA256)  $(VROM1)" | sha256sum -c -
 	chmod 0644 $(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
 	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
 		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
@@ -299,12 +336,12 @@ cart: assets $(CART_TARGET) | $(ROMDIR) $(ASSETDIR)
 	@echo "Built $(CART)"
 
 run: cart
-	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --no-sound \
+	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
 
-replay-cart: assets $(REPLAY_TARGET) | $(REPLAY_ROMDIR)
+replay-cart: assets $(REPLAY_TARGET) verify-sound-driver | $(REPLAY_ROMDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
@@ -322,9 +359,10 @@ replay-cart: assets $(REPLAY_TARGET) | $(REPLAY_ROMDIR)
 	cp $(ASSETDIR)/$(GAMEROM)-c2.c2 $(REPLAY_CROM2)
 	cp $(ASSETDIR)/$(GAMEROM)-s1.s1 $(REPLAY_SROM1)
 	$(Z80_OBJCOPY) -I ihex -O binary \
-		$(NG_SHARE)/nullsound_driver.ihx $(REPLAY_MROM1) \
+		$(SOUND_DRIVER) $(REPLAY_MROM1) \
 		--pad-to 131072
-	truncate -s 524288 $(REPLAY_VROM1)
+	dd if=/dev/zero of=$(REPLAY_VROM1) bs=524288 count=1 status=none
+	echo "$(ZERO_VROM_SHA256)  $(REPLAY_VROM1)" | sha256sum -c -
 	chmod 0644 \
 		$(REPLAY_PROM) $(REPLAY_CROM1) $(REPLAY_CROM2) \
 		$(REPLAY_SROM1) $(REPLAY_MROM1) $(REPLAY_VROM1)
@@ -348,7 +386,7 @@ replay-cart: assets $(REPLAY_TARGET) | $(REPLAY_ROMDIR)
 	@echo "Built $(REPLAY_CART)"
 
 replay-run: replay-cart
-	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --no-sound \
+	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		--system home \
 		-i $(REPLAY_ROMDIR) -d $(REPLAY_GNGEO_DATA) $(GAMEROM)
 

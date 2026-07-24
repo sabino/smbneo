@@ -15,6 +15,7 @@ int main(void) {
     for (;;) {
         update_controller1(neogeo_read_controller1());
         next_frame();
+        apu_step_frame();
         ppu_render();
     }
 

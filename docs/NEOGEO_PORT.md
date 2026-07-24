@@ -34,12 +34,17 @@ Completed:
   the original game's single-stick direction state.
 - Sustained one-game-frame-per-VBlank cadence at stock emulated clock after
   the cold-start cache fill.
+- Integer-only NES APU-to-YM2610 SSG bridge with changed-register coalescing,
+  acknowledged MC68000/Z80 transport, and a custom M1 sound driver.
+- Host regressions for pitch, envelope, mixer, noise, write ordering, and
+  transport retry plus an enforced Z80 ROM/RAM/stack linker-map budget.
 - Automated architecture, translated-core reachability, forbidden-symbol,
   and work-RAM guards.
 
 Not completed:
 
-- YM2610 sound/music. `apu_null.c` currently discards NES APU writes.
+- Full-fidelity audio synthesis. The current native SSG bridge intentionally
+  approximates source waveforms and omits several APU behaviors.
 - Real AES/MVS or flash-cartridge validation.
 - Cycle/scanline-accurate PPU behavior. This port intentionally follows the
   upstream frame-at-a-time timing model.
@@ -119,7 +124,7 @@ uploads the palette/FIX state in one display period and waits for the next
 VBlank before swapping SCB3. The repeated display frame is preferable to
 crossing into active scanout.
 
-The final linked ELF (SHA-256
+The renderer milestone ELF from before native audio was added (SHA-256
 `8a3894ea0cf378d33eee451893fdce76c53e051f71252d6b3926a56fe2fda7d0`)
 was audited instruction by instruction with these worst-case MC68000 cycle
 bounds, including a successful VBlank-poll iteration:
@@ -138,18 +143,110 @@ hardware wait-state uncertainty. This is a hardware-oriented bound, not a
 substitute for the still-pending measurement on real AES/MVS-compatible
 hardware.
 
+## Native audio bridge
+
+The Neo Geo link replaces the desktop PCM mixer with an integer-only bridge.
+The translated game still performs its normal APU register writes; the bridge
+shadows the relevant channel state and, once per rendered game frame, derives
+the YM2610 SSG registers:
+
+| Source voice | Native target |
+| --- | --- |
+| Pulse 1 | SSG tone A |
+| Pulse 2 | SSG tone B |
+| Triangle | SSG tone C |
+| Noise | SSG noise gated through channel C |
+
+Only changed target registers are sent. Pulse and triangle timer periods use
+8.8 fixed-point multiplication and shifts, while a 16-entry integer table
+maps noise periods. Software envelope state is clocked four quarter-frame
+times per game frame. The bridge therefore adds no PCM buffers, floating
+point, or division to the MC68000 frame loop.
+
+The YM2610 is driven by the Z80 rather than directly by the MC68000. Each SSG
+register update uses three commands below `$80`: a register selector, a high
+data nibble, and a low data nibble that commits the write. The MC68000 waits
+for the nullsound `command | $80` acknowledgement after every byte. Distinct
+command classes prevent the previous acknowledgement from satisfying the
+next wait. The Z80's 64-entry FIFO preserves order, and a full initial flush
+uses 33 commands.
+
+Command 3 resets the sound driver without an acknowledgement. The MC68000
+allows eight game frames for startup and then sends one of two alternating
+ready pings. A transport timeout invalidates the changed-register cache and
+restarts this sequence. Two reset retries are allowed; a third consecutive
+failure disables audio transport instead of hanging gameplay. The Z80 commit
+handler calls nullsound's `ym2610_write_port_a`, retaining its required YM2610
+delays and interrupt-safe port restoration.
+
+This is the native audio MVP, not a claim of source-chip fidelity:
+
+- SSG tones have a fixed 50-percent duty cycle, so pulse duty is not retained.
+- Pulse sweep, hardware length counters, short-noise mode, and direct DAC/DMC
+  behavior are not implemented.
+- Triangle is represented by a square tone. Very low triangle periods clamp to
+  the SSG's 12-bit maximum.
+- Triangle and noise share SSG C and one volume. When both are enabled, the SSG
+  AND-gates them rather than mixing them as independent voices.
+- The startup handshake proves that the command FIFO accepts input after the
+  fixed delay; it is not a processed-ready response from the driver main loop.
+
+The custom sound driver is packaged as a 128 KiB M1 region. V1 is still a
+512 KiB zero-filled region because this milestone uses no ADPCM samples.
+Normal and rendered-replay GnGeo commands enable sound explicitly.
+`REPLAY_FAST=1` skips both hardware rendering and `apu_step_frame()`, so the
+fast all-stage lane remains a core-progression test rather than audio
+evidence.
+
+GnGeo's remote-debug mode forcibly disables its sound/Z80 path, even when
+`--sound` is requested. The debugger cadence and replay gates therefore
+cannot observe audio transport. `tools/probe_neogeo_audio.py` launches a
+separate normal-mode instance with fixed stock-clock/no-autoframeskip flags,
+an isolated home/configuration and X display, explicit debugger disablement,
+active gameplay input, and SDL's disk-audio driver. Signal detection is
+separate from evidence: the hashed PCM interval starts only after gameplay
+activation is accepted and contains exactly the requested number of audio
+frames. Finite argument ceilings, per-command timeouts, an overall deadline,
+and a child-process file-size limit bound the run while it is active. The
+probe rejects empty or silent signed-16-bit stereo, records cartridge,
+GnGeo-data, PCM-segment, and screenshot hashes in `result.json`, and deletes
+the raw PCM after a successful check by default. A failed probe retains its
+bounded raw capture with the logs for diagnosis.
+
+The current Z80 linker map reports:
+
+| Measurement | Bytes |
+| --- | ---: |
+| Fixed Z80 code | 10,777 |
+| Z80 static data | 1,944 |
+| Data-to-stack headroom | 101 |
+
+`tools/check_neogeo_sound_driver.py` runs as part of `verify`. It rejects
+missing or inconsistent CODE/DATA summaries, code that does not start at
+`$0000` or extends beyond the fixed `$8000` window, data that does not start
+at `$f800` or reaches the `$fffd` stack start, and less than 64 bytes of stack
+headroom. Its parser and every rejection path have Python unit coverage.
+
+`tools/test_neogeo_apu_bridge.c` verifies initial mute, changed-register
+coalescing, A4 and general period conversion, envelope decay, master
+disable/re-enable behavior, triangle/noise mixer state, representative noise
+periods, coarse-before-fine tone updates, and dirty-register retry after a
+transport failure. These host tests and the emulator-oriented packaging
+checks do not replace listening tests or electrical/timing validation on
+physical AES/MVS-compatible hardware.
+
 ## Measured memory and ROM size
 
 `make -C platform/neogeo verify` currently reports:
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 180,830 |
+| MC68000 text + read-only data | 210,954 |
 | Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 16,112 |
-| Static user work RAM total | 16,116 |
+| Zeroed work RAM (`.bss`) | 16,164 |
+| Static user work RAM total | 16,168 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 46,092 |
+| Remaining stack/heap headroom | 46,040 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -184,11 +281,16 @@ exactly one `.nes` member. It:
 6. pads C1/C2/S1 to cartridge sizes; and
 7. records a manifest confirming that zero source PRG bytes were written.
 
-The Makefile then builds the one-megabyte P1, null-sound M1, empty V1,
-cartridge ZIP, and GnGeo hash data. All derived assets live below the ignored
+The Makefile then builds the one-megabyte P1, custom Z80 sound-driver M1,
+zero-filled V1, cartridge ZIP, and GnGeo hash data. The V1 region is present
+for a complete cartridge layout but carries no samples in the SSG-only audio
+MVP. Each cartridge recipe recreates V1 from zero bytes and checks its fixed
+SHA-256 before packaging, so a correctly sized stale file cannot survive an
+incremental build. All derived assets live below the ignored
 `platform/neogeo/build/` directory.
 
-For the final audited program, the two isolated builds produced identical
+For the renderer/replay milestone before native audio, two isolated builds
+produced identical
 1 MiB P regions with SHA-256
 `d8ea97f3e05846467d298e9287bbf49567cc2799c8d16d8cf2aeac1153046b50`
 and identical 105,220-byte cartridge ZIPs with SHA-256
@@ -393,13 +495,16 @@ validation remains pending.
 The milestone is checked with:
 
 ```bash
-# Includes isolated MoonBit lowering/transpiler tests and a comparison of
-# freshly generated C against every checked-in generator output.
+# Includes isolated MoonBit lowering/transpiler tests, generated-C comparison,
+# native audio bridge tests, and MC68000 plus Z80 link/map guards.
 make -C platform/neogeo verify
 make -C platform/neogeo cart \
   SMB_ROM="/path/to/smb.zip"
 python3 tools/check_reproducible_cart.py \
   --rom "/path/to/smb.zip"
+# Must run without GnGeo debugger mode so its Z80/audio path executes.
+python3 tools/probe_neogeo_audio.py \
+  --evidence-dir /tmp/smb-neogeo-audio-evidence
 python3 tools/rec_tool.py validate rec/warpless.rec \
   --expect-end-frame 7987 \
   --expect-transition-count 509
@@ -420,6 +525,16 @@ make -C platform/neogeo replay-cart \
 python3 tools/run_neogeo_replay_gate.py \
   --68k-overclock 10000 --timeout 2400
 ```
+
+The current `verify` result includes a passing native audio bridge regression
+and Z80 map-checker regression. It also links the custom sound driver and
+reports 10,777 bytes of Z80 fixed code, 1,944 bytes of static data, and 101
+bytes of data-to-stack headroom. The cartridge pipeline packages that driver
+as M1, preserves the zero-filled V1 region, and includes M1/V1 in
+reproducibility size and hash checks. The M1 image and linker map are grouped
+build outputs;
+changes to the nullsound library or included command helper trigger a relink,
+and the map checker runs on every verification or cartridge invocation.
 
 The cadence probe owns an isolated X display and process groups, verifies
 that the fixed debugger listener belongs to its launched emulator, and has a
@@ -450,14 +565,17 @@ zero misses. This keeps title-screen idling from standing in for gameplay
 performance.
 
 Emulator captures and generated ROMs are verification artifacts only and are
-not tracked.
+not tracked. The normal-mode audio probe establishes non-silent emulator PCM
+from active gameplay in addition to the sound-state, linkage, and packaging
+gates. It does not establish subjective fidelity, electrical timing, or
+operation on physical hardware.
 
 ## Next engineering steps
 
 1. Run long rendered replays across every world and retain transition
    screenshots/state evidence.
-2. Implement an integer-only event bridge from NES APU writes to a compact
-   YM2610 Z80/68K sound driver.
+2. Improve audio fidelity, prioritizing software pulse sweep and an ADPCM-B
+   triangle voice so SSG C can represent noise independently.
 3. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
 4. Tighten the remaining fine-scroll left-edge masking cases.
 5. Add memory-card or save-state support.
