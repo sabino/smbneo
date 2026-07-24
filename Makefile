@@ -24,7 +24,7 @@ SOURCES += codegen/lib/apu.c
 SOURCES += codegen/lib/state.c
 MAIN = codegen/main.c
 
-.PHONY: codegen clean
+.PHONY: codegen build wasm hash test ci clean
 
 codegen:
 	moon run src/main
@@ -38,5 +38,11 @@ wasm: clean
 hash: clean
 	$(CC) $(CFLAGS) -o hash codegen/hash.c $(SOURCES) codegen/lib/rec.c codegen/lib/common.c
 
+test:
+	$(MAKE) -C platform/neogeo PKG_CONFIG=true test
+
+ci: test wasm
+	test -s web/smb.wasm
+
 clean:
-	rm -f smb hash smb.wasm
+	rm -f smb hash smb.wasm web/smb.wasm

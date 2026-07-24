@@ -97,6 +97,13 @@ REPLAY_EVIDENCE_TIMEOUT ?= 7200
 REPLAY_EVIDENCE_OVERCLOCK ?= 0
 REPLAY_EVIDENCE_DIR ?=
 GNGEO ?= ngdevkit-gngeo
+GNGEO_PREFIX ?= $(shell \
+	executable=$$(command -v "$(GNGEO)" 2>/dev/null); \
+	if test -n "$$executable"; then \
+		dirname "$$(dirname "$$(readlink -f "$$executable")")"; \
+	fi)
+GNGEO_SUPPORT_DATA ?= \
+	$(GNGEO_PREFIX)/share/ngdevkit-gngeo/gngeo_data.zip
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
 GNGEO_REALTIME_FLAGS ?= \
@@ -254,6 +261,7 @@ $(JUMP_ENGINE_TEST): \
 		$(ROOT)/codegen/lib/instructions.c \
 		$(ROOT)/codegen/lib/cpu.c \
 		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
 		apu_null.c | $(BUILD)
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
 		-Wno-unused-parameter -Wno-unused-variable \
@@ -360,6 +368,11 @@ cart: \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
 	}
+	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
+		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
+		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
+		exit 2; \
+	}
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(CART_TARGET)
 	$(OBJCOPY) -O binary -S -R .text2 \
 		--gap-fill 0xff --pad-to 1048576 \
@@ -386,7 +399,7 @@ cart: \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
 		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo proof of concept" \
-		-x gngeo.data=/usr/share/ngdevkit-gngeo/gngeo_data.zip \
+		-x gngeo.data=$(GNGEO_SUPPORT_DATA) \
 		-o $(GNGEO_DATA)
 	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
 	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
@@ -408,6 +421,11 @@ replay-cart: \
 	}
 	@test -n "$(REPLAY_FM2)" || { \
 		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+		exit 2; \
+	}
+	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
+		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
+		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
 		exit 2; \
 	}
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(REPLAY_TARGET)
@@ -439,7 +457,7 @@ replay-cart: \
 		-p $(REPLAY_PROM) -c $(REPLAY_CROM1) $(REPLAY_CROM2) \
 		-v $(REPLAY_VROM1) -s $(REPLAY_SROM1) -m $(REPLAY_MROM1) \
 		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo TAS replay gate" \
-		-x gngeo.data=/usr/share/ngdevkit-gngeo/gngeo_data.zip \
+		-x gngeo.data=$(GNGEO_SUPPORT_DATA) \
 		-o $(REPLAY_GNGEO_DATA)
 	cp $(NG_SHARE)/aes.zip $(REPLAY_ROMDIR)/
 	cp $(NG_SHARE)/neogeo.zip $(REPLAY_ROMDIR)/

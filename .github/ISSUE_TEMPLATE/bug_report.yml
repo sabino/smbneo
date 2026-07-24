@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible source, build, gameplay, audio, or renderer defect.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not upload ROMs, BIOS files, or generated cartridge builds.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Give the stage, inputs, build command, and minimal repeatable steps.
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      placeholder: Full Git commit ID
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Hardware/emulator, OS, and relevant tool versions.
+    validations:
+      required: true

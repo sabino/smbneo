@@ -1,0 +1,30 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
+*.nes binary
+*.NES binary
+*.fds binary
+*.FDS binary
+*.p1 binary
+*.p2 binary
+*.sp1 binary
+*.sp2 binary
+*.c1 binary
+*.c2 binary
+*.c3 binary
+*.c4 binary
+*.c5 binary
+*.c6 binary
+*.c7 binary
+*.c8 binary
+*.m1 binary
+*.v1 binary
+*.v2 binary
+*.s1 binary
+*.sav binary
+*.state binary

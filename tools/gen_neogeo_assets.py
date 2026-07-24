@@ -297,7 +297,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         required=True,
         type=Path,
-        help="legally obtained SMB .nes file or ZIP containing one .nes file",
+        help="user-supplied SMB .nes file or ZIP containing one .nes file",
     )
     parser.add_argument(
         "--output-dir",

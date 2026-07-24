@@ -1,16 +1,23 @@
-# SMB
+# Super Mario Bros. — Neo Geo port
 
-> **Neo Geo port in progress.** This fork now has a pure-C MC68000 target with
+> **Playable work in progress.** This branch adds a pure-C MC68000 target with
 > a direct Neo Geo tile/sprite renderer and a native Z80/YM2610 audio bridge.
 > It does not allocate a software framebuffer, copy CHR graphics into work RAM,
-> or run the desktop software mixer. The original desktop and web targets
-> remain available.
+> or run the desktop software mixer.
 
-[Play it online](https://nathsou.github.io/smb/)
+This is an unofficial preservation/engineering project built on
+[`nathsou/smb`](https://github.com/nathsou/smb), which statically recompiles
+the game from [doppelganger's disassembly](https://www.romhacking.net/documents/344/).
+The original desktop and web targets remain in the tree, but the Neo Geo
+target is the focus of this branch.
 
-Static recompilation of Super Mario Bros. using [doppelganger's disassembly](https://www.romhacking.net/documents/344/)
+No game ROM, Neo Geo BIOS, or generated cartridge is included. Point the
+build at your own local game image; converted graphics and cartridge files
+stay under ignored build directories.
 
-[![SMB C port running in the browser](res/smb-demo.png)](https://nathsou.github.io/smb)
+See [visual fidelity](docs/VISUAL_FIDELITY.md) for the sprite geometry and
+color target, and [third-party notices](THIRD_PARTY_NOTICES.md) for project
+credits.
 
 ## Controls
 
@@ -42,7 +49,7 @@ in ngdevkit-gngeo. Its direct hardware renderer keeps one persistent
 steady-state scenes fit one game tick per display VBlank at the stock
 emulated 68000 clock; enemy-heavy scenes have separate exact regression
 windows instead of being covered by that bounded smoke result. Graphics are
-generated locally from a legally obtained Super Mario Bros. (World) dump and
+generated locally from a user-supplied Super Mario Bros. (World) image and
 remain under the ignored `platform/neogeo/build/` directory.
 
 ```bash
@@ -182,7 +189,7 @@ $ git submodule update --init --recursive
 $ make build
 ```
 
-4. Place a legally obtained dump/ROM of SMB called `smb.nes` in the root folder to extract graphics data from
+4. Place a local SMB image called `smb.nes` in the root folder to extract graphics data from. You are responsible for complying with the laws that apply to you.
 5. You can now run `./smb`
 
 ## WebAssembly
@@ -190,7 +197,7 @@ $ make build
 1. Install a recent version of `clang` with support for the `wasm32` target
 2. Run `make wasm`
 3. Run an HTTP server in the `web/` folder and open `index.html` in your browser
-4. Select a legally obtained dump/ROM of SMB to extract graphics data from
+4. Select a local SMB image to extract graphics data from. You are responsible for complying with the laws that apply to you.
 
 ## Codegen
 

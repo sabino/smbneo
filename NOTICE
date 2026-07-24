@@ -1,0 +1,10 @@
+Super Mario Bros. Neo Geo port
+Copyright 2026 the port contributors
+
+This project contains modifications to the nathsou/smb static-recompilation
+project and references doppelganger's SMBDIS disassembly. See
+THIRD_PARTY_NOTICES.md for credits and component notices.
+
+The game title, characters, graphics, audio, and related trademarks belong to
+their respective owners. This project is unofficial and unaffiliated with
+Nintendo or SNK. No game ROM, BIOS, or generated cartridge is included.
