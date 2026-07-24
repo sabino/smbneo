@@ -28,6 +28,8 @@ uint8_t oam_dma;
 static uint8_t status_phase;
 
 uint32_t neogeo_ppu_column_generation[64];
+uint32_t neogeo_ppu_background_full_generation;
+uint32_t neogeo_ppu_background_hud_generation;
 uint32_t neogeo_ppu_hud_generation;
 uint32_t neogeo_ppu_palette_generation;
 
@@ -66,6 +68,12 @@ static void mark_nametable_changed(uint16_t index) {
         uint8_t row = (uint8_t)(table_offset >> 5);
 
         ++neogeo_ppu_column_generation[column];
+        if (row >= 1u && row <= 28u) {
+            ++neogeo_ppu_background_full_generation;
+        }
+        if (row >= 4u && row <= 29u) {
+            ++neogeo_ppu_background_hud_generation;
+        }
         if (table_column_base == 0u && row >= 1u && row <= 3u) {
             ++neogeo_ppu_hud_generation;
         }
@@ -78,6 +86,10 @@ static void mark_nametable_changed(uint16_t index) {
 
         for (i = 0; i < 4u; ++i) {
             ++neogeo_ppu_column_generation[first_column + i];
+        }
+        ++neogeo_ppu_background_full_generation;
+        if ((attribute >> 3) != 0u) {
+            ++neogeo_ppu_background_hud_generation;
         }
         if (table_column_base == 0u && (attribute >> 3) == 0u) {
             ++neogeo_ppu_hud_generation;
@@ -110,6 +122,8 @@ void ppu_init(uint8_t *chr) {
         0,
         sizeof(neogeo_ppu_column_generation)
     );
+    neogeo_ppu_background_full_generation = 0;
+    neogeo_ppu_background_hud_generation = 0;
     neogeo_ppu_hud_generation = 0;
     neogeo_ppu_palette_generation = 0;
 }

@@ -39,8 +39,12 @@
 #define SPRITES_PER_SET (FRONT_SPRITE_OFFSET + OAM_SPRITES)
 #define SPRITE_SET_COUNT 2u
 #define FIRST_GAME_SPRITE 1u
+#define BEHIND_SPRITE_BASE FIRST_GAME_SPRITE
+#define BACKGROUND_SPRITE_BASE \
+    (BEHIND_SPRITE_BASE + OAM_SPRITES * SPRITE_SET_COUNT)
+#define FRONT_SPRITE_BASE (BACKGROUND_SPRITE_BASE + BACKGROUND_STRIPS)
 #define LAST_GAME_SPRITE \
-    (FIRST_GAME_SPRITE + SPRITES_PER_SET * SPRITE_SET_COUNT - 1u)
+    (FRONT_SPRITE_BASE + OAM_SPRITES * SPRITE_SET_COUNT - 1u)
 
 #if LAST_GAME_SPRITE > 380u
 #error Neo Geo renderer exceeds the 381 displayable sprite slots
@@ -50,6 +54,7 @@
 #define NEO_ATTR_VERTICAL_FLIP 0x0002u
 #define NEO_SCB3_STICKY 0x0040u
 #define BACKGROUND_MAX_DRIVERS 2u
+#define BACKGROUND_LIVE_ROW_LIMIT 64u
 
 #define NES_RIGHT 0x80u
 #define NES_LEFT 0x40u
@@ -64,7 +69,6 @@
 
 #define RENDER_PALETTE_COUNT 12u
 #define HUD_ENTRY_COUNT (FIX_HUD_ROWS * FIX_CONTENT_COLUMNS)
-#define HUD_SHARED_SWAP_MAX_CHANGES 5u
 
 typedef struct {
     uint16_t tile;
@@ -76,6 +80,14 @@ typedef struct {
     uint16_t attributes;
     uint16_t x;
 } OamSpriteCache;
+
+typedef struct {
+    uint32_t changed_rows;
+    uint16_t tile[BACKGROUND_MAX_ROWS];
+    uint16_t attributes[BACKGROUND_MAX_ROWS];
+    uint8_t physical_strip;
+    uint8_t tile_rows;
+} BackgroundStripUpdate;
 
 /*
  * The baseline port's 64-color RGB table converted once to the Neo Geo's
@@ -103,33 +115,33 @@ static uint8_t visible_set;
 static volatile uint16_t neogeo_vblank_signal;
 
 static BackgroundTileCache
-    background_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
-static uint16_t
-    background_x_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t
-    background_chain_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint32_t
-    background_generation_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t
-    background_world_column_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint16_t background_config_cache[SPRITE_SET_COUNT];
-static uint8_t background_first_column[SPRITE_SET_COUNT];
-static uint8_t background_ring_origin[SPRITE_SET_COUNT];
-static uint8_t background_ring_valid[SPRITE_SET_COUNT];
+    background_cache[BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
+static uint16_t background_x_cache[BACKGROUND_STRIPS];
+static uint8_t background_chain_cache[BACKGROUND_STRIPS];
+static uint32_t background_generation_cache[BACKGROUND_STRIPS];
+static uint8_t background_world_column_cache[BACKGROUND_STRIPS];
+static uint16_t background_config_cache;
+static uint8_t background_first_column;
+static uint8_t background_ring_origin;
+static uint8_t background_ring_valid;
+static uint32_t background_built_generation;
+static BackgroundStripUpdate background_pending[BACKGROUND_STRIPS];
+static uint8_t background_pending_count;
+static uint16_t background_pending_rows;
 
 static OamSpriteCache oam_cache[SPRITE_SET_COUNT][SPRITES_PER_SET];
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
 static uint8_t active_oam_count[SPRITE_SET_COUNT];
-static uint8_t active_background[SPRITE_SET_COUNT];
-static uint8_t
-    active_background_drivers[SPRITE_SET_COUNT][BACKGROUND_MAX_DRIVERS];
-static uint8_t active_background_driver_count[SPRITE_SET_COUNT];
+static uint8_t active_background;
+static uint8_t active_background_drivers[BACKGROUND_MAX_DRIVERS];
+static uint8_t active_background_driver_count;
 static uint8_t next_oam[OAM_SPRITES];
 static uint8_t next_oam_count;
 static uint8_t next_background_active;
 static uint8_t next_background_drivers[BACKGROUND_MAX_DRIVERS];
 static uint8_t next_background_driver_count;
 static uint16_t next_background_y_word;
+static uint16_t next_background_x_word[BACKGROUND_MAX_DRIVERS];
 
 static uint16_t desired_hud[HUD_ENTRY_COUNT];
 static uint16_t cached_hud[HUD_ENTRY_COUNT];
@@ -137,6 +149,7 @@ static uint32_t built_hud_generation;
 static uint16_t built_hud_config;
 static uint8_t hud_upload_pending;
 static uint8_t hud_changed_count;
+static uint8_t hud_changed_indices[HUD_ENTRY_COUNT];
 static uint16_t desired_palettes[24][4];
 static uint16_t cached_palettes[24][4];
 static uint16_t desired_backdrop;
@@ -197,8 +210,23 @@ void neogeo_video_wait_for_present(void) {
     }
 }
 
-static uint16_t sprite_set_base(uint8_t set) {
-    return (uint16_t)(FIRST_GAME_SPRITE + (uint16_t)set * SPRITES_PER_SET);
+static uint16_t oam_hardware_sprite(
+    uint8_t set,
+    uint16_t relative_sprite
+) {
+    if (relative_sprite < FRONT_SPRITE_OFFSET) {
+        return (uint16_t)(
+            BEHIND_SPRITE_BASE +
+            (uint16_t)set * OAM_SPRITES +
+            relative_sprite
+        );
+    }
+    return (uint16_t)(
+        FRONT_SPRITE_BASE +
+        (uint16_t)set * OAM_SPRITES +
+        relative_sprite -
+        FRONT_SPRITE_OFFSET
+    );
 }
 
 static uint16_t sprite_y_word(int16_t y, uint16_t height_tiles) {
@@ -375,11 +403,7 @@ static void upload_palette_changes(void) {
     palette_upload_pending = 0;
 }
 
-static void build_background(
-    uint8_t set,
-    uint16_t set_base,
-    uint8_t show_hud
-) {
+static void build_background(uint8_t show_hud) {
     uint16_t pattern_base = (ppu_ctrl & 0x10u) ? 256u : 0u;
     uint16_t render_config =
         (uint16_t)(pattern_base | (show_hud != 0u ? 1u : 0u));
@@ -391,100 +415,108 @@ static void build_background(
     uint8_t first_tile_y = show_hud ? 4u : 1u;
     uint8_t tile_rows = show_hud ? 26u : 28u;
     uint16_t output_y = show_hud ? 24u : 0u;
+    uint32_t source_generation = show_hud
+        ? neogeo_ppu_background_hud_generation
+        : neogeo_ppu_background_full_generation;
+    uint8_t scan_background;
     uint8_t ring_origin;
     uint8_t strip;
 
     next_background_active = 0;
     next_background_driver_count = 0;
+    background_pending_count = 0;
+    background_pending_rows = 0;
     if ((ppu_mask & 0x08u) == 0u) {
         return;
     }
 
-    if (background_config_cache[set] != render_config) {
+    scan_background = (uint8_t)(
+        background_ring_valid == 0u ||
+        background_config_cache != render_config ||
+        background_first_column != first_column ||
+        background_built_generation != source_generation
+    );
+    if (background_config_cache != render_config) {
         memset(
-            background_generation_cache[set],
+            background_generation_cache,
             0xff,
-            sizeof(background_generation_cache[set])
+            sizeof(background_generation_cache)
         );
-        background_config_cache[set] = render_config;
+        background_config_cache = render_config;
     }
 
     /*
      * Preserve each hardware strip's world column while the camera advances.
      * Usually only the newly entering right-hand column needs new SCB1 data;
-     * fine scrolling becomes cheap SCB4 movement.
+     * fine scrolling becomes one or two driver updates on the persistent bank.
      */
-    if (background_ring_valid[set] != 0u) {
+    if (background_ring_valid != 0u) {
         uint8_t delta = (uint8_t)(
-            (first_column - background_first_column[set]) & 63u
+            (first_column - background_first_column) & 63u
         );
 
         if (delta < BACKGROUND_STRIPS) {
-            uint8_t origin =
-                (uint8_t)(background_ring_origin[set] + delta);
+            uint8_t origin = (uint8_t)(background_ring_origin + delta);
 
             if (origin >= BACKGROUND_STRIPS) {
                 origin = (uint8_t)(origin - BACKGROUND_STRIPS);
             }
-            background_ring_origin[set] = origin;
+            background_ring_origin = origin;
         } else {
-            background_ring_origin[set] = 0;
+            background_ring_origin = 0;
             memset(
-                background_generation_cache[set],
+                background_generation_cache,
                 0xff,
-                sizeof(background_generation_cache[set])
+                sizeof(background_generation_cache)
             );
             memset(
-                background_world_column_cache[set],
+                background_world_column_cache,
                 0xff,
-                sizeof(background_world_column_cache[set])
+                sizeof(background_world_column_cache)
             );
         }
     } else {
-        background_ring_valid[set] = 1;
-        background_ring_origin[set] = 0;
+        background_ring_valid = 1;
+        background_ring_origin = 0;
         memset(
-            background_generation_cache[set],
+            background_generation_cache,
             0xff,
-            sizeof(background_generation_cache[set])
+            sizeof(background_generation_cache)
         );
         memset(
-            background_world_column_cache[set],
+            background_world_column_cache,
             0xff,
-            sizeof(background_world_column_cache[set])
+            sizeof(background_world_column_cache)
         );
     }
 
-    background_first_column[set] = first_column;
-    ring_origin = background_ring_origin[set];
+    background_first_column = first_column;
+    ring_origin = background_ring_origin;
     next_background_active = 1;
 
-    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+    if (scan_background != 0u) {
+        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
         uint8_t world_column =
             (uint8_t)((first_column + strip) & 63u);
         uint32_t column_generation =
             neogeo_ppu_column_generation[world_column];
         uint8_t physical_strip = (uint8_t)(ring_origin + strip);
-        uint16_t relative_sprite;
-        uint16_t sprite;
 
         if (physical_strip >= BACKGROUND_STRIPS) {
             physical_strip =
                 (uint8_t)(physical_strip - BACKGROUND_STRIPS);
         }
-        relative_sprite =
-            (uint16_t)(BACKGROUND_OFFSET + physical_strip);
-        sprite = (uint16_t)(set_base + relative_sprite);
 
         if (
-            background_world_column_cache[set][physical_strip] !=
-                world_column ||
-            background_generation_cache[set][physical_strip] !=
-                column_generation
+            background_world_column_cache[physical_strip] != world_column ||
+            background_generation_cache[physical_strip] != column_generation
         ) {
+            BackgroundStripUpdate *pending =
+                &background_pending[background_pending_count];
             uint8_t source_x = (uint8_t)(world_column & 31u);
             uint16_t nametable_offset =
                 (world_column & 32u) ? 0x0400u : 0u;
+            uint32_t changed_rows = 0;
             uint8_t row;
 
             for (row = 0; row < tile_rows; ++row) {
@@ -506,30 +538,30 @@ static void build_background(
                     (NEO_BG_PALETTE_BASE + palette_number) << 8
                 );
                 BackgroundTileCache *cached =
-                    &background_cache[set][physical_strip][row];
+                    &background_cache[physical_strip][row];
 
                 if (
                     cached->tile != neogeo_tile ||
                     cached->attributes != attributes
                 ) {
-                    *REG_VRAMMOD = 1;
-                    *REG_VRAMADDR = (uint16_t)(
-                        ADDR_SCB1 +
-                        sprite * 64u +
-                        (uint16_t)row * 2u
-                    );
-                    *REG_VRAMRW = neogeo_tile;
-                    *REG_VRAMRW = attributes;
-                    cached->tile = neogeo_tile;
-                    cached->attributes = attributes;
+                    changed_rows |= (uint32_t)1u << row;
+                    pending->tile[row] = neogeo_tile;
+                    pending->attributes[row] = attributes;
+                    ++background_pending_rows;
                 }
             }
-            background_world_column_cache[set][physical_strip] =
-                world_column;
-            background_generation_cache[set][physical_strip] =
-                column_generation;
+            if (changed_rows != 0u) {
+                pending->changed_rows = changed_rows;
+                pending->physical_strip = physical_strip;
+                pending->tile_rows = tile_rows;
+                ++background_pending_count;
+            }
+            background_world_column_cache[physical_strip] = world_column;
+            background_generation_cache[physical_strip] = column_generation;
+        }
         }
     }
+    background_built_generation = source_generation;
 
     /*
      * Hardware sticky sprites inherit the preceding strip's position, height,
@@ -547,22 +579,6 @@ static void build_background(
     next_background_y_word =
         sprite_y_word((int16_t)output_y, tile_rows);
 
-    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
-        uint8_t sticky = (uint8_t)(
-            strip != ring_origin &&
-            (ring_origin == 0u || strip != 0u)
-        );
-
-        if (background_chain_cache[set][strip] != sticky) {
-            *REG_VRAMMOD = 1;
-            *REG_VRAMADDR = (uint16_t)(
-                ADDR_SCB3 + set_base + BACKGROUND_OFFSET + strip
-            );
-            *REG_VRAMRW = sticky != 0u ? NEO_SCB3_STICKY : 0u;
-            background_chain_cache[set][strip] = sticky;
-        }
-    }
-
     for (strip = 0; strip < next_background_driver_count; ++strip) {
         uint8_t physical_strip = next_background_drivers[strip];
         uint8_t logical_strip = physical_strip == ring_origin
@@ -571,18 +587,141 @@ static void build_background(
         uint16_t x = (uint16_t)(
             NES_CONTENT_X - fine_scroll + (uint16_t)logical_strip * 8u
         );
-        uint16_t x_word = sprite_x_word(x);
 
-        if (background_x_cache[set][physical_strip] == x_word) {
-            continue;
-        }
-        *REG_VRAMMOD = 1;
-        *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB4 + set_base + BACKGROUND_OFFSET + physical_strip
-        );
-        *REG_VRAMRW = x_word;
-        background_x_cache[set][physical_strip] = x_word;
+        next_background_x_word[strip] = sprite_x_word(x);
     }
+}
+
+static void upload_background_changes(void) {
+    uint8_t update_index;
+
+    if (background_pending_count == 0u) {
+        return;
+    }
+    *REG_VRAMMOD = 1;
+    for (
+        update_index = 0;
+        update_index < background_pending_count;
+        ++update_index
+    ) {
+        BackgroundStripUpdate *pending =
+            &background_pending[update_index];
+        uint16_t sprite = (uint16_t)(
+            BACKGROUND_SPRITE_BASE + pending->physical_strip
+        );
+        uint8_t row = 0;
+
+        while (row < pending->tile_rows) {
+            while (
+                row < pending->tile_rows &&
+                (pending->changed_rows & ((uint32_t)1u << row)) == 0u
+            ) {
+                ++row;
+            }
+            if (row >= pending->tile_rows) {
+                break;
+            }
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB1 + sprite * 64u + (uint16_t)row * 2u
+            );
+            do {
+                BackgroundTileCache *cached =
+                    &background_cache[pending->physical_strip][row];
+
+                *REG_VRAMRW = pending->tile[row];
+                *REG_VRAMRW = pending->attributes[row];
+                cached->tile = pending->tile[row];
+                cached->attributes = pending->attributes[row];
+                ++row;
+            } while (
+                row < pending->tile_rows &&
+                (pending->changed_rows & ((uint32_t)1u << row)) != 0u
+            );
+        }
+    }
+    background_pending_count = 0;
+    background_pending_rows = 0;
+}
+
+static void hide_background(void) {
+    uint8_t i;
+
+    if (active_background == 0u) {
+        return;
+    }
+    *REG_VRAMMOD = 1;
+    for (i = 0; i < active_background_driver_count; ++i) {
+        *REG_VRAMADDR = (uint16_t)(
+            ADDR_SCB3 +
+            BACKGROUND_SPRITE_BASE +
+            active_background_drivers[i]
+        );
+        *REG_VRAMRW = 0;
+    }
+    active_background = 0;
+}
+
+static void prepare_background_hidden(void) {
+    uint8_t ring_origin;
+    uint8_t strip;
+
+    if (next_background_active == 0u) {
+        return;
+    }
+    ring_origin = next_background_drivers[0];
+    *REG_VRAMMOD = 1;
+    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+        uint8_t sticky = (uint8_t)(
+            strip != ring_origin &&
+            (ring_origin == 0u || strip != 0u)
+        );
+
+        if (background_chain_cache[strip] != sticky) {
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB3 + BACKGROUND_SPRITE_BASE + strip
+            );
+            *REG_VRAMRW = sticky != 0u ? NEO_SCB3_STICKY : 0u;
+            background_chain_cache[strip] = sticky;
+        }
+    }
+    for (strip = 0; strip < next_background_driver_count; ++strip) {
+        uint8_t physical_strip = next_background_drivers[strip];
+        uint16_t x_word = next_background_x_word[strip];
+
+        if (background_x_cache[physical_strip] != x_word) {
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB4 +
+                BACKGROUND_SPRITE_BASE +
+                physical_strip
+            );
+            *REG_VRAMRW = x_word;
+            background_x_cache[physical_strip] = x_word;
+        }
+    }
+}
+
+static void show_background(void) {
+    uint8_t i;
+
+    if (next_background_active == 0u) {
+        return;
+    }
+    *REG_VRAMMOD = 1;
+    for (i = 0; i < next_background_driver_count; ++i) {
+        *REG_VRAMADDR = (uint16_t)(
+            ADDR_SCB3 +
+            BACKGROUND_SPRITE_BASE +
+            next_background_drivers[i]
+        );
+        *REG_VRAMRW = next_background_y_word;
+    }
+    active_background = 1;
+    active_background_driver_count = next_background_driver_count;
+    memcpy(
+        active_background_drivers,
+        next_background_drivers,
+        next_background_driver_count
+    );
 }
 
 static uint8_t sprite_fits_scanline_budget(int16_t y) {
@@ -604,7 +743,7 @@ static uint8_t sprite_fits_scanline_budget(int16_t y) {
     return 1;
 }
 
-static void build_oam_sprites(uint8_t set, uint16_t set_base) {
+static void build_oam_sprites(uint8_t set) {
     uint16_t pattern_base = (ppu_ctrl & 0x08u) ? 256u : 0u;
     uint8_t draw_left_edge = (uint8_t)(ppu_mask & 0x04u);
     uint8_t oam_index;
@@ -650,7 +789,7 @@ static void build_oam_sprites(uint8_t set, uint16_t set_base) {
             (attributes & 0x20u) ? BEHIND_SPRITE_OFFSET : FRONT_SPRITE_OFFSET;
         relative_sprite =
             (uint16_t)(priority_offset + (OAM_SPRITES - 1u - oam_index));
-        sprite = (uint16_t)(set_base + relative_sprite);
+        sprite = oam_hardware_sprite(set, relative_sprite);
         neogeo_tile = (uint16_t)(
             CROM_NES_TILE_BASE + pattern_base + oam[offset + 1u]
         );
@@ -728,6 +867,7 @@ static void build_hud(uint8_t show_hud) {
             }
             desired_hud[index] = entry;
             if (cached_hud[index] != entry) {
+                hud_changed_indices[hud_changed_count] = (uint8_t)index;
                 ++hud_changed_count;
             }
         }
@@ -738,87 +878,61 @@ static void build_hud(uint8_t show_hud) {
 }
 
 static void upload_hud_changes(void) {
-    uint16_t index;
+    uint8_t changed_index;
 
     if (hud_upload_pending == 0u) {
         return;
     }
     *REG_VRAMMOD = 1;
-    for (index = 0; index < HUD_ENTRY_COUNT; ++index) {
+    for (
+        changed_index = 0;
+        changed_index < hud_changed_count;
+        ++changed_index
+    ) {
+        uint16_t index = hud_changed_indices[changed_index];
         uint16_t value = desired_hud[index];
 
-        if (cached_hud[index] != value) {
-            uint8_t row = (uint8_t)(index >> 5);
-            uint8_t column = (uint8_t)(index & 31u);
+        uint8_t row = (uint8_t)(index >> 5);
+        uint8_t column = (uint8_t)(index & 31u);
 
-            *REG_VRAMADDR = (uint16_t)(
-                ADDR_FIXMAP +
-                ((FIX_CONTENT_X + column) << 5) +
-                FIX_VISIBLE_Y +
-                row
-            );
-            *REG_VRAMRW = value;
-            cached_hud[index] = value;
-        }
+        *REG_VRAMADDR = (uint16_t)(
+            ADDR_FIXMAP +
+            ((FIX_CONTENT_X + column) << 5) +
+            FIX_VISIBLE_Y +
+            row
+        );
+        *REG_VRAMRW = value;
+        cached_hud[index] = value;
     }
     hud_upload_pending = 0;
     hud_changed_count = 0;
 }
 
 static void hide_sprite_set(uint8_t set) {
-    uint16_t set_base = sprite_set_base(set);
     uint8_t i;
 
     *REG_VRAMMOD = 1;
-    if (active_background[set] != 0u) {
-        for (i = 0; i < active_background_driver_count[set]; ++i) {
-            *REG_VRAMADDR = (uint16_t)(
-                ADDR_SCB3 + set_base + BACKGROUND_OFFSET +
-                active_background_drivers[set][i]
-            );
-            *REG_VRAMRW = 0;
-        }
-    }
-
     for (i = 0; i < active_oam_count[set]; ++i) {
         *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB3 + set_base + active_oam[set][i]
+            ADDR_SCB3 + oam_hardware_sprite(set, active_oam[set][i])
         );
         *REG_VRAMRW = 0;
     }
 }
 
 static void show_next_sprite_set(uint8_t set) {
-    uint16_t set_base = sprite_set_base(set);
     uint8_t i;
 
     *REG_VRAMMOD = 1;
-    if (next_background_active != 0u) {
-        for (i = 0; i < next_background_driver_count; ++i) {
-            *REG_VRAMADDR = (uint16_t)(
-                ADDR_SCB3 + set_base + BACKGROUND_OFFSET +
-                next_background_drivers[i]
-            );
-            *REG_VRAMRW = next_background_y_word;
-        }
-    }
-
     for (i = 0; i < next_oam_count; ++i) {
         uint8_t relative_sprite = next_oam[i];
 
-        *REG_VRAMADDR =
-            (uint16_t)(ADDR_SCB3 + set_base + relative_sprite);
+        *REG_VRAMADDR = (uint16_t)(
+            ADDR_SCB3 + oam_hardware_sprite(set, relative_sprite)
+        );
         *REG_VRAMRW = next_scb3[relative_sprite];
     }
 
-    active_background[set] = next_background_active;
-    active_background_driver_count[set] =
-        next_background_driver_count;
-    memcpy(
-        active_background_drivers[set],
-        next_background_drivers,
-        next_background_driver_count
-    );
     active_oam_count[set] = next_oam_count;
     memcpy(active_oam[set], next_oam, next_oam_count);
 }
@@ -882,16 +996,15 @@ void neogeo_video_init(void) {
         0xff,
         sizeof(background_world_column_cache)
     );
-    memset(background_config_cache, 0xff, sizeof(background_config_cache));
-    memset(background_ring_valid, 0, sizeof(background_ring_valid));
+    background_config_cache = 0xffffu;
+    background_ring_valid = 0;
+    background_built_generation = 0xffffffffu;
+    background_pending_count = 0;
+    background_pending_rows = 0;
     memset(oam_cache, 0xff, sizeof(oam_cache));
     memset(active_oam_count, 0, sizeof(active_oam_count));
-    memset(active_background, 0, sizeof(active_background));
-    memset(
-        active_background_driver_count,
-        0,
-        sizeof(active_background_driver_count)
-    );
+    active_background = 0;
+    active_background_driver_count = 0;
     memset(cached_palettes, 0xff, sizeof(cached_palettes));
     cached_backdrop = 0xffffu;
     built_palette_generation = 0xffffffffu;
@@ -919,59 +1032,57 @@ void neogeo_video_init(void) {
 void neogeo_video_render(void) {
 #if !defined(SMB_NEOGEO_LOGIC_BENCH)
     uint8_t next_set = (uint8_t)(visible_set ^ 1u);
-    uint16_t set_base = sprite_set_base(next_set);
-    uint8_t split_live_update;
+    uint8_t bulk_rebuild;
     uint8_t show_hud =
         (uint8_t)(
             (ppu_mask & 0x08u) != 0u &&
             ram[Sprite0HitDetectFlag] != 0u
         );
 
-    build_background(next_set, set_base, show_hud);
-    build_oam_sprites(next_set, set_base);
+    build_background(show_hud);
+    build_oam_sprites(next_set);
     build_palette_state();
     build_hud(show_hud);
 
     /*
-     * Linked MC68000 cycle analysis gives these conservative post-wait
-     * payload bounds for this implementation:
-     *
-     *   palette clean + HUD scan + split gate + worst SCB swap:
-     *       24394 + 106 * changed HUD cells
-     *   worst split palette + HUD phase: 22724
-     *   worst split SCB phase: 18316
-     *
-     * Five changed HUD cells keep the shared path at 24924 cycles; six would
-     * need 25030. A palette-only update plus the worst SCB swap remains below
-     * the same 25000-cycle ceiling, but palette and a pending HUD scan
-     * together must split. This decision is made before waiting, so crossing
-     * a VBlank while building still cannot make the live writes consume a
-     * stale interrupt.
+     * Initial screens and large camera/configuration jumps are populated
+     * while the persistent background bank is hidden. Ordinary gameplay
+     * changes at most a few rows or one entering strip and is committed in
+     * the same fresh VBlank as palette, FIX, and OAM state.
      */
-    split_live_update = (uint8_t)(
-        hud_upload_pending != 0u &&
-        (
-            palette_upload_pending != 0u ||
-            hud_changed_count > HUD_SHARED_SWAP_MAX_CHANGES
-        )
+    bulk_rebuild = (uint8_t)(
+        active_background != 0u &&
+        next_background_active != 0u &&
+        background_pending_rows > BACKGROUND_LIVE_ROW_LIMIT
     );
+    if (active_background == 0u && next_background_active != 0u) {
+        upload_background_changes();
+        prepare_background_hidden();
+    }
 #endif
 
     /*
-     * Palette/FIX/SCB3 are the only live-display state. Upload palette/FIX in
-     * a fresh VBlank. Large updates wait for another fresh VBlank before the
-     * bounded SCB3 swap; common frames safely complete all work in one.
+     * All writes affecting visible palette, FIX, SCB1, SCB3, or SCB4 state
+     * begin in a fresh VBlank. A rare oversized background rebuild hides its
+     * driver, completes against invisible strips, then reveals on the next
+     * VBlank. Object sprites remain double-buffered throughout.
      */
     wait_for_next_vblank();
 #if !defined(SMB_NEOGEO_LOGIC_BENCH)
     upload_palette_changes();
     upload_hud_changes();
-    if (split_live_update != 0u) {
-        wait_for_next_vblank();
-    }
+
+    hide_background();
     hide_sprite_set(visible_set);
     show_next_sprite_set(next_set);
     visible_set = next_set;
+
+    upload_background_changes();
+    prepare_background_hidden();
+    if (bulk_rebuild != 0u) {
+        wait_for_next_vblank();
+    }
+    show_background();
     ++neogeo_render_generation;
 #endif
     ++neogeo_game_frame_count;
