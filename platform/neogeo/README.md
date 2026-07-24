@@ -23,12 +23,24 @@ python3 tools/check_reproducible_cart.py --rom="/path/to/owned/smb.zip"
 python3 tools/measure_neogeo_cadence.py \
   --warmup-vblanks 120 --sample-vblanks 120 \
   --assert-zero-missed
+
+# Use a local text FM2 as a deterministic all-stage cartridge gate
+make -C platform/neogeo replay-cart \
+  SMB_ROM="/path/to/owned/smb.zip" \
+  REPLAY_FM2="/path/to/full-warpless.fm2" \
+  REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
+python3 tools/run_neogeo_replay_gate.py --timeout 900
 ```
 
 `verify` does not need an SMB ROM. `cart` and `run` accept either a raw iNES
 file or a ZIP with exactly one `.nes` member. The cadence probe uses an
 isolated X display, positively verifies ownership of the emulator's fixed
-debugger listener, and applies a finite sampling deadline.
+debugger listener, and applies a finite sampling deadline. `replay-cart`
+requires a local text FM2; it does not download or track the movie. The
+`REPLAY_HARDWARE_PLAYABLE=1` policy rejects simultaneous opposite joystick
+directions. The runner owns an isolated display and emulator process group,
+resolves the cartridge's raw trap/mailbox addresses from its ELF, applies a
+finite deadline, and writes a bounded evidence directory.
 
 Generated output is intentionally ignored:
 
@@ -36,6 +48,7 @@ Generated output is intentionally ignored:
 - title-enabled `build/smbneogeo-cart.elf` / `.map` cartridge outputs
 - `build/assets/asset-manifest.json`
 - `build/rom/smbneogeo.zip`
+- `build/replay-fast/` and `build/replay-rendered/`
 - emulator BIOS/hash support files
 
 The repository contains no Nintendo graphics. The local cartridge does, so it

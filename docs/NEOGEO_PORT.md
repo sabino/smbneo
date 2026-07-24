@@ -22,6 +22,8 @@ Completed:
 - Byte-for-byte reproducible cartridge checker using two isolated builds.
 - Deterministic recording validation, compact replay emission, and a strict
   local FM2 input-log importer.
+- A separate FM2-driven cartridge, sequential 32-stage/final-victory tracker,
+  raw debugger mailbox, and bounded isolated runner for progression evidence.
 - Sustained one-game-frame-per-VBlank cadence at stock emulated clock after
   the cold-start cache fill.
 - Automated architecture, translated-core reachability, forbidden-symbol,
@@ -29,8 +31,9 @@ Completed:
 
 Not completed:
 
-- A deterministic proof of progression through all 32 stages. The checked-in
-  smoke recording covers only stages 1-1 through 1-3.
+- A passing deterministic proof of progression through all 32 stages. The
+  harness is complete, but an imported run must still remain synchronized
+  with this frame-at-a-time translated core through the final victory state.
 - YM2610 sound/music. `apu_null.c` currently discards NES APU writes.
 - Real AES/MVS or flash-cartridge validation.
 - Cycle/scanline-accurate PPU behavior. This port intentionally follows the
@@ -200,6 +203,106 @@ version's deterministic `00 00 00 00 ff ff ff ff` power-on pattern; explicit
 zero-fill option 2 is also supported. Fill-FF, random, malformed, or ambiguous
 initialization is rejected instead of being silently imported.
 
+## Published TAS regression lanes
+
+FM2 is a useful interchange format here because its text input log contains
+one `RLDUTSBA` controller record per emulated frame. The importer accepts
+UTF-8 or legacy single-byte metadata, but requires every input record to be
+strict ASCII and validates the exact game checksum, startup mode, controller
+ports, emulator commands, frame count, and raw file hash.
+
+Four external movies provide complementary regression lanes:
+
+| Lane | Source and authors | Local FM2 records | Intended gate |
+| --- | --- | ---: | --- |
+| Published warpless | [HappyLee and Mars608, 18:36.78](https://tasvideos.org/3728M) | 67,117 | Definitive published all-32-stage core oracle |
+| No-opposite warpless user file | [yizhihongzhunan, 18:36.877 RTA](https://tasvideos.org/UserFiles/Info/637779016362867321) | 67,677 | Preferred stock-controller-expressible all-stage oracle |
+| Published warp run | [HappyLee, 04:57.31](https://tasvideos.org/1715M) | 17,868 | Famous short synchronization smoke; intentionally cannot pass the sequential-stage gate |
+| No-opposite warp user file | [zdoroviy_antony, 17,882 frames](https://tasvideos.org/UserFiles/Info/56655800614738568) | 17,882 | Short stock-controller-expressible synchronization smoke |
+
+The published warpless movie is the strongest provenance/reference run and
+was replayed on an original console, but its documented 6-2 route includes
+simultaneous `L+D+R`. The no-opposite warpless user file is therefore the
+better input for the Neo Geo joystick policy. It is still a frame-perfect
+tool-assisted movie, not evidence of ordinary human execution.
+
+The exact locally inspected downloads had these SHA-256 values:
+
+| Movie | Raw FM2 SHA-256 |
+| --- | --- |
+| Published warpless | `a9a3403b639cd30bd06d721ebb44449555ac64f979d95b3ce1c77642bc4ba423` |
+| No-opposite warpless | `c9afd9d1d6ee7abbeacf1ae32a74cd26fae2b42109815bf7bbbdccc253111f9b` |
+| Published warp run | `66f28af696f95f642ae962829d51a4d7071ee3255cf39b277c84c6f3ff6e191b` |
+| No-opposite warp run | `fc5fde2e256b3a6c3765d317a648099537ff860bdd890160efd61104f11dcff4` |
+
+TASVideos asks callers to link to the publication/user-file page instead of
+hotlinking the download. The repository follows that rule and does not
+contain any of these movies. Download a text `.fm2` manually from its page,
+retain author attribution, and build the local gate with:
+
+```bash
+make -C platform/neogeo replay-cart \
+  SMB_ROM="/path/to/smb.zip" \
+  REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
+  REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
+
+python3 tools/run_neogeo_replay_gate.py \
+  --68k-overclock 1000 \
+  --timeout 900
+```
+
+The generated header stores compact `uint16_t` durations and `uint8_t`
+controller states rather than 67,000 padded structures. It also embeds the raw
+FM2 SHA-256, canonical imported-recording SHA-256, exact input frame count,
+initial command, RAM initialization option/seed, direction policy, and
+opposite-direction count. The ignored gate build has its own ELF, map,
+cartridge, and asset directory, so it cannot contaminate the playable build.
+
+`REPLAY_FAST=1` skips only the hardware renderer and is appropriate for the
+translated-core progression gate. Omitting it exercises normal rendering but
+takes display time and is not a substitute for the separate stock-clock
+cadence measurement. The runner accepts a result only when it reaches the
+pass trap with both 32-stage masks complete. Failure, incomplete playback,
+invalid mailbox data, debugger/emulator exit, occupied debug port, and timeout
+all remain non-passing and produce a bounded `result.json` plus logs. A
+cartridge-side checkpoint exposes an intermediate mailbox every 1,800 frames;
+the debugger therefore does not need to stop and round-trip on every frame.
+
+### Current replay result
+
+On 2026-07-23, both full-game lanes were built into separate fast gate
+cartridges and executed through the raw debugger traps. Neither timed out, and
+neither passed:
+
+| Input | Terminal input frame | Terminal state | Entered/completed stages |
+| --- | ---: | --- | --- |
+| Published 67,117-frame warpless movie | 4,028 | Game over in 1-1 | 1 / 0 |
+| No-opposite 67,677-frame warpless movie | 4,274 | Game over in 1-1 | 1 / 0 |
+
+The published-movie gate ELF and cartridge SHA-256 values were
+`745bbaad2c76c093e88bf233b98aa1b274d7d4cbd10ed78d0e7811eed9bb669b`
+and
+`267be6e6e0afbedf6f4ae0ee0f4ac5f551c50dc27ea7d481a1ca45b3bcff90c5`.
+The no-opposite equivalents were
+`aa147fd6dae00cf336ccb4ba8a3c64f0b41e4169f1435198331bbdc6d40739b8`
+and
+`17a6504c378f458869c7ad609145187a298f2a262cd275b0e5946fb41923281e`.
+Two isolated builds of the published-movie gate matched byte-for-byte across
+the ELF, every P/C/S/M/V region, GnGeo data, and cartridge ZIP.
+Both terminal mailboxes had valid magic/version values, reported mode 3 task
+0, retained the exact source frame count and direction policy, and reached the
+dedicated fail trap. The stock-controller lane reported zero opposite
+directions.
+
+This is useful negative evidence: the input, cartridge transport, stage
+tracker, emulator runner, and failure capture are working, but the current
+frame-at-a-time core is not synchronized closely enough with either FCEUX
+movie to use those inputs as an all-stage proof. It does not contradict manual
+playability or the separate renderer cadence result. The next correctness
+target is now concrete: capture a reference core-state transcript before
+frame 4,028 and fix the first state divergence rather than tuning inputs by
+guesswork.
+
 ## Verification performed
 
 The milestone is checked with:
@@ -222,6 +325,12 @@ python3 tools/measure_neogeo_cadence.py \
   --warmup-vblanks 300 \
   --sample-vblanks 120 \
   --assert-zero-missed
+
+make -C platform/neogeo replay-cart \
+  SMB_ROM="/path/to/smb.zip" \
+  REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
+  REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
+python3 tools/run_neogeo_replay_gate.py --timeout 900
 ```
 
 The cadence probe owns an isolated X display and process groups, verifies
@@ -257,8 +366,8 @@ not tracked.
 
 ## Next engineering steps
 
-1. Embed a locally supplied, validated full-game replay in a gate-only
-   cartridge and prove all 32 stage transitions plus the final victory state.
+1. Resolve any full-game FM2 synchronization drift exposed by the cartridge
+   gate and retain a passing all-32-stage/final-victory result.
 2. Add a deterministic core-state transcript so replay drift can be separated
    from renderer or emulator failures.
 3. Run long rendered replays across every world and retain transition

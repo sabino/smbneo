@@ -9,6 +9,7 @@ MAP := $(BUILD)/smbneogeo.map
 CART_TARGET := $(BUILD)/smbneogeo-cart.elf
 CART_MAP := $(BUILD)/smbneogeo-cart.map
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
+REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 GAMEROM := smbneogeo
 
 CC := m68k-neogeo-elf-gcc
@@ -44,17 +45,20 @@ CFLAGS := \
 LDFLAGS := \
 	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS)
 
-LOCAL_SOURCES := main.c video.c ppu_direct.c apu_null.c
+ENGINE_SOURCES := video.c ppu_direct.c apu_null.c
 CORE_NAMES := instructions code data cpu
-BASE_OBJECTS := \
-	$(LOCAL_SOURCES:%.c=$(BUILD)/%.o) \
+ENGINE_OBJECTS := \
+	$(ENGINE_SOURCES:%.c=$(BUILD)/%.o) \
 	$(CORE_NAMES:%=$(BUILD)/%.o)
+BASE_OBJECTS := $(BUILD)/main.o $(ENGINE_OBJECTS)
 ELF_OBJECTS := $(BASE_OBJECTS) $(BUILD)/title_data_stub.o
 CART_OBJECTS := $(BASE_OBJECTS) $(BUILD)/smbneogeo-title.o
-DEPENDENCIES := \
+DEPENDENCIES = \
 	$(BASE_OBJECTS:.o=.d) \
 	$(BUILD)/title_data_stub.d \
-	$(BUILD)/smbneogeo-title.d
+	$(BUILD)/smbneogeo-title.d \
+	$(REPLAY_MAIN_OBJECT:.o=.d) \
+	$(REPLAY_GATE_OBJECT:.o=.d)
 
 PROM := $(ROMDIR)/$(GAMEROM)-p1.p1
 CROM1 := $(ROMDIR)/$(GAMEROM)-c1.c1
@@ -66,14 +70,43 @@ CART := $(ROMDIR)/$(GAMEROM).zip
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
+REPLAY_FM2 ?=
+REPLAY_FAST ?= 0
+REPLAY_HARDWARE_PLAYABLE ?= 0
+REPLAY_TAIL_FRAMES ?= 1800
 GNGEO ?= ngdevkit-gngeo
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
 CARTRIDGE_TIMESTAMP ?= 202601010000.00
 
+REPLAY_VARIANT := $(if $(filter 1,$(REPLAY_FAST)),fast,rendered)
+REPLAYDIR := $(BUILD)/replay-$(REPLAY_VARIANT)
+REPLAY_ROMDIR := $(REPLAYDIR)/rom
+REPLAY_HEADER := $(REPLAYDIR)/smb_replay_data.h
+REPLAY_MAIN_OBJECT := $(REPLAYDIR)/replay_main.o
+REPLAY_GATE_OBJECT := $(REPLAYDIR)/replay_gate.o
+REPLAY_TARGET := $(REPLAYDIR)/smbneogeo-replay.elf
+REPLAY_MAP := $(REPLAYDIR)/smbneogeo-replay.map
+REPLAY_OBJECTS := \
+	$(REPLAY_MAIN_OBJECT) $(REPLAY_GATE_OBJECT) \
+	$(ENGINE_OBJECTS) $(BUILD)/smbneogeo-title.o
+REPLAY_PROM := $(REPLAY_ROMDIR)/$(GAMEROM)-p1.p1
+REPLAY_CROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-c1.c1
+REPLAY_CROM2 := $(REPLAY_ROMDIR)/$(GAMEROM)-c2.c2
+REPLAY_SROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-s1.s1
+REPLAY_MROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-m1.m1
+REPLAY_VROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-v1.v1
+REPLAY_CART := $(REPLAY_ROMDIR)/$(GAMEROM).zip
+REPLAY_GNGEO_DATA := $(REPLAY_ROMDIR)/gngeo_data.zip
+REPLAY_POLICY_FLAG := \
+	$(if $(filter 1,$(REPLAY_HARDWARE_PLAYABLE)),--hardware-playable,)
+REPLAY_FAST_FLAG := \
+	$(if $(filter 1,$(REPLAY_FAST)),-DSMB_NEOGEO_REPLAY_FAST,)
+
 .DEFAULT_GOAL := elf
 
-.PHONY: all elf test verify assets cart run clean FORCE
+.PHONY: \
+	all elf test verify assets cart run replay-cart replay-run clean FORCE
 
 all: verify
 
@@ -82,7 +115,7 @@ elf: $(TARGET)
 $(BUILD):
 	mkdir -p $@
 
-$(ROMDIR) $(ASSETDIR):
+$(ROMDIR) $(ASSETDIR) $(REPLAYDIR) $(REPLAY_ROMDIR):
 	mkdir -p $@
 
 $(BUILD)/%.o: %.c | $(BUILD)
@@ -94,6 +127,26 @@ $(BUILD)/%.o: $(ROOT)/codegen/lib/%.c | $(BUILD)
 $(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
+$(REPLAY_HEADER): FORCE | $(REPLAYDIR)
+	@test -n "$(REPLAY_FM2)" || { \
+		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(ROOT)/tools/rec_tool.py emit-fm2-c \
+		"$(REPLAY_FM2)" \
+		--symbol-prefix smb_replay \
+		$(REPLAY_POLICY_FLAG) \
+		--output "$@"
+
+$(REPLAY_MAIN_OBJECT): replay_main.c replay_gate.h $(REPLAY_HEADER) | $(REPLAYDIR)
+	$(CC) $(CPPFLAGS) -I$(REPLAYDIR) $(CFLAGS) \
+		$(REPLAY_FAST_FLAG) \
+		-DSMB_NEOGEO_REPLAY_TAIL_FRAMES=$(REPLAY_TAIL_FRAMES) \
+		-c $< -o $@
+
+$(REPLAY_GATE_OBJECT): replay_gate.c replay_gate.h | $(REPLAYDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
 $(TARGET): $(ELF_OBJECTS)
 	$(CC) -o $@ $(ELF_OBJECTS) $(LDFLAGS) \
 		-Wl,-Map,$(MAP) $(NG_LIBS)
@@ -101,6 +154,10 @@ $(TARGET): $(ELF_OBJECTS)
 $(CART_TARGET): $(CART_OBJECTS)
 	$(CC) -o $@ $(CART_OBJECTS) $(LDFLAGS) \
 		-Wl,-Map,$(CART_MAP) $(NG_LIBS)
+
+$(REPLAY_TARGET): $(REPLAY_OBJECTS)
+	$(CC) -o $@ $(REPLAY_OBJECTS) $(LDFLAGS) \
+		-Wl,-Map,$(REPLAY_MAP) $(NG_LIBS)
 
 $(PPU_STATE_TEST): \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
@@ -112,10 +169,19 @@ $(PPU_STATE_TEST): \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
 		ppu_direct.c title_data_stub.c -o $@
 
-test: $(PPU_STATE_TEST)
+$(REPLAY_GATE_TEST): \
+		$(ROOT)/tools/test_neogeo_replay_gate.c \
+		replay_gate.c replay_gate.h | $(BUILD)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_replay_gate.c \
+		replay_gate.c -o $@
+
+test: $(PPU_STATE_TEST) $(REPLAY_GATE_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
+	$(REPLAY_GATE_TEST)
 
 verify: test $(TARGET)
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(TARGET)
@@ -174,6 +240,54 @@ run: cart
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
+
+replay-cart: assets $(REPLAY_TARGET) | $(REPLAY_ROMDIR)
+	@test -n "$(SMB_ROM)" || { \
+		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
+		exit 2; \
+	}
+	@test -n "$(REPLAY_FM2)" || { \
+		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(REPLAY_TARGET)
+	$(OBJCOPY) -O binary -S -R .text2 \
+		--gap-fill 0xff --pad-to 1048576 \
+		$(REPLAY_TARGET) $(REPLAY_PROM)
+	dd if=$(REPLAY_PROM) of=$(REPLAY_PROM) conv=notrunc,swab status=none
+	cp $(ASSETDIR)/$(GAMEROM)-c1.c1 $(REPLAY_CROM1)
+	cp $(ASSETDIR)/$(GAMEROM)-c2.c2 $(REPLAY_CROM2)
+	cp $(ASSETDIR)/$(GAMEROM)-s1.s1 $(REPLAY_SROM1)
+	$(Z80_OBJCOPY) -I ihex -O binary \
+		$(NG_SHARE)/nullsound_driver.ihx $(REPLAY_MROM1) \
+		--pad-to 131072
+	truncate -s 524288 $(REPLAY_VROM1)
+	chmod 0644 \
+		$(REPLAY_PROM) $(REPLAY_CROM1) $(REPLAY_CROM2) \
+		$(REPLAY_SROM1) $(REPLAY_MROM1) $(REPLAY_VROM1)
+	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
+		$(REPLAY_PROM) $(REPLAY_CROM1) $(REPLAY_CROM2) \
+		$(REPLAY_SROM1) $(REPLAY_MROM1) $(REPLAY_VROM1)
+	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
+		-p $(REPLAY_PROM) -c $(REPLAY_CROM1) $(REPLAY_CROM2) \
+		-v $(REPLAY_VROM1) -s $(REPLAY_SROM1) -m $(REPLAY_MROM1) \
+		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo TAS replay gate" \
+		-y 2026 --publisher "Community port" \
+		-o $(REPLAY_CART)
+	$(ROMTOOL) -b hash -f gngeo \
+		-p $(REPLAY_PROM) -c $(REPLAY_CROM1) $(REPLAY_CROM2) \
+		-v $(REPLAY_VROM1) -s $(REPLAY_SROM1) -m $(REPLAY_MROM1) \
+		-n $(GAMEROM) -l "Super Mario Bros. Neo Geo TAS replay gate" \
+		-x gngeo.data=/usr/share/ngdevkit-gngeo/gngeo_data.zip \
+		-o $(REPLAY_GNGEO_DATA)
+	cp $(NG_SHARE)/aes.zip $(REPLAY_ROMDIR)/
+	cp $(NG_SHARE)/neogeo.zip $(REPLAY_ROMDIR)/
+	@echo "Built $(REPLAY_CART)"
+
+replay-run: replay-cart
+	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --no-sound \
+		--system home \
+		-i $(REPLAY_ROMDIR) -d $(REPLAY_GNGEO_DATA) $(GAMEROM)
 
 clean:
 	rm -rf $(BUILD)

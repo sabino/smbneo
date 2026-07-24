@@ -534,6 +534,61 @@ class Fm2ImportTests(unittest.TestCase):
         movie = rec.parse_fm2(data)
         self.assertEqual(movie.frame_count, 1)
 
+    def test_iso_8859_1_metadata_preserves_ascii_input_and_raw_hash(
+        self,
+    ) -> None:
+        data = (
+            b"comment author Ren\xe9; Fran\xe7ais metadata\r\n"
+            + fm2_bytes(
+                [
+                    "|1|.L.U..B.|||",
+                    "|0|........|||",
+                ]
+            ).replace(b"\n", b"\r\n")
+        )
+
+        movie = rec.parse_fm2(data, "latin1.fm2")
+        header = rec.render_fm2_c_header(movie)
+
+        self.assertEqual(
+            movie.frame_states,
+            (
+                rec.INPUT_LEFT | rec.INPUT_UP | rec.INPUT_B,
+                0,
+            ),
+        )
+        self.assertEqual(movie.initial_command, 1)
+        self.assertEqual(
+            movie.source_sha256, hashlib.sha256(data).hexdigest()
+        )
+        self.assertIn(
+            f'#define SMB_REPLAY_FM2_SOURCE_SHA256 '
+            f'"{hashlib.sha256(data).hexdigest()}"',
+            header,
+        )
+
+    def test_non_ascii_bytes_in_controller_records_are_rejected(self) -> None:
+        cases = (
+            fm2_bytes(["|0|.......A|||"]).replace(
+                b".......A", b".......\xe9"
+            ),
+            fm2_bytes(["|0|........|.......A||"])
+            .replace(b"port1 0", b"port1 1")
+            .replace(b".......A", b".......\xe9"),
+            fm2_bytes(["|0|........||x|"]).replace(b"||x|", b"||\xe9|"),
+            fm2_bytes(["|0|......BA|||"]).replace(
+                b"......BA", b"......\xc3\xa9"
+            ),
+        )
+
+        for data in cases:
+            with self.subTest(input_record=data.splitlines()[-1]):
+                with self.assertRaisesRegex(
+                    rec.RecordingError,
+                    "input record must contain only ASCII bytes",
+                ):
+                    rec.parse_fm2(data, "non-ascii.fm2")
+
     def test_embedded_state_is_rejected(self) -> None:
         data = fm2_bytes(["|0|........|||"]).replace(
             b"binary 0\n", b"savestate base64:AAAA\nbinary 0\n"
@@ -617,6 +672,119 @@ class Fm2ImportTests(unittest.TestCase):
             rec.parse_fm2(controlled)
 
 
+class Fm2EmissionTests(unittest.TestCase):
+    def test_header_retains_recording_and_fm2_hashes_with_option_metadata(
+        self,
+    ) -> None:
+        cases = (
+            (0, -17, 1),
+            (2, 23, 0),
+        )
+        for ram_option, ram_seed, initial_command in cases:
+            with self.subTest(
+                ram_option=ram_option,
+                ram_seed=ram_seed,
+                initial_command=initial_command,
+            ):
+                data = (
+                    fm2_bytes(
+                        [
+                            f"|{initial_command}|.......A|||",
+                            "|0|........|||",
+                        ]
+                    )
+                    .replace(
+                        b"RAMInitOption 2",
+                        f"RAMInitOption {ram_option}".encode("ascii"),
+                    )
+                    .replace(
+                        b"RAMInitSeed 0",
+                        f"RAMInitSeed {ram_seed}".encode("ascii"),
+                    )
+                )
+                movie = rec.parse_fm2(data, "movie.fm2")
+                _, imported = rec.import_fm2_recording(movie)
+                header = rec.render_fm2_c_header(movie)
+
+                self.assertIn("#define SMB_REPLAY_TRANSITION_COUNT 3u", header)
+                self.assertIn("#define SMB_REPLAY_SEGMENT_COUNT 2u", header)
+                self.assertIn("#define SMB_REPLAY_END_FRAME 2u", header)
+                self.assertIn(
+                    "#define SMB_REPLAY_HARDWARE_PLAYABLE 0u", header
+                )
+                self.assertIn(
+                    "#define SMB_REPLAY_OPPOSITE_DIRECTION_TRANSITIONS 0u",
+                    header,
+                )
+                self.assertIn(
+                    f'#define SMB_REPLAY_SOURCE_SHA256 "{imported.sha256}"',
+                    header,
+                )
+                self.assertIn(
+                    f'#define SMB_REPLAY_FM2_SOURCE_SHA256 '
+                    f'"{hashlib.sha256(data).hexdigest()}"',
+                    header,
+                )
+                self.assertIn(
+                    "#define SMB_REPLAY_FM2_FRAME_COUNT 2u", header
+                )
+                self.assertIn(
+                    f"#define SMB_REPLAY_FM2_INITIAL_COMMAND "
+                    f"{initial_command}u",
+                    header,
+                )
+                self.assertIn(
+                    f"#define SMB_REPLAY_FM2_RAM_INIT_OPTION "
+                    f"{ram_option}u",
+                    header,
+                )
+                self.assertIn(
+                    f"#define SMB_REPLAY_FM2_RAM_INIT_SEED {ram_seed}",
+                    header,
+                )
+                self.assertIn(
+                    "SOURCE_SHA256 hashes the canonical imported "
+                    "frame:state recording bytes",
+                    header,
+                )
+                self.assertIn(
+                    "FM2_SOURCE_SHA256 hashes the original FM2 file bytes",
+                    header,
+                )
+                self.assertNotEqual(imported.sha256, movie.source_sha256)
+
+    def test_custom_symbol_prefix_applies_to_arrays_and_fm2_macros(
+        self,
+    ) -> None:
+        movie = rec.parse_fm2(
+            fm2_bytes(
+                [
+                    "|1|........|||",
+                    "|0|.......A|||",
+                ]
+            )
+        )
+        header = rec.render_fm2_c_header(
+            movie,
+            symbol_prefix="full_run",
+            hardware_playable=True,
+        )
+
+        self.assertIn("#define FULL_RUN_FM2_INITIAL_COMMAND 1u", header)
+        self.assertIn("#define FULL_RUN_FM2_RAM_INIT_OPTION 2u", header)
+        self.assertIn("static const uint16_t full_run_durations", header)
+        self.assertIn("static const uint8_t full_run_states", header)
+
+    def test_hardware_policy_rejects_fm2_opposite_directions(self) -> None:
+        movie = rec.parse_fm2(fm2_bytes(["|0|RL......|||"]))
+
+        rec.render_fm2_c_header(movie)
+        with self.assertRaisesRegex(
+            rec.RecordingError, "not hardware-playable"
+        ):
+            rec.render_fm2_c_header(movie, hardware_playable=True)
+
+
 class RecordingCliTests(unittest.TestCase):
     def test_validate_reports_metadata_and_compatibility_policy(self) -> None:
         stdout = StringIO()
@@ -696,6 +864,97 @@ class RecordingCliTests(unittest.TestCase):
         self.assertIn("-- fm2_frame_count:3", output)
         self.assertIn("-- fm2_ram_init_option:2", output)
         self.assertIn("-- fm2_ram_init_seed:0", output)
+
+    def test_emit_fm2_c_stdout_contains_header_and_reset_metadata(
+        self,
+    ) -> None:
+        data = fm2_bytes(
+            [
+                "|1|........|||",
+                "|0|.......A|||",
+                "|0|........|||",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "movie.fm2"
+            source.write_bytes(data)
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                result = rec.main(
+                    [
+                        "emit-fm2-c",
+                        str(source),
+                        "--symbol-prefix",
+                        "test_run",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        output = stdout.getvalue()
+        self.assertTrue(output.startswith("/* Generated by"))
+        self.assertIn(
+            f'#define TEST_RUN_FM2_SOURCE_SHA256 '
+            f'"{hashlib.sha256(data).hexdigest()}"',
+            output,
+        )
+        self.assertIn("#define TEST_RUN_FM2_FRAME_COUNT 3u", output)
+        self.assertIn("#define TEST_RUN_FM2_INITIAL_COMMAND 1u", output)
+        self.assertIn("#define TEST_RUN_FM2_RAM_INIT_OPTION 2u", output)
+        self.assertIn("#define TEST_RUN_FM2_RAM_INIT_SEED 0", output)
+        self.assertNotIn(": wrote ", output)
+
+    def test_emit_fm2_c_file_reports_both_source_hashes(self) -> None:
+        data = fm2_bytes(
+            [
+                "|0|.......A|||",
+                "|0|........|||",
+            ]
+        ).replace(b"RAMInitOption 2", b"RAMInitOption 0")
+        movie = rec.parse_fm2(data)
+        _, imported = rec.import_fm2_recording(movie)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "movie.fm2"
+            output_path = Path(directory) / "movie_data.h"
+            source.write_bytes(data)
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                result = rec.main(
+                    [
+                        "emit-fm2-c",
+                        str(source),
+                        "-o",
+                        str(output_path),
+                    ]
+                )
+            header = output_path.read_text(encoding="ascii")
+
+        self.assertEqual(result, 0)
+        self.assertIn("#define SMB_REPLAY_FM2_RAM_INIT_OPTION 0u", header)
+        self.assertIn("#define SMB_REPLAY_FM2_INITIAL_COMMAND 0u", header)
+        self.assertIn(f"recording_sha256={imported.sha256}", stdout.getvalue())
+        self.assertIn(
+            f"fm2_source_sha256={hashlib.sha256(data).hexdigest()}",
+            stdout.getvalue(),
+        )
+
+    def test_emit_fm2_c_hardware_policy_returns_failure(self) -> None:
+        data = fm2_bytes(["|0|RL......|||"])
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "movie.fm2"
+            source.write_bytes(data)
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                result = rec.main(
+                    [
+                        "emit-fm2-c",
+                        str(source),
+                        "--hardware-playable",
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        self.assertIn("not hardware-playable", stderr.getvalue())
 
 
 if __name__ == "__main__":
