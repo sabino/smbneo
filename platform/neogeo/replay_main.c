@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "cpu.h"
 #include "ppu.h"
+#include "replay_checkpoint.h"
 #include "replay_gate.h"
 #include "replay_timing.h"
 #include "smb_replay_data.h"
@@ -27,9 +28,19 @@
 #define SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES 1u
 #endif
 
+#ifndef SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES
+#define SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES 2u
+#endif
+
 #define NEOGEO_REPLAY_STATUS_MAGIC UINT32_C(0x534d4252)
-#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(2)
+#define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(3)
 #define NEOGEO_REPLAY_RESULT_INCOMPLETE UINT32_C(0x100)
+
+#if defined(SMB_NEOGEO_REPLAY_FAST)
+#define NEOGEO_REPLAY_RENDERING_ENABLED UINT32_C(0)
+#else
+#define NEOGEO_REPLAY_RENDERING_ENABLED UINT32_C(1)
+#endif
 
 #if SMB_REPLAY_END_FRAME != SMB_REPLAY_FM2_FRAME_COUNT
 #error "generated replay frame-count metadata is inconsistent"
@@ -63,6 +74,18 @@ _Static_assert(
         (uint64_t)SMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES <= UINT8_MAX,
     "area-initialization replay hold must fit in uint8_t"
 );
+#if defined(SMB_NEOGEO_REPLAY_FAST)
+_Static_assert(
+    (int64_t)SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES >= 0 &&
+        (uint64_t)SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES <= UINT8_MAX,
+    "stage screenshot settle interval must fit in uint8_t"
+);
+#else
+_Static_assert(
+    SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES == 2,
+    "rendered replay evidence requires exactly two settling frames"
+);
+#endif
 
 typedef struct NeogeoReplayStatus {
     uint32_t magic;
@@ -89,6 +112,10 @@ typedef struct NeogeoReplayStatus {
     uint32_t area_init_hold_frames;
     uint32_t area_init_hold_count;
     uint32_t core_frames_advanced;
+    uint32_t rendering_enabled;
+    uint32_t game_frame_count;
+    uint32_t vblank_count;
+    uint32_t stage_settle_frames;
 } NeogeoReplayStatus;
 
 volatile NeogeoReplayStatus neogeo_replay_status
@@ -168,6 +195,14 @@ static void publish_status(
         replay_timing.area_init_hold_count;
     neogeo_replay_status.core_frames_advanced =
         replay_core_frames_advanced;
+    neogeo_replay_status.rendering_enabled =
+        NEOGEO_REPLAY_RENDERING_ENABLED;
+    neogeo_replay_status.game_frame_count =
+        neogeo_game_frame_count;
+    neogeo_replay_status.vblank_count =
+        neogeo_vblank_count;
+    neogeo_replay_status.stage_settle_frames =
+        SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES;
     neogeo_replay_status.result = result;
 }
 
@@ -255,6 +290,10 @@ void neogeo_replay_fail_trap(void)
     __attribute__((noinline, noreturn, used, externally_visible));
 void neogeo_replay_progress_trap(void)
     __attribute__((noinline, used, externally_visible));
+void neogeo_replay_stage_trap(void)
+    __attribute__((noinline, used, externally_visible));
+void neogeo_replay_transition_trap(void)
+    __attribute__((noinline, used, externally_visible));
 
 void neogeo_replay_pass_trap(void) {
     for (;;) {
@@ -272,6 +311,14 @@ void neogeo_replay_progress_trap(void) {
     __asm__ volatile ("nop");
 }
 
+void neogeo_replay_stage_trap(void) {
+    __asm__ volatile ("nop");
+}
+
+void neogeo_replay_transition_trap(void) {
+    __asm__ volatile ("nop");
+}
+
 static void update_progress_checkpoint(uint16_t *remaining) {
     --*remaining;
     if (*remaining == 0u) {
@@ -279,6 +326,30 @@ static void update_progress_checkpoint(uint16_t *remaining) {
         *remaining = SMB_NEOGEO_REPLAY_PROGRESS_FRAMES;
     }
 }
+
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+static void update_stage_checkpoint(
+    NeogeoReplayCheckpoint *checkpoint,
+    uint32_t entered_mask
+) {
+    uint8_t stage_changed = (uint8_t)(
+        entered_mask != checkpoint->observed_entered_mask
+    );
+
+    if (
+        neogeo_replay_checkpoint_stage_ready(
+            checkpoint,
+            entered_mask,
+            SMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES
+        )
+    ) {
+        neogeo_replay_stage_trap();
+    }
+    if (stage_changed != 0u) {
+        neogeo_replay_transition_trap();
+    }
+}
+#endif
 
 int main(void) {
     NeogeoReplayGate gate;
@@ -288,6 +359,9 @@ int main(void) {
     uint32_t segment_index = 0;
     uint16_t segment_remaining;
     uint16_t progress_remaining = SMB_NEOGEO_REPLAY_PROGRESS_FRAMES;
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+    NeogeoReplayCheckpoint stage_checkpoint;
+#endif
     uint8_t controller_state;
 
     neogeo_video_init();
@@ -297,6 +371,12 @@ int main(void) {
     ppu_init(0);
     Start();
     neogeo_replay_gate_init(&gate);
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+    neogeo_replay_checkpoint_init(
+        &stage_checkpoint,
+        gate.entered_mask
+    );
+#endif
 
     segment_remaining = smb_replay_durations[0];
     controller_state = smb_replay_states[0];
@@ -321,6 +401,12 @@ int main(void) {
 
         ++frame;
         update_progress_checkpoint(&progress_remaining);
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+        update_stage_checkpoint(
+            &stage_checkpoint,
+            gate.entered_mask
+        );
+#endif
         if (neogeo_replay_gate_failed(&gate) != 0u) {
             neogeo_replay_fail_trap();
         }
@@ -357,6 +443,12 @@ int main(void) {
         ++frame;
         ++tail_frame;
         update_progress_checkpoint(&progress_remaining);
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+        update_stage_checkpoint(
+            &stage_checkpoint,
+            gate.entered_mask
+        );
+#endif
         if (neogeo_replay_gate_failed(&gate) != 0u) {
             neogeo_replay_fail_trap();
         }

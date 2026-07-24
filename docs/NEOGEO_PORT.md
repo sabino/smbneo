@@ -437,7 +437,22 @@ make -C platform/neogeo replay-cart \
 python3 tools/run_neogeo_replay_gate.py \
   --68k-overclock 10000 \
   --timeout 2400
+
+# Direct-renderer endurance lane. This target defaults to stock MC68000
+# timing and a conservative 7,200-second host deadline.
+make -C platform/neogeo replay-rendered-evidence \
+  SMB_ROM="/path/to/smb.zip" \
+  REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
+  REPLAY_HARDWARE_PLAYABLE=1 \
+  REPLAY_EVIDENCE_DIR="/tmp/smb-neogeo-rendered-evidence"
 ```
+
+The rendered lane requires `scrot` and the Python Pillow package. The
+documented Make target checks both dependencies, selects the rendered build,
+and enforces the hardware-playable/no-opposite input policy before beginning
+the long emulator run. `REPLAY_EVIDENCE_DIR` should name a new external
+directory; a path below `/tmp` keeps ROM-derived captures and replay evidence
+outside the repository.
 
 The generated header stores compact `uint16_t` durations and `uint8_t`
 controller states rather than 67,000 padded structures. It also embeds the raw
@@ -446,15 +461,48 @@ initial command, RAM initialization option/seed, direction policy, and
 opposite-direction count. The ignored gate build has its own ELF, map,
 cartridge, and asset directory, so it cannot contaminate the playable build.
 
-`REPLAY_FAST=1` skips only the hardware renderer and is appropriate for the
-translated-core progression gate. Omitting it exercises normal rendering but
-takes display time and is not a substitute for the separate stock-clock
-cadence measurement. The runner accepts a result only when it reaches the
-pass trap with both 32-stage masks complete. Failure, incomplete playback,
-invalid mailbox data, debugger/emulator exit, occupied debug port, and timeout
-all remain non-passing and produce a bounded `result.json` plus logs. A
-cartridge-side checkpoint exposes an intermediate mailbox every 1,800 frames;
-the debugger therefore does not need to stop and round-trip on every frame.
+`REPLAY_FAST=1` skips both the hardware renderer and `apu_step_frame()` and is
+appropriate for the translated-core progression gate. Omitting it exercises
+normal rendering but takes display time and is not a substitute for the
+separate stock-clock cadence measurement. The runner accepts a result only
+when it reaches the pass trap with both 32-stage masks complete. Failure,
+incomplete playback, invalid mailbox data, debugger/emulator exit, occupied
+debug port, and timeout all remain non-passing and produce a bounded
+`result.json` plus logs. A cartridge-side checkpoint exposes an intermediate
+mailbox every 1,800 frames; the debugger therefore does not need to stop and
+round-trip on every frame.
+
+The rendered-evidence lane adds two distinct traps per newly entered stage.
+The first records the immediate transition state. The second fires after two
+additional calls have completed the direct renderer and its VBlank swap. Its
+version-3 mailbox identifies the rendered build and records the direct
+renderer game-frame count, VBlank count, and configured settle interval.
+Before a rendered pass is accepted, the host requires:
+
+- a hardware-playable FM2 with zero opposite-direction transitions;
+- exactly 32 ordered transition/settled pairs with prefix entry/completion
+  masks and matching world/level coordinates;
+- renderer game frames equal to translated core frames at every checkpoint;
+- at least one VBlank per rendered frame, with an exact two-rendered-frame
+  source/core/game-frame delta between each transition and settled pair;
+- 32 valid diagnostic transition PNGs plus 32 non-blank settled-stage PNGs,
+  with every settled playfield distinct from its paired transition and no two
+  consecutive settled stages pixel-identical; and
+- a valid terminal PNG tied to the existing 60-frame stable victory state.
+
+The synchronous screenshot helper writes through a temporary PNG, validates
+its signature, dimensions, and per-file size bound, then atomically publishes
+it. The final manifest records both file and centered 320x224 pixel hashes.
+It also records a playfield-only hash below the 32-pixel HUD region and
+requires the terminal playfield to differ from the settled 8-4 entrance.
+The evidence directory also contains immutable, hashed snapshots of the
+exercised artifacts and the runner/capture/debugger provenance needed to bind
+the result to what actually ran. `result.json` has a hard 128 KiB bound.
+Repository-local generated builds remain ignored; ROM-derived screenshots and
+the evidence snapshot instead stay in the explicitly selected external
+directory. GnGeo debugger mode disables its Z80/audio execution, so this lane
+proves direct-renderer endurance plus progression, not audio, pixel-perfect
+equivalence to the source console, or operation on physical hardware.
 
 ### Current replay result
 
@@ -473,22 +521,55 @@ the fast cartridge gate through every stage and the final victory state:
 | Translated core frames advanced | 68,579 |
 | Opposite-direction transitions | 0 |
 
-The terminal mailbox had valid version-2 metadata, retained the exact source
-frame count and hardware-playable direction policy, passed all host-side
-accounting checks, and reached the dedicated pass trap. The bounded
-`result.json` had SHA-256
-`c93dee25ee767ca22cdb0680f47570a04e678af000d6ff806e288d1516b3f731`.
+The terminal mailbox had valid version-3 metadata, identified the
+rendering-disabled fast build, retained the exact source frame count and
+hardware-playable direction policy, passed all host-side accounting checks,
+and reached the dedicated pass trap. The bounded 6,816-byte `result.json` had
+SHA-256
+`223bd9f04b6f4b3842dc0c6a880e307622007a526347185bcba8d4b84afed393`.
 The exercised replay ELF, cartridge ZIP, and P region had SHA-256 values
-`de4fc801831ad5fae803d45bf73f917c6d91bb49109009d56cfc106e5b377caa`,
-`0897a187323b6cd9696804270c0a887167f53e5d62514b50d2bc3455d8b0a3b1`,
+`559fa54a5896c754dbc12da2ed1e33895a5cecfd0b9b0a96c7534b2ec7727e67`,
+`b65b03858dcc7e108dcef89869534c95630dc52311f869933a1a2869c86484f4`,
 and
-`d2f22e4c5dce90a1102676a6e46ea06c7cc09a7522c66a7112c1a1bf295cb86b`,
+`409b8234902d48387d8edd08430925d1a71992be6071dfa1c6f64752468ce04f`,
 respectively.
 
-This is a translated-core progression proof, not a rendered-performance or
-physical-hardware claim. The normal rendered cartridge is covered separately
-by the stock-clock cadence probes, and real AES/MVS-compatible hardware
-validation remains pending.
+The same movie also passed the direct-renderer evidence lane at the stock
+emulated MC68000 clock. Its version-3 terminal mailbox and capture manifest
+reported:
+
+| Measurement | Terminal value |
+| --- | ---: |
+| Cartridge frame | 68,631 |
+| Source replay tail frame | 954 |
+| Stages entered | 32 (`0xffffffff`) |
+| Stages completed | 32 (`0xffffffff`) |
+| Translated core frames advanced | 68,579 |
+| Direct-renderer game frames | 68,579 |
+| VBlanks | 101,178 |
+| Transition captures | 32 |
+| Two-frame settled captures | 32 |
+| Stable-victory captures | 1 |
+| Opposite-direction transitions | 0 |
+
+All 32 ordered transition/settled pairs had exact source/core/renderer frame
+deltas of two and a VBlank delta of seven. Every settled playfield differed
+from its paired transition, consecutive settled viewports were distinct, and
+the terminal playfield differed from the settled 8-4 capture. The 65 decoded
+PNGs and all nine immutable provenance artifacts passed independent
+current-source validation. The bounded 78,356-byte `result.json` had SHA-256
+`7a67f2fb11bd646e7f160c3b8522ba853be819bcaff96b4bff899a90d1ebfd65`.
+The exercised rendered ELF and cartridge had SHA-256 values
+`d4d87d31520f72aafcfe27f3e59c32419a682f4498e92a4f3a0b9fad559c62d7`
+and
+`09f21de1da091bf871b9cd931cd5389123c7f5da1ece6c7e94c23f214afea77d`,
+respectively.
+
+The fast lane is a translated-core progression proof. The rendered lane adds
+stock-clock renderer endurance and state-bound image evidence, but neither is
+a pixel-perfect source-console, audio, or physical-hardware claim. The normal
+rendered cartridge is covered separately by the stock-clock cadence probes,
+and real AES/MVS-compatible hardware validation remains pending.
 
 ## Verification performed
 
@@ -572,10 +653,10 @@ operation on physical hardware.
 
 ## Next engineering steps
 
-1. Run long rendered replays across every world and retain transition
-   screenshots/state evidence.
-2. Improve audio fidelity, prioritizing software pulse sweep and an ADPCM-B
+1. Improve audio fidelity, prioritizing software pulse sweep and an ADPCM-B
    triangle voice so SSG C can represent noise independently.
-3. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
-4. Tighten the remaining fine-scroll left-edge masking cases.
+2. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
+3. Tighten the remaining fine-scroll left-edge masking cases.
+4. Add pixel-level reference captures for the remaining renderer fidelity
+   differences.
 5. Add memory-card or save-state support.

@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,13 +21,14 @@ import time
 from typing import Sequence
 
 import measure_neogeo_cadence as cadence
+import capture_neogeo_replay_frame as frame_capture
 
 
 DEBUG_HOST = cadence.DEBUG_HOST
 DEBUG_PORT = cadence.DEBUG_PORT
 STATUS_MAGIC = 0x534D4252
-STATUS_VERSION = 2
-STATUS_WORD_COUNT = 24
+STATUS_VERSION = 3
+STATUS_WORD_COUNT = 28
 STATUS_BYTES = STATUS_WORD_COUNT * 4
 COMPLETE_RESULT = 1
 INVALID_STAGE_RESULT = 2
@@ -45,22 +49,31 @@ RESULT_NAMES = {
     6: "returned_to_title",
     INCOMPLETE_RESULT: "incomplete",
 }
-RESULT_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 3
 DEFAULT_ROM_SET = "smbneogeo"
 DEFAULT_68K_OVERCLOCK = 1000
+DEFAULT_RENDERED_68K_OVERCLOCK = 0
+DEFAULT_RENDERED_TIMEOUT_SECONDS = 7200.0
 MIN_DERIVED_TIMEOUT_SECONDS = 180.0
 BASELINE_TIMEOUT_SECONDS = 1800.0
 MAX_TIMEOUT_SECONDS = 86400.0
 MAX_68K_OVERCLOCK = 10000
 MAX_DIAGNOSTIC_CHARS = 4096
-MAX_RESULT_JSON_BYTES = 65536
+MAX_RESULT_JSON_BYTES = 128 * 1024
 DEFAULT_HEARTBEAT_SECONDS = 5.0
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
+DEFAULT_SCREENSHOT_TIMEOUT_SECONDS = 10.0
+MAX_SCREENSHOT_TIMEOUT_SECONDS = 60.0
+MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
+EXPECTED_STAGE_CAPTURES = 32
+REQUIRED_BIOS_FILES = ("aes.zip", "neogeo.zip")
 
 REQUIRED_SYMBOL_NAMES = (
     "neogeo_replay_pass_trap",
     "neogeo_replay_fail_trap",
     "neogeo_replay_progress_trap",
+    "neogeo_replay_stage_trap",
+    "neogeo_replay_transition_trap",
     "neogeo_replay_status",
 )
 ROM_SET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -83,6 +96,25 @@ PROGRESS_WORD_RE = re.compile(
 PROGRESS_END_RE = re.compile(
     r"^REPLAY_PROGRESS_END\s+sample=(?P<sample>[0-9]+)\s*$"
 )
+STAGE_WORD_RE = re.compile(
+    r"^REPLAY_STAGE_WORD\s+"
+    r"sample=(?P<sample>[0-9]+)\s+"
+    r"index=(?P<index>[0-9]+)\s+"
+    r"value=0x(?P<value>[0-9a-fA-F]{8})\s*$"
+)
+STAGE_END_RE = re.compile(
+    r"^REPLAY_STAGE_END\s+sample=(?P<sample>[0-9]+)\s*$"
+)
+STAGE_IMAGE_RE = re.compile(r"^stage-(?P<index>[0-9]{4})\.png$")
+TRANSITION_WORD_RE = re.compile(
+    r"^REPLAY_TRANSITION_WORD\s+"
+    r"sample=(?P<sample>[0-9]+)\s+"
+    r"index=(?P<index>[0-9]+)\s+"
+    r"value=0x(?P<value>[0-9a-fA-F]{8})\s*$"
+)
+TRANSITION_END_RE = re.compile(
+    r"^REPLAY_TRANSITION_END\s+sample=(?P<sample>[0-9]+)\s*$"
+)
 
 
 class ReplayGateError(RuntimeError):
@@ -102,6 +134,8 @@ class ReplaySymbols:
     fail_trap: ElfSymbol
     status: ElfSymbol
     progress_point: ElfSymbol
+    stage_point: ElfSymbol
+    transition_point: ElfSymbol
 
 
 @dataclass(frozen=True)
@@ -130,6 +164,10 @@ class ReplayStatus:
     area_init_hold_frames: int
     area_init_hold_count: int
     core_frames_advanced: int
+    rendering_enabled: int
+    game_frame_count: int
+    vblank_count: int
+    stage_settle_frames: int
 
 
 @dataclass(frozen=True)
@@ -148,6 +186,30 @@ class ProgressCapture:
 
 
 @dataclass(frozen=True)
+class StageCapture:
+    sample: int
+    status: ReplayStatus
+    raw_words: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class TransitionCapture:
+    sample: int
+    status: ReplayStatus
+    raw_words: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ScreenshotConfig:
+    python: str
+    helper: Path
+    scrot: str
+    directory: Path
+    timeout_seconds: float
+    maximum_bytes: int
+
+
+@dataclass(frozen=True)
 class GateClassification:
     outcome: str
     passed: bool
@@ -161,7 +223,7 @@ def parse_nm_symbols(output: str) -> dict[str, ElfSymbol]:
 
 
 def replay_symbols_from_nm(output: str) -> ReplaySymbols:
-    """Validate the four ELF symbols used by the remote debugger."""
+    """Validate the ELF symbols used by the remote debugger."""
 
     try:
         parsed = parse_nm_symbols(output)
@@ -178,6 +240,8 @@ def replay_symbols_from_nm(output: str) -> ReplaySymbols:
     fail_trap = parsed["neogeo_replay_fail_trap"]
     status = parsed["neogeo_replay_status"]
     progress_point = parsed["neogeo_replay_progress_trap"]
+    stage_point = parsed["neogeo_replay_stage_trap"]
+    transition_point = parsed["neogeo_replay_transition_trap"]
 
     for trap in (pass_trap, fail_trap):
         if trap.kind not in "TtWw" or trap.size <= 0:
@@ -203,17 +267,29 @@ def replay_symbols_from_nm(output: str) -> ReplaySymbols:
             f"{status.name} is not a defined data object "
             f"(nm type {status.kind})"
         )
-    if progress_point.kind not in "TtWw" or progress_point.size <= 0:
-        raise ReplayGateError(
-            f"{progress_point.name} is not a non-empty code symbol "
-            f"(nm type {progress_point.kind}, size {progress_point.size})"
-        )
+    for point in (progress_point, stage_point, transition_point):
+        if point.kind not in "TtWw" or point.size <= 0:
+            raise ReplayGateError(
+                f"{point.name} is not a non-empty code symbol "
+                f"(nm type {point.kind}, size {point.size})"
+            )
+    trap_addresses = {
+        pass_trap.address,
+        fail_trap.address,
+        progress_point.address,
+        stage_point.address,
+        transition_point.address,
+    }
+    if len(trap_addresses) != 5:
+        raise ReplayGateError("replay trap symbols do not have unique addresses")
 
     return ReplaySymbols(
         pass_trap=pass_trap,
         fail_trap=fail_trap,
         status=status,
         progress_point=progress_point,
+        stage_point=stage_point,
+        transition_point=transition_point,
     )
 
 
@@ -246,10 +322,46 @@ def _gdb_address(address: int) -> str:
     return f"0x{address:08x}"
 
 
+def _gdb_shell_command(arguments: Sequence[object]) -> str:
+    values = [str(value) for value in arguments]
+    if any("\n" in value or "\r" in value for value in values):
+        raise ReplayGateError(
+            "GDB shell-command arguments must not contain newlines"
+        )
+    return "  shell " + shlex.join(values)
+
+
+def _screenshot_command(
+    config: ScreenshotConfig,
+    *,
+    sequence: str | None,
+) -> str:
+    destination = (
+        ("--sequence-dir", config.directory / sequence)
+        if sequence is not None
+        else ("--output", config.directory / "terminal.png")
+    )
+    return _gdb_shell_command(
+        [
+            config.python,
+            config.helper,
+            destination[0],
+            destination[1],
+            "--scrot",
+            config.scrot,
+            "--timeout",
+            f"{config.timeout_seconds:g}",
+            "--max-bytes",
+            config.maximum_bytes,
+        ]
+    )
+
+
 def build_gdb_script(
     symbols: ReplaySymbols,
     host: str = DEBUG_HOST,
     port: int = DEBUG_PORT,
+    screenshot: ScreenshotConfig | None = None,
 ) -> str:
     """Build a trap probe with every raw 32-bit mailbox word."""
 
@@ -260,22 +372,36 @@ def build_gdb_script(
         "set remotetimeout 60",
         "set $gate_trap = 0",
         "set $progress_sample = 0",
+        "set $stage_sample = 0",
+        "set $transition_sample = 0",
         f"target remote {host}:{port}",
         f"break *{_gdb_address(symbols.pass_trap.address)}",
-        "commands 1",
+        "commands",
         "  silent",
         "  set $gate_trap = 1",
-        "end",
-        f"break *{_gdb_address(symbols.fail_trap.address)}",
-        "commands 2",
-        "  silent",
-        "  set $gate_trap = 2",
-        "end",
-        f"break *{_gdb_address(symbols.progress_point.address)}",
-        "commands 3",
-        "  silent",
-        "  set $progress_sample = $progress_sample + 1",
     ]
+    if screenshot is not None:
+        lines.append(_screenshot_command(screenshot, sequence=None))
+    lines.extend(
+        [
+            "end",
+            f"break *{_gdb_address(symbols.fail_trap.address)}",
+            "commands",
+            "  silent",
+            "  set $gate_trap = 2",
+        ]
+    )
+    if screenshot is not None:
+        lines.append(_screenshot_command(screenshot, sequence=None))
+    lines.extend(
+        [
+            "end",
+            f"break *{_gdb_address(symbols.progress_point.address)}",
+            "commands",
+            "  silent",
+            "  set $progress_sample = $progress_sample + 1",
+        ]
+    )
 
     for index in range(STATUS_WORD_COUNT):
         address = symbols.status.address + index * 4
@@ -298,6 +424,74 @@ def build_gdb_script(
             (
                 '  printf "REPLAY_PROGRESS_END sample=%u\\n", '
                 "$progress_sample"
+            ),
+            "  continue",
+            "end",
+            f"break *{_gdb_address(symbols.stage_point.address)}",
+            "commands",
+            "  silent",
+            "  set $stage_sample = $stage_sample + 1",
+        ]
+    )
+
+    for index in range(STATUS_WORD_COUNT):
+        address = symbols.status.address + index * 4
+        lines.extend(
+            [
+                (
+                    f"  set $stage_mb{index} = "
+                    f"*(unsigned int *){_gdb_address(address)}"
+                ),
+                (
+                    '  printf "REPLAY_STAGE_WORD '
+                    f'sample=%u index={index} value=0x%08x\\n", '
+                    f"$stage_sample, $stage_mb{index}"
+                ),
+            ]
+        )
+
+    if screenshot is not None:
+        lines.append(_screenshot_command(screenshot, sequence="stages"))
+    lines.extend(
+        [
+            (
+                '  printf "REPLAY_STAGE_END sample=%u\\n", '
+                "$stage_sample"
+            ),
+            "  continue",
+            "end",
+            f"break *{_gdb_address(symbols.transition_point.address)}",
+            "commands",
+            "  silent",
+            "  set $transition_sample = $transition_sample + 1",
+        ]
+    )
+
+    for index in range(STATUS_WORD_COUNT):
+        address = symbols.status.address + index * 4
+        lines.extend(
+            [
+                (
+                    f"  set $transition_mb{index} = "
+                    f"*(unsigned int *){_gdb_address(address)}"
+                ),
+                (
+                    '  printf "REPLAY_TRANSITION_WORD '
+                    f'sample=%u index={index} value=0x%08x\\n", '
+                    f"$transition_sample, $transition_mb{index}"
+                ),
+            ]
+        )
+
+    if screenshot is not None:
+        lines.append(
+            _screenshot_command(screenshot, sequence="transitions")
+        )
+    lines.extend(
+        [
+            (
+                '  printf "REPLAY_TRANSITION_END sample=%u\\n", '
+                "$transition_sample"
             ),
             "  continue",
             "end",
@@ -404,6 +598,14 @@ def parse_mailbox_words(words: Sequence[int]) -> ReplayStatus:
         raise ReplayGateError(
             "mailbox hardware_playable must be zero or one"
         )
+    if status.rendering_enabled not in (0, 1):
+        raise ReplayGateError(
+            "mailbox rendering_enabled must be zero or one"
+        )
+    if status.stage_settle_frames > 0xFF:
+        raise ReplayGateError(
+            "mailbox stage-settle interval exceeds uint8"
+        )
     if (
         status.hardware_playable == 1
         and status.opposite_direction_transitions != 0
@@ -467,6 +669,24 @@ def parse_mailbox_words(words: Sequence[int]) -> ReplayStatus:
             f"{status.core_frames_advanced}; expected "
             f"{expected_core_frames}"
         )
+    if status.rendering_enabled == 0:
+        if status.game_frame_count != 0:
+            raise ReplayGateError(
+                "non-rendered mailbox reports rendered game frames"
+            )
+    else:
+        if status.game_frame_count != status.core_frames_advanced:
+            raise ReplayGateError(
+                f"mailbox rendered-frame accounting is "
+                f"{status.game_frame_count}; expected "
+                f"{status.core_frames_advanced}"
+            )
+        minimum_vblanks = status.game_frame_count + 1
+        if status.vblank_count < minimum_vblanks:
+            raise ReplayGateError(
+                f"mailbox VBlank count is {status.vblank_count}; expected "
+                f"at least {minimum_vblanks}"
+            )
     return status
 
 
@@ -608,6 +828,159 @@ def parse_progress_snapshots(output: str) -> list[ProgressCapture]:
     return captures
 
 
+def parse_stage_snapshots(output: str) -> list[StageCapture]:
+    """Parse complete stage-linked mailbox snapshots in capture order."""
+
+    samples: dict[int, dict[int, int]] = {}
+    completed_samples: set[int] = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        word_match = STAGE_WORD_RE.match(stripped)
+        if word_match is not None:
+            sample = int(word_match.group("sample"))
+            index = int(word_match.group("index"))
+            if sample <= 0:
+                raise ReplayGateError(
+                    "GDB reported a non-positive stage sample"
+                )
+            if index >= STATUS_WORD_COUNT:
+                raise ReplayGateError(
+                    f"GDB reported out-of-range stage word {index}"
+                )
+            sample_words = samples.setdefault(sample, {})
+            if index in sample_words:
+                raise ReplayGateError(
+                    f"GDB reported stage sample {sample} word {index} "
+                    "more than once"
+                )
+            sample_words[index] = int(word_match.group("value"), 16)
+            continue
+
+        end_match = STAGE_END_RE.match(stripped)
+        if end_match is not None:
+            sample = int(end_match.group("sample"))
+            if sample in completed_samples:
+                raise ReplayGateError(
+                    f"GDB ended stage sample {sample} more than once"
+                )
+            completed_samples.add(sample)
+
+    ordered_samples = sorted(completed_samples)
+    expected_samples = list(range(1, len(ordered_samples) + 1))
+    if ordered_samples != expected_samples:
+        raise ReplayGateError(
+            "GDB stage samples are not contiguous from one"
+        )
+
+    captures: list[StageCapture] = []
+    previous_frame = -1
+    for sample in ordered_samples:
+        sample_words = samples.get(sample, {})
+        missing = [
+            str(index)
+            for index in range(STATUS_WORD_COUNT)
+            if index not in sample_words
+        ]
+        if missing:
+            raise ReplayGateError(
+                f"stage sample {sample} is missing mailbox words: "
+                + ", ".join(missing)
+            )
+        raw_words = tuple(
+            sample_words[index] for index in range(STATUS_WORD_COUNT)
+        )
+        status = parse_mailbox_words(raw_words)
+        if status.frame <= previous_frame:
+            raise ReplayGateError(
+                f"stage frame did not advance at sample {sample}"
+            )
+        captures.append(
+            StageCapture(
+                sample=sample,
+                status=status,
+                raw_words=raw_words,
+            )
+        )
+        previous_frame = status.frame
+    return captures
+
+
+def parse_transition_snapshots(output: str) -> list[TransitionCapture]:
+    """Parse complete immediate-transition mailbox snapshots."""
+
+    samples: dict[int, dict[int, int]] = {}
+    completed_samples: set[int] = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        word_match = TRANSITION_WORD_RE.match(stripped)
+        if word_match is not None:
+            sample = int(word_match.group("sample"))
+            index = int(word_match.group("index"))
+            if sample <= 0:
+                raise ReplayGateError(
+                    "GDB reported a non-positive transition sample"
+                )
+            if index >= STATUS_WORD_COUNT:
+                raise ReplayGateError(
+                    f"GDB reported out-of-range transition word {index}"
+                )
+            sample_words = samples.setdefault(sample, {})
+            if index in sample_words:
+                raise ReplayGateError(
+                    f"GDB reported transition sample {sample} word {index} "
+                    "more than once"
+                )
+            sample_words[index] = int(word_match.group("value"), 16)
+            continue
+
+        end_match = TRANSITION_END_RE.match(stripped)
+        if end_match is not None:
+            sample = int(end_match.group("sample"))
+            if sample in completed_samples:
+                raise ReplayGateError(
+                    f"GDB ended transition sample {sample} more than once"
+                )
+            completed_samples.add(sample)
+
+    ordered_samples = sorted(completed_samples)
+    if ordered_samples != list(range(1, len(ordered_samples) + 1)):
+        raise ReplayGateError(
+            "GDB transition samples are not contiguous from one"
+        )
+
+    captures: list[TransitionCapture] = []
+    previous_frame = -1
+    for sample in ordered_samples:
+        sample_words = samples.get(sample, {})
+        missing = [
+            str(index)
+            for index in range(STATUS_WORD_COUNT)
+            if index not in sample_words
+        ]
+        if missing:
+            raise ReplayGateError(
+                f"transition sample {sample} is missing mailbox words: "
+                + ", ".join(missing)
+            )
+        raw_words = tuple(
+            sample_words[index] for index in range(STATUS_WORD_COUNT)
+        )
+        status = parse_mailbox_words(raw_words)
+        if status.frame <= previous_frame:
+            raise ReplayGateError(
+                f"transition frame did not advance at sample {sample}"
+            )
+        captures.append(
+            TransitionCapture(
+                sample=sample,
+                status=status,
+                raw_words=raw_words,
+            )
+        )
+        previous_frame = status.frame
+    return captures
+
+
 def _status_summary(status: ReplayStatus) -> str:
     result_name = RESULT_NAMES.get(status.result, "unknown")
     return (
@@ -730,7 +1103,15 @@ def build_gdb_command(
     elf: Path,
     script: Path,
 ) -> list[str]:
-    return [executable, "-q", "-batch", str(elf), "-x", str(script)]
+    return [
+        executable,
+        "-nx",
+        "-q",
+        "-batch",
+        str(elf),
+        "-x",
+        str(script),
+    ]
 
 
 def _wait_for_gate(
@@ -739,18 +1120,23 @@ def _wait_for_gate(
     heartbeat_seconds: float,
     timeout_seconds: float,
     gdb_log_path: Path,
+    require_rendered: bool = False,
+    screenshot_dir: Path | None = None,
 ) -> int:
     start = time.monotonic()
     next_heartbeat = start + heartbeat_seconds
     reported_samples = 0
+    reported_stages = 0
+    reported_transitions = 0
     latest_progress: ProgressCapture | None = None
     while True:
         try:
-            progress = parse_progress_snapshots(
-                gdb_log_path.read_text(errors="replace")
-            )
+            log_text = gdb_log_path.read_text(errors="replace")
         except FileNotFoundError:
-            progress = []
+            log_text = ""
+        progress = parse_progress_snapshots(log_text)
+        stages = parse_stage_snapshots(log_text)
+        transitions = parse_transition_snapshots(log_text)
         for snapshot in progress[reported_samples:]:
             print(
                 "[replay-gate] progress "
@@ -760,6 +1146,86 @@ def _wait_for_gate(
             )
             latest_progress = snapshot
         reported_samples = len(progress)
+
+        for snapshot in transitions[reported_transitions:]:
+            if require_rendered:
+                if screenshot_dir is None:
+                    raise ReplayGateError(
+                        "rendered evidence has no screenshot directory"
+                    )
+                transition_image = (
+                    screenshot_dir
+                    / "transitions"
+                    / f"stage-{snapshot.sample:04d}.png"
+                )
+                _screenshot_content_record(
+                    transition_image,
+                    MAX_SCREENSHOT_BYTES,
+                    require_visible_content=False,
+                )
+            print(
+                "[replay-gate] transition "
+                f"sample={snapshot.sample} "
+                f"{_status_summary(snapshot.status)}",
+                flush=True,
+            )
+        reported_transitions = len(transitions)
+
+        for snapshot in stages[reported_stages:]:
+            if require_rendered:
+                if screenshot_dir is None:
+                    raise ReplayGateError(
+                        "rendered evidence has no screenshot directory"
+                    )
+                if snapshot.sample > len(transitions):
+                    raise ReplayGateError(
+                        f"stage sample {snapshot.sample} has no paired "
+                        "transition"
+                    )
+                transition = transitions[snapshot.sample - 1]
+                _validate_rendered_stage_pair(
+                    snapshot,
+                    transition,
+                    snapshot.sample - 1,
+                )
+                stage_image = (
+                    screenshot_dir
+                    / "stages"
+                    / f"stage-{snapshot.sample:04d}.png"
+                )
+                transition_image = (
+                    screenshot_dir
+                    / "transitions"
+                    / f"stage-{snapshot.sample:04d}.png"
+                )
+                stage_record = _screenshot_content_record(
+                    stage_image,
+                    MAX_SCREENSHOT_BYTES,
+                )
+                transition_record = _screenshot_content_record(
+                    transition_image,
+                    MAX_SCREENSHOT_BYTES,
+                    require_visible_content=False,
+                )
+                if (
+                    stage_record["viewport"]["playfield"]["pixel_sha256"]
+                    == transition_record["viewport"]["playfield"][
+                        "pixel_sha256"
+                    ]
+                ):
+                    raise ReplayGateError(
+                        f"stage {snapshot.sample - 1} settled playfield is "
+                        "pixel-identical to its immediate transition"
+                    )
+            print(
+                "[replay-gate] stage checkpoint "
+                f"sample={snapshot.sample} "
+                f"{_status_summary(snapshot.status)} "
+                f"game_frames={snapshot.status.game_frame_count} "
+                f"vblanks={snapshot.status.vblank_count}",
+                flush=True,
+            )
+        reported_stages = len(stages)
 
         status = gdb.poll()
         if status is not None:
@@ -800,11 +1266,387 @@ def _bounded_text(value: object, limit: int = MAX_DIAGNOSTIC_CHARS) -> str:
     return text[: limit - 19] + "\n...[truncated]..."
 
 
-def _artifact_record(path: Path) -> dict[str, object]:
+def _artifact_record(
+    path: Path,
+    *,
+    relative_to: Path | None = None,
+) -> dict[str, object]:
+    recorded_path = path
+    if relative_to is not None:
+        try:
+            recorded_path = path.relative_to(relative_to)
+        except ValueError as error:
+            raise ReplayGateError(
+                f"artifact is outside its evidence directory: {path}"
+            ) from error
     return {
-        "path": str(path),
+        "path": str(recorded_path),
         "bytes": path.stat().st_size,
         "sha256": cadence._sha256_file(path),
+    }
+
+
+def _image_color_stats(
+    image: object,
+    maximum_colors: int,
+) -> tuple[int, int]:
+    colors = image.getcolors(maxcolors=maximum_colors)
+    if colors is None:
+        pixels = image.tobytes()
+        unique_colors = maximum_colors
+        nonblack_pixels = sum(
+            1
+            for offset in range(0, len(pixels), 3)
+            if pixels[offset : offset + 3] != b"\0\0\0"
+        )
+        return unique_colors, nonblack_pixels
+    return (
+        len(colors),
+        sum(
+            count
+            for count, color in colors
+            if color != (0, 0, 0)
+        ),
+    )
+
+
+def _screenshot_content_record(
+    path: Path,
+    maximum_bytes: int,
+    *,
+    require_visible_content: bool = True,
+    relative_to: Path | None = None,
+) -> dict[str, object]:
+    try:
+        width, height, size = frame_capture.inspect_png(
+            path,
+            maximum_bytes,
+        )
+    except frame_capture.CaptureError as error:
+        raise ReplayGateError(str(error)) from error
+    if width < 320 or height < 224:
+        raise ReplayGateError(
+            f"screenshot is {width}x{height}; expected at least 320x224: "
+            f"{path}"
+        )
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as error:
+        raise ReplayGateError(
+            "rendered evidence requires the Pillow Python package"
+        ) from error
+
+    try:
+        with Image.open(path) as source:
+            source.load()
+            image = source.convert("RGB")
+    except (OSError, UnidentifiedImageError) as error:
+        raise ReplayGateError(
+            f"cannot decode screenshot pixels: {path}: {error}"
+        ) from error
+    if image.size != (width, height):
+        raise ReplayGateError(
+            f"decoded screenshot dimensions changed for {path}"
+        )
+
+    left = (width - 320) // 2
+    top = (height - 224) // 2
+    viewport = image.crop((left, top, left + 320, top + 224))
+    pixels = viewport.tobytes()
+    playfield = viewport.crop((0, 32, 320, 224))
+    playfield_pixels = playfield.tobytes()
+    unique_colors, nonblack_pixels = _image_color_stats(
+        viewport,
+        320 * 224,
+    )
+    playfield_unique_colors, playfield_nonblack_pixels = (
+        _image_color_stats(playfield, 320 * 192)
+    )
+    if (
+        require_visible_content
+        and (
+            unique_colors < 4
+            or nonblack_pixels < 256
+            or playfield_unique_colors < 3
+            or playfield_nonblack_pixels < 256
+        )
+    ):
+        raise ReplayGateError(
+            f"screenshot playfield lacks visible game content "
+            f"(viewport: {unique_colors} colors, "
+            f"{nonblack_pixels} non-black pixels; playfield: "
+            f"{playfield_unique_colors} colors, "
+            f"{playfield_nonblack_pixels} non-black pixels): "
+            f"{path}"
+        )
+
+    recorded_path = path
+    if relative_to is not None:
+        try:
+            recorded_path = path.relative_to(relative_to)
+        except ValueError as error:
+            raise ReplayGateError(
+                f"screenshot is outside its evidence directory: {path}"
+            ) from error
+    return {
+        "path": str(recorded_path),
+        "bytes": size,
+        "sha256": cadence._sha256_file(path),
+        "width": width,
+        "height": height,
+        "viewport": {
+            "left": left,
+            "top": top,
+            "width": 320,
+            "height": 224,
+            "unique_colors": unique_colors,
+            "nonblack_pixels": nonblack_pixels,
+            "pixel_sha256": hashlib.sha256(pixels).hexdigest(),
+            "playfield": {
+                "top": 32,
+                "width": 320,
+                "height": 192,
+                "unique_colors": playfield_unique_colors,
+                "nonblack_pixels": playfield_nonblack_pixels,
+                "pixel_sha256":
+                    hashlib.sha256(playfield_pixels).hexdigest(),
+            },
+        },
+    }
+
+
+def _validate_rendered_stage_pair(
+    snapshot: StageCapture,
+    transition: TransitionCapture,
+    expected_stage: int,
+) -> None:
+    status = snapshot.status
+    transition_status = transition.status
+    if (
+        snapshot.sample != expected_stage + 1
+        or transition.sample != expected_stage + 1
+    ):
+        raise ReplayGateError(
+            "stage or transition samples are out of order"
+        )
+    if (
+        status.rendering_enabled != 1
+        or transition_status.rendering_enabled != 1
+    ):
+        raise ReplayGateError(
+            f"stage {expected_stage} did not execute the renderer"
+        )
+    if (
+        status.hardware_playable != 1
+        or transition_status.hardware_playable != 1
+        or status.opposite_direction_transitions != 0
+        or transition_status.opposite_direction_transitions != 0
+    ):
+        raise ReplayGateError(
+            f"stage {expected_stage} is not hardware-playable"
+        )
+    if (
+        status.stage_settle_frames != 2
+        or transition_status.stage_settle_frames != 2
+    ):
+        raise ReplayGateError(
+            f"stage {expected_stage} was captured without two settling "
+            "rendered frames"
+        )
+    expected_entered = (
+        ALL_STAGES_MASK
+        if expected_stage == FINAL_STAGE
+        else (1 << (expected_stage + 1)) - 1
+    )
+    expected_completed = (
+        0 if expected_stage == 0 else (1 << expected_stage) - 1
+    )
+    for label, candidate in (
+        ("transition", transition_status),
+        ("settled", status),
+    ):
+        if (
+            candidate.current_stage != expected_stage
+            or candidate.world != expected_stage // 4
+            or candidate.level != expected_stage % 4
+            or candidate.entered_mask != expected_entered
+            or candidate.completed_mask != expected_completed
+            or candidate.oper_mode != 1
+            or candidate.oper_mode_task != 3
+        ):
+            raise ReplayGateError(
+                f"{label} sample {snapshot.sample} does not describe "
+                f"ordered active stage {expected_stage}"
+            )
+    settle_delta = status.stage_settle_frames
+    if (
+        status.frame - transition_status.frame != settle_delta
+        or status.core_frames_advanced
+        - transition_status.core_frames_advanced
+        != settle_delta
+        or status.game_frame_count
+        - transition_status.game_frame_count
+        != settle_delta
+        or status.vblank_count - transition_status.vblank_count
+        < settle_delta
+    ):
+        raise ReplayGateError(
+            f"stage {expected_stage} settling counters are inconsistent"
+        )
+
+
+def _rendered_evidence_result(
+    stages: Sequence[StageCapture],
+    transitions: Sequence[TransitionCapture],
+    terminal: DebuggerCapture,
+    screenshot_dir: Path,
+    maximum_bytes: int,
+    require_complete: bool,
+) -> dict[str, object]:
+    def sequence_paths(directory: Path, label: str) -> dict[int, Path]:
+        paths: dict[int, Path] = {}
+        for path in directory.iterdir():
+            match = STAGE_IMAGE_RE.fullmatch(path.name)
+            if match is None:
+                continue
+            index = int(match.group("index"))
+            if index in paths:
+                raise ReplayGateError(
+                    f"duplicate {label} screenshot index {index}"
+                )
+            paths[index] = path
+        return paths
+
+    stage_image_paths = sequence_paths(
+        screenshot_dir / "stages",
+        "stage",
+    )
+    transition_image_paths = sequence_paths(
+        screenshot_dir / "transitions",
+        "transition",
+    )
+    expected_stage_indices = list(range(1, len(stages) + 1))
+    if sorted(stage_image_paths) != expected_stage_indices:
+        raise ReplayGateError(
+            "stage screenshots do not match complete stage snapshots"
+        )
+    expected_transition_indices = list(range(1, len(transitions) + 1))
+    if sorted(transition_image_paths) != expected_transition_indices:
+        raise ReplayGateError(
+            "transition screenshots do not match complete transition "
+            "snapshots"
+        )
+    if len(stages) != len(transitions):
+        raise ReplayGateError(
+            "settled stage and immediate transition counts differ"
+        )
+    if terminal.status.rendering_enabled != 1:
+        raise ReplayGateError(
+            "rendered evidence was requested from a non-rendered replay"
+        )
+    if (
+        terminal.status.hardware_playable != 1
+        or terminal.status.opposite_direction_transitions != 0
+    ):
+        raise ReplayGateError(
+            "rendered evidence requires a hardware-playable replay "
+            "without opposite directions"
+        )
+
+    records: list[dict[str, object]] = []
+    previous_pixel_hash: str | None = None
+    for expected_stage, (snapshot, transition) in enumerate(
+        zip(stages, transitions, strict=True)
+    ):
+        status = snapshot.status
+        transition_status = transition.status
+        _validate_rendered_stage_pair(
+            snapshot,
+            transition,
+            expected_stage,
+        )
+
+        image = _screenshot_content_record(
+            stage_image_paths[snapshot.sample],
+            maximum_bytes,
+            relative_to=screenshot_dir.parent,
+        )
+        transition_image = _screenshot_content_record(
+            transition_image_paths[transition.sample],
+            maximum_bytes,
+            require_visible_content=False,
+            relative_to=screenshot_dir.parent,
+        )
+        pixel_hash = str(image["viewport"]["pixel_sha256"])
+        if (
+            image["viewport"]["playfield"]["pixel_sha256"]
+            == transition_image["viewport"]["playfield"]["pixel_sha256"]
+        ):
+            raise ReplayGateError(
+                f"stage {expected_stage} settled playfield is "
+                "pixel-identical to its immediate transition"
+            )
+        if pixel_hash == previous_pixel_hash:
+            raise ReplayGateError(
+                f"stage {expected_stage} screenshot is pixel-identical to "
+                "the preceding stage"
+            )
+        previous_pixel_hash = pixel_hash
+        records.append(
+            {
+                "sample": snapshot.sample,
+                "stage": expected_stage,
+                "world": status.world + 1,
+                "level": status.level + 1,
+                "source_frame": status.frame,
+                "core_frames_advanced": status.core_frames_advanced,
+                "game_frame_count": status.game_frame_count,
+                "vblank_count": status.vblank_count,
+                "entered_mask": f"0x{status.entered_mask:08x}",
+                "completed_mask": f"0x{status.completed_mask:08x}",
+                "transition": {
+                    "source_frame": transition_status.frame,
+                    "game_frame_count":
+                        transition_status.game_frame_count,
+                    "vblank_count": transition_status.vblank_count,
+                    "image": transition_image,
+                },
+                "image": image,
+            }
+        )
+
+    if require_complete and len(records) != EXPECTED_STAGE_CAPTURES:
+        raise ReplayGateError(
+            f"rendered pass has {len(records)} stage captures; expected "
+            f"{EXPECTED_STAGE_CAPTURES}"
+        )
+
+    terminal_image = _screenshot_content_record(
+        screenshot_dir / "terminal.png",
+        maximum_bytes,
+        relative_to=screenshot_dir.parent,
+    )
+    if (
+        records
+        and terminal_image["viewport"]["playfield"]["pixel_sha256"]
+        == records[-1]["image"]["viewport"]["playfield"]["pixel_sha256"]
+    ):
+        raise ReplayGateError(
+            "terminal playfield is pixel-identical to the final settled stage"
+        )
+    return {
+        "stage_count": len(records),
+        "transition_count": len(transitions),
+        "complete_stage_set": len(records) == EXPECTED_STAGE_CAPTURES,
+        "stages": records,
+        "terminal": {
+            "source_frame": terminal.status.frame,
+            "core_frames_advanced": terminal.status.core_frames_advanced,
+            "game_frame_count": terminal.status.game_frame_count,
+            "vblank_count": terminal.status.vblank_count,
+            "image": terminal_image,
+        },
     }
 
 
@@ -877,6 +1719,74 @@ def _resolve_executable(value: str) -> str:
         raise ReplayGateError(str(error)) from error
 
 
+def _require_pillow() -> None:
+    try:
+        from PIL import Image
+    except ImportError as error:
+        raise ReplayGateError(
+            "rendered evidence requires the Pillow Python package"
+        ) from error
+    if not hasattr(Image, "open"):
+        raise ReplayGateError(
+            "rendered evidence requires a usable Pillow installation"
+        )
+
+
+def _snapshot_file(source: Path, destination: Path) -> Path:
+    if destination.exists():
+        raise ReplayGateError(
+            f"frozen input destination already exists: {destination}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with source.open("rb") as reader:
+            with destination.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        destination.chmod(0o444)
+    except OSError as error:
+        raise ReplayGateError(
+            f"cannot freeze replay input {source}: {error}"
+        ) from error
+    return destination.resolve()
+
+
+def _verify_frozen_artifacts(
+    artifacts: dict[str, object],
+    evidence_dir: Path,
+) -> None:
+    for name, value in artifacts.items():
+        if not isinstance(value, dict):
+            raise ReplayGateError(
+                f"artifact record {name} is malformed"
+            )
+        relative_path = value.get("path")
+        expected_bytes = value.get("bytes")
+        expected_sha256 = value.get("sha256")
+        if (
+            not isinstance(relative_path, str)
+            or not isinstance(expected_bytes, int)
+            or not isinstance(expected_sha256, str)
+        ):
+            raise ReplayGateError(
+                f"artifact record {name} is incomplete"
+            )
+        candidate = (evidence_dir / relative_path).resolve()
+        try:
+            candidate.relative_to(evidence_dir)
+        except ValueError as error:
+            raise ReplayGateError(
+                f"artifact record {name} escapes the evidence directory"
+            ) from error
+        if (
+            not candidate.is_file()
+            or candidate.stat().st_size != expected_bytes
+            or cadence._sha256_file(candidate) != expected_sha256
+        ):
+            raise ReplayGateError(
+                f"frozen artifact changed during replay: {name}"
+            )
+
+
 def _argument_record(
     args: argparse.Namespace,
     effective_timeout: float,
@@ -894,14 +1804,36 @@ def _argument_record(
         "m68k_overclock_percent": args.m68k_overclock,
         "heartbeat_seconds": args.heartbeat_seconds,
         "startup_timeout_seconds": args.startup_timeout,
+        "rendered_evidence": args.rendered_evidence,
+        "screenshot_timeout_seconds": args.screenshot_timeout,
+        "maximum_screenshot_bytes": MAX_SCREENSHOT_BYTES,
         "gngeo": args.gngeo,
         "gdb": args.gdb,
         "nm": args.nm,
         "xvfb": args.xvfb,
+        "scrot": args.scrot,
     }
 
 
+def _apply_default_paths(args: argparse.Namespace) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    variant = "replay-rendered" if args.rendered_evidence else "replay-fast"
+    replay_build = repository / "platform" / "neogeo" / "build" / variant
+    if args.elf is None:
+        args.elf = replay_build / "smbneogeo-replay.elf"
+    if args.rom_dir is None:
+        args.rom_dir = replay_build / "rom"
+    if args.data_file is None:
+        args.data_file = replay_build / "rom" / "gngeo_data.zip"
+
+
 def _validate_runtime_arguments(args: argparse.Namespace) -> float:
+    if args.m68k_overclock is None:
+        args.m68k_overclock = (
+            DEFAULT_RENDERED_68K_OVERCLOCK
+            if args.rendered_evidence
+            else DEFAULT_68K_OVERCLOCK
+        )
     if not ROM_SET_RE.fullmatch(args.rom_set):
         raise ReplayGateError(
             "ROM set must contain 1-64 letters, digits, dots, underscores, "
@@ -910,13 +1842,23 @@ def _validate_runtime_arguments(args: argparse.Namespace) -> float:
     for label, value in (
         ("heartbeat interval", args.heartbeat_seconds),
         ("startup timeout", args.startup_timeout),
+        ("screenshot timeout", args.screenshot_timeout),
     ):
         if not math.isfinite(value) or value <= 0:
             raise ReplayGateError(f"{label} must be finite and positive")
-    return derive_gate_timeout(args.timeout, args.m68k_overclock)
+    if args.screenshot_timeout > MAX_SCREENSHOT_TIMEOUT_SECONDS:
+        raise ReplayGateError(
+            f"screenshot timeout must be no more than "
+            f"{MAX_SCREENSHOT_TIMEOUT_SECONDS:g} seconds"
+        )
+    requested_timeout = args.timeout
+    if requested_timeout is None and args.rendered_evidence:
+        requested_timeout = DEFAULT_RENDERED_TIMEOUT_SECONDS
+    return derive_gate_timeout(requested_timeout, args.m68k_overclock)
 
 
 def run_probe(args: argparse.Namespace) -> int:
+    _apply_default_paths(args)
     effective_timeout = _validate_runtime_arguments(args)
     evidence_dir = _create_evidence_directory(args.evidence_dir)
     result_path = evidence_dir / "result.json"
@@ -938,40 +1880,146 @@ def run_probe(args: argparse.Namespace) -> int:
     gdb_log_path = evidence_dir / "gdb.log"
     gngeo_log_path = evidence_dir / "gngeo.log"
     xvfb_log_path = evidence_dir / "xvfb.log"
+    screenshot_dir = evidence_dir / "screenshots"
 
     try:
-        elf = _require_file(args.elf, "replay-gate ELF")
-        rom_dir = _require_directory(args.rom_dir, "ROM directory")
-        data_file = _require_file(args.data_file, "GnGeo data file")
-        cartridge = _require_file(
-            rom_dir / f"{args.rom_set}.zip",
+        source_elf = _require_file(args.elf, "replay-gate ELF")
+        source_rom_dir = _require_directory(
+            args.rom_dir,
+            "ROM directory",
+        )
+        source_data_file = _require_file(
+            args.data_file,
+            "GnGeo data file",
+        )
+        source_cartridge = _require_file(
+            source_rom_dir / f"{args.rom_set}.zip",
             "replay-gate cartridge",
         )
+        source_bios = {
+            name: _require_file(
+                source_rom_dir / name,
+                f"replay-gate {name} BIOS archive",
+            )
+            for name in REQUIRED_BIOS_FILES
+        }
 
         nm_executable = _resolve_executable(args.nm)
         gdb_executable = _resolve_executable(args.gdb)
         gngeo_executable = _resolve_executable(args.gngeo)
         xvfb_executable = _resolve_executable(args.xvfb)
-        symbols = resolve_replay_symbols(elf, nm_executable)
+        scrot_executable: str | None = None
+        source_screenshot_helper: Path | None = None
+        if args.rendered_evidence:
+            _require_pillow()
+            scrot_executable = _resolve_executable(args.scrot)
+            source_screenshot_helper = _require_file(
+                Path(frame_capture.__file__),
+                "replay screenshot helper",
+            )
+
+        frozen_input_dir = evidence_dir / "inputs"
+        frozen_rom_dir = frozen_input_dir / "rom"
+        frozen_elf = _snapshot_file(
+            source_elf,
+            frozen_input_dir / "smbneogeo-replay.elf",
+        )
+        frozen_cartridge = _snapshot_file(
+            source_cartridge,
+            frozen_rom_dir / f"{args.rom_set}.zip",
+        )
+        frozen_data_file = _snapshot_file(
+            source_data_file,
+            frozen_rom_dir / "gngeo_data.zip",
+        )
+        frozen_bios = {
+            name: _snapshot_file(source, frozen_rom_dir / name)
+            for name, source in source_bios.items()
+        }
+        frozen_runner = _snapshot_file(
+            _require_file(Path(__file__), "replay validator"),
+            frozen_input_dir / "run_neogeo_replay_gate.py",
+        )
+        frozen_cadence_helper = _snapshot_file(
+            _require_file(
+                Path(cadence.__file__),
+                "replay process helper",
+            ),
+            frozen_input_dir / "measure_neogeo_cadence.py",
+        )
+
+        screenshot: ScreenshotConfig | None = None
+        if args.rendered_evidence:
+            screenshot_dir.mkdir()
+            (screenshot_dir / "stages").mkdir()
+            (screenshot_dir / "transitions").mkdir()
+            assert source_screenshot_helper is not None
+            assert scrot_executable is not None
+            frozen_screenshot_helper = _snapshot_file(
+                source_screenshot_helper,
+                frozen_input_dir / "capture_neogeo_replay_frame.py",
+            )
+            screenshot = ScreenshotConfig(
+                python=_resolve_executable(sys.executable),
+                helper=frozen_screenshot_helper,
+                scrot=scrot_executable,
+                directory=screenshot_dir,
+                timeout_seconds=args.screenshot_timeout,
+                maximum_bytes=MAX_SCREENSHOT_BYTES,
+            )
+        symbols = resolve_replay_symbols(frozen_elf, nm_executable)
 
         result["artifacts"] = {
-            "elf": _artifact_record(elf),
-            "cartridge": _artifact_record(cartridge),
-            "gngeo_data": _artifact_record(data_file),
+            "elf": _artifact_record(
+                frozen_elf,
+                relative_to=evidence_dir,
+            ),
+            "cartridge": _artifact_record(
+                frozen_cartridge,
+                relative_to=evidence_dir,
+            ),
+            "gngeo_data": _artifact_record(
+                frozen_data_file,
+                relative_to=evidence_dir,
+            ),
+            "validator": _artifact_record(
+                frozen_runner,
+                relative_to=evidence_dir,
+            ),
+            "process_helper": _artifact_record(
+                frozen_cadence_helper,
+                relative_to=evidence_dir,
+            ),
         }
+        for name, path in frozen_bios.items():
+            result["artifacts"][f"bios_{name.removesuffix('.zip')}"] = (
+                _artifact_record(path, relative_to=evidence_dir)
+            )
+        if screenshot is not None:
+            result["artifacts"]["screenshot_helper"] = _artifact_record(
+                screenshot.helper,
+                relative_to=evidence_dir,
+            )
         result["symbols"] = {
             "pass_trap": asdict(symbols.pass_trap),
             "fail_trap": asdict(symbols.fail_trap),
             "status": asdict(symbols.status),
             "progress_point": asdict(symbols.progress_point),
+            "stage_point": asdict(symbols.stage_point),
+            "transition_point": asdict(symbols.transition_point),
         }
+
+        script_path = evidence_dir / "replay-gate.gdb"
+        script_path.write_text(build_gdb_script(symbols, screenshot=screenshot))
+        script_path.chmod(0o444)
+        result["artifacts"]["gdb_script"] = _artifact_record(
+            script_path,
+            relative_to=evidence_dir,
+        )
         result["outcome"] = "preflight"
         _write_result(result_path, result)
 
         cadence.reject_occupied_debug_port(DEBUG_HOST, DEBUG_PORT)
-        script_path = evidence_dir / "replay-gate.gdb"
-        script_path.write_text(build_gdb_script(symbols))
-
         with ExitStack() as stack:
             xvfb_log = stack.enter_context(
                 xvfb_log_path.open("w", buffering=1)
@@ -996,8 +2044,8 @@ def run_probe(args: argparse.Namespace) -> int:
 
             gngeo_command = build_gngeo_command(
                 gngeo_executable,
-                rom_dir,
-                data_file,
+                frozen_rom_dir,
+                frozen_data_file,
                 args.rom_set,
                 args.m68k_overclock,
             )
@@ -1026,7 +2074,7 @@ def run_probe(args: argparse.Namespace) -> int:
 
             gdb_command = build_gdb_command(
                 gdb_executable,
-                elf,
+                frozen_elf,
                 script_path,
             )
             result["commands"] = {
@@ -1043,6 +2091,7 @@ def run_probe(args: argparse.Namespace) -> int:
                     stdout=gdb_log,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    env=environment,
                     start_new_session=True,
                 ),
             )
@@ -1052,6 +2101,10 @@ def run_probe(args: argparse.Namespace) -> int:
                 args.heartbeat_seconds,
                 effective_timeout,
                 gdb_log_path,
+                require_rendered=args.rendered_evidence,
+                screenshot_dir=(
+                    screenshot_dir if args.rendered_evidence else None
+                ),
             )
             gdb_log.flush()
             if gdb_status != 0:
@@ -1059,6 +2112,10 @@ def run_probe(args: argparse.Namespace) -> int:
                     f"GDB failed with status {gdb_status}:\n"
                     f"{_tail_bounded(gdb_log_path)}"
                 )
+            _verify_frozen_artifacts(
+                result["artifacts"],
+                evidence_dir,
+            )
 
             capture = parse_gdb_output(
                 gdb_log_path.read_text(errors="replace"),
@@ -1067,7 +2124,23 @@ def run_probe(args: argparse.Namespace) -> int:
             progress = parse_progress_snapshots(
                 gdb_log_path.read_text(errors="replace")
             )
+            stages = parse_stage_snapshots(
+                gdb_log_path.read_text(errors="replace")
+            )
+            transitions = parse_transition_snapshots(
+                gdb_log_path.read_text(errors="replace")
+            )
             classification = classify_result(capture)
+            rendered_evidence: dict[str, object] | None = None
+            if args.rendered_evidence:
+                rendered_evidence = _rendered_evidence_result(
+                    stages,
+                    transitions,
+                    capture,
+                    screenshot_dir,
+                    MAX_SCREENSHOT_BYTES,
+                    classification.passed,
+                )
             result.update(
                 {
                     "outcome": classification.outcome,
@@ -1085,6 +2158,8 @@ def run_probe(args: argparse.Namespace) -> int:
                     "progress": _progress_result(progress),
                 }
             )
+            if rendered_evidence is not None:
+                result["rendered_evidence"] = rendered_evidence
             _write_result(result_path, result)
             print(
                 "[replay-gate] "
@@ -1170,25 +2245,21 @@ def _non_negative_int(value: str) -> int:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    repository = Path(__file__).resolve().parents[1]
-    replay_build = (
-        repository / "platform" / "neogeo" / "build" / "replay-fast"
-    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--elf",
         type=Path,
-        default=replay_build / "smbneogeo-replay.elf",
+        help="replay-gate ELF; defaults to the selected replay variant",
     )
     parser.add_argument(
         "--rom-dir",
         type=Path,
-        default=replay_build / "rom",
+        help="ROM directory; defaults to the selected replay variant",
     )
     parser.add_argument(
         "--data-file",
         type=Path,
-        default=replay_build / "rom" / "gngeo_data.zip",
+        help="GnGeo data file; defaults to the selected replay variant",
     )
     parser.add_argument("--rom-set", default=DEFAULT_ROM_SET)
     parser.add_argument(
@@ -1208,8 +2279,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--68k-overclock",
         dest="m68k_overclock",
         type=_non_negative_int,
-        default=DEFAULT_68K_OVERCLOCK,
+        default=None,
         metavar="PERCENT",
+        help=(
+            "MC68000 overclock percentage; defaults to 0 for rendered "
+            f"evidence and {DEFAULT_68K_OVERCLOCK} otherwise"
+        ),
     )
     parser.add_argument(
         "--heartbeat-seconds",
@@ -1221,10 +2296,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_STARTUP_TIMEOUT_SECONDS,
     )
+    parser.add_argument(
+        "--rendered-evidence",
+        action="store_true",
+        help=(
+            "select the rendered replay and capture 32 immediate/settled "
+            "stage pairs plus the terminal frame"
+        ),
+    )
+    parser.add_argument(
+        "--screenshot-timeout",
+        type=float,
+        default=DEFAULT_SCREENSHOT_TIMEOUT_SECONDS,
+    )
     parser.add_argument("--gngeo", default="ngdevkit-gngeo")
     parser.add_argument("--gdb", default="m68k-neogeo-elf-gdb")
     parser.add_argument("--nm", default="m68k-neogeo-elf-nm")
     parser.add_argument("--xvfb", default="Xvfb")
+    parser.add_argument("--scrot", default="scrot")
     return parser
 
 

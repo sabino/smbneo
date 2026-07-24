@@ -76,7 +76,22 @@ make -C platform/neogeo replay-cart \
 # Run it to a pass/fail trap and retain a bounded result.json plus logs
 python3 tools/run_neogeo_replay_gate.py \
   --68k-overclock 10000 --timeout 2400
+
+# Build the rendered variant and retain every stage transition/settled pair
+make -C platform/neogeo replay-rendered-evidence \
+  SMB_ROM="/path/to/smb.zip" \
+  REPLAY_FM2="/path/to/no-opposite-warpless.fm2" \
+  REPLAY_HARDWARE_PLAYABLE=1 \
+  REPLAY_EVIDENCE_DIR="/tmp/smb-neogeo-rendered-evidence"
 ```
+
+The rendered-evidence target requires `scrot` and the Python Pillow package;
+both are checked before the long emulator run begins. It accepts only a
+hardware-playable input with no simultaneous opposite directions and uses
+exactly two rendered frames between each transition and settled capture.
+Choose a new external directory below `/tmp` for the evidence rather than a
+path in the repository. The resulting 128 KiB-bounded manifest binds the
+captures to immutable, hashed artifact snapshots and validation provenance.
 
 The supported ROM revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`. The converter reads only its
@@ -110,9 +125,17 @@ The cartridge replay gate accepts strict local FM2 input logs, preserves their
 hashes and startup metadata, and checks sequential entry into all 32 stages
 plus the final victory state. Its versioned debugger mailbox also records
 bootstrap skips, area-load holds, and the exact number of translated core
-frames advanced. The movie itself is never downloaded or tracked by the
-build. The preferred no-opposite full-game movie has passed this gate through
-all 32 stages and a stable victory state. See
+frames advanced. A separate rendered lane binds each ordered stage state to
+an immediate transition PNG, a PNG after two complete render/VBlank frames,
+and renderer/game-frame/VBlank counters, then captures the stable victory
+screen. The runner does not download the movie; generated screenshots and
+their immutable provenance snapshot stay in the explicitly selected external
+evidence directory. This is an endurance and progression proof, not a claim
+of pixel-perfect source-console fidelity, audio coverage, or physical-hardware
+validation. `REPLAY_FAST=1` skips both the renderer and per-frame APU step. The
+preferred no-opposite full-game movie has passed that fast gate through all 32
+stages and a stable victory state. It has also passed the stock-clock rendered
+lane with 32 transition/settled pairs and the terminal capture. See
 [`docs/NEOGEO_PORT.md`](docs/NEOGEO_PORT.md) for the architecture, measured
 memory use, recommended published TAS inputs, verification evidence, and
 remaining work.

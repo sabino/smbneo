@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 import math
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -20,7 +21,9 @@ NM_OUTPUT = """\
 00003bce 00000004 T neogeo_replay_pass_trap
 00003bd2 00000004 T neogeo_replay_fail_trap
 00003bd6 00000004 T neogeo_replay_progress_trap
-00100130 00000060 B neogeo_replay_status
+00003bda 00000004 T neogeo_replay_stage_trap
+00003bde 00000004 T neogeo_replay_transition_trap
+00100130 00000070 B neogeo_replay_status
 """
 
 
@@ -41,12 +44,24 @@ def sample_symbols() -> runner.ReplaySymbols:
         status=runner.ElfSymbol(
             "neogeo_replay_status",
             0x100130,
-            96,
+            112,
             "B",
         ),
         progress_point=runner.ElfSymbol(
             "neogeo_replay_progress_trap",
             0x3BD6,
+            4,
+            "T",
+        ),
+        stage_point=runner.ElfSymbol(
+            "neogeo_replay_stage_trap",
+            0x3BDA,
+            4,
+            "T",
+        ),
+        transition_point=runner.ElfSymbol(
+            "neogeo_replay_transition_trap",
+            0x3BDE,
             4,
             "T",
         ),
@@ -84,7 +99,40 @@ def sample_words(
         1,
         6,
         67104,
+        1,
+        67104,
+        67120,
+        2,
     ]
+
+
+def stage_words(stage: int, *, frame: int) -> list[int]:
+    entered_mask = (
+        runner.ALL_STAGES_MASK
+        if stage == runner.FINAL_STAGE
+        else (1 << (stage + 1)) - 1
+    )
+    completed_mask = 0 if stage == 0 else (1 << stage) - 1
+    words = sample_words(
+        result=0,
+        entered_mask=entered_mask,
+        completed_mask=completed_mask,
+    )
+    words[3] = frame
+    words[4] = 0
+    words[9] = stage
+    words[10] = 0
+    words[11] = 1
+    words[12] = 3
+    words[13] = stage // 4
+    words[14] = stage % 4
+    words[15] = 0
+    words[17] = 1
+    words[18] = 0
+    words[23] = frame + 1 - words[20] - words[22]
+    words[25] = words[23]
+    words[26] = words[25] + 2
+    return words
 
 
 def capture(
@@ -112,6 +160,89 @@ def capture(
     )
 
 
+def rendered_capture() -> runner.DebuggerCapture:
+    symbols = sample_symbols()
+    words = sample_words()
+    words[17] = 1
+    words[18] = 0
+    return runner.DebuggerCapture(
+        trap_kind="pass",
+        trap_pc=symbols.pass_trap.address,
+        status=runner.parse_mailbox_words(words),
+        raw_words=tuple(words),
+    )
+
+
+def stage_captures(count: int = 32) -> list[runner.StageCapture]:
+    captures: list[runner.StageCapture] = []
+    for stage in range(count):
+        words = stage_words(stage, frame=1000 + stage * 1000)
+        captures.append(
+            runner.StageCapture(
+                sample=stage + 1,
+                status=runner.parse_mailbox_words(words),
+                raw_words=tuple(words),
+            )
+        )
+    return captures
+
+
+def transition_captures(
+    count: int = 32,
+) -> list[runner.TransitionCapture]:
+    captures: list[runner.TransitionCapture] = []
+    for stage in range(count):
+        words = stage_words(stage, frame=998 + stage * 1000)
+        captures.append(
+            runner.TransitionCapture(
+                sample=stage + 1,
+                status=runner.parse_mailbox_words(words),
+                raw_words=tuple(words),
+            )
+        )
+    return captures
+
+
+def write_visual_png(path: Path, variant: int) -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (1024, 768), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    left, top = (1024 - 320) // 2, (768 - 224) // 2
+    base = (
+        20 + (variant * 29) % 180,
+        40 + (variant * 17) % 180,
+        60 + (variant * 11) % 180,
+    )
+    draw.rectangle((left, top, left + 319, top + 223), fill=base)
+    draw.rectangle(
+        (left + 8, top + 8, left + 120, top + 24),
+        fill=(255, 255, 255),
+    )
+    draw.rectangle(
+        (left + 32 + variant, top + 100, left + 80 + variant, top + 180),
+        fill=(255, 80, 0),
+    )
+    draw.rectangle(
+        (left + 160, top + 140, left + 300, top + 220),
+        fill=(0, 180, 40),
+    )
+    image.save(path)
+
+
+def write_transition_png(path: Path) -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (1024, 768), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    left, top = (1024 - 320) // 2, (768 - 224) // 2
+    draw.rectangle(
+        (left, top, left + 319, top + 223),
+        fill=(100, 160, 230),
+    )
+    image.save(path)
+
+
 class SymbolResolutionTests(unittest.TestCase):
     def test_nm_parser_reads_and_validates_exact_gate_objects(self) -> None:
         symbols = runner.replay_symbols_from_nm(NM_OUTPUT)
@@ -122,9 +253,9 @@ class SymbolResolutionTests(unittest.TestCase):
         self.assertEqual(symbols.status.size, runner.STATUS_BYTES)
 
     def test_nm_parser_rejects_wrong_mailbox_size_and_alignment(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 96"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "exactly 112"):
             runner.replay_symbols_from_nm(
-                NM_OUTPUT.replace("00000060 B", "0000005c B")
+                NM_OUTPUT.replace("00000070 B", "0000006c B")
             )
         with self.assertRaisesRegex(runner.ReplayGateError, "aligned"):
             runner.replay_symbols_from_nm(
@@ -179,10 +310,20 @@ class GdbScriptTests(unittest.TestCase):
         self.assertIn("break *0x00003bce", script)
         self.assertIn("break *0x00003bd2", script)
         self.assertIn("break *0x00003bd6", script)
+        self.assertIn("break *0x00003bda", script)
+        self.assertIn("break *0x00003bde", script)
         self.assertIn("target remote 127.0.0.1:2159", script)
         self.assertEqual(script.count("set $mb"), runner.STATUS_WORD_COUNT)
         self.assertEqual(
             script.count("set $progress_mb"),
+            runner.STATUS_WORD_COUNT,
+        )
+        self.assertEqual(
+            script.count("set $stage_mb"),
+            runner.STATUS_WORD_COUNT,
+        )
+        self.assertEqual(
+            script.count("set $transition_mb"),
             runner.STATUS_WORD_COUNT,
         )
         self.assertNotIn("ignore 3", script)
@@ -196,8 +337,37 @@ class GdbScriptTests(unittest.TestCase):
         self.assertNotIn("neogeo_replay_pass_trap", script)
         self.assertNotIn("neogeo_replay_fail_trap", script)
         self.assertNotIn("neogeo_replay_progress_trap", script)
+        self.assertNotIn("neogeo_replay_stage_trap", script)
+        self.assertNotIn("neogeo_replay_transition_trap", script)
         self.assertNotIn("unsigned short", script)
         self.assertNotIn("unsigned char", script)
+
+    def test_rendered_script_captures_stage_and_terminal_frames(self) -> None:
+        config = runner.ScreenshotConfig(
+            python="/usr/bin/python3",
+            helper=Path("/work/helper with space.py"),
+            scrot="/usr/bin/scrot",
+            directory=Path("/work/evidence frames"),
+            timeout_seconds=7.5,
+            maximum_bytes=123456,
+        )
+
+        script = runner.build_gdb_script(
+            sample_symbols(),
+            screenshot=config,
+        )
+
+        self.assertEqual(script.count("--sequence-dir"), 2)
+        self.assertEqual(script.count("--output"), 2)
+        self.assertEqual(script.count("terminal.png"), 2)
+        self.assertIn("'/work/helper with space.py'", script)
+        self.assertIn("'/work/evidence frames/stages'", script)
+        self.assertIn("'/work/evidence frames/transitions'", script)
+        self.assertIn("--timeout 7.5", script)
+        self.assertIn("--max-bytes 123456", script)
+
+        with self.assertRaisesRegex(runner.ReplayGateError, "newlines"):
+            runner._gdb_shell_command(["ok", "bad\nargument"])
 
     def test_gngeo_command_uses_fixed_debug_port_mode_and_overclock(self) -> None:
         command = runner.build_gngeo_command(
@@ -214,6 +384,16 @@ class GdbScriptTests(unittest.TestCase):
         self.assertIn("--no-vsync", command)
         self.assertEqual(command[-1], "smbneogeo")
 
+    def test_gdb_command_ignores_local_initialization(self) -> None:
+        command = runner.build_gdb_command(
+            "target-gdb",
+            Path("/work/replay.elf"),
+            Path("/work/probe.gdb"),
+        )
+
+        self.assertEqual(command[0:3], ["target-gdb", "-nx", "-q"])
+        self.assertIn("-batch", command)
+
 
 class MailboxTests(unittest.TestCase):
     def test_mailbox_parser_maps_every_uint32_value(self) -> None:
@@ -228,9 +408,13 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(status.area_init_hold_frames, 1)
         self.assertEqual(status.area_init_hold_count, 6)
         self.assertEqual(status.core_frames_advanced, 67104)
+        self.assertEqual(status.rendering_enabled, 1)
+        self.assertEqual(status.game_frame_count, 67104)
+        self.assertEqual(status.vblank_count, 67120)
+        self.assertEqual(status.stage_settle_frames, 2)
 
     def test_mailbox_parser_rejects_size_magic_version_and_range(self) -> None:
-        with self.assertRaisesRegex(runner.ReplayGateError, "23 words"):
+        with self.assertRaisesRegex(runner.ReplayGateError, "27 words"):
             runner.parse_mailbox_words(sample_words()[:-1])
 
         bad_magic = sample_words()
@@ -267,6 +451,38 @@ class MailboxTests(unittest.TestCase):
                 ):
                     runner.parse_mailbox_words(words)
 
+    def test_mailbox_parser_requires_consistent_renderer_counters(
+        self,
+    ) -> None:
+        invalid_cases = [
+            (24, 2, "rendering_enabled"),
+            (25, 0, "rendered-frame accounting"),
+            (26, 10, "VBlank count"),
+            (27, 256, "stage-settle"),
+        ]
+        for index, value, message in invalid_cases:
+            with self.subTest(index=index):
+                words = sample_words()
+                words[index] = value
+                with self.assertRaisesRegex(
+                    runner.ReplayGateError,
+                    message,
+                ):
+                    runner.parse_mailbox_words(words)
+
+        fast = sample_words()
+        fast[24] = 0
+        fast[25] = 0
+        parsed = runner.parse_mailbox_words(fast)
+        self.assertEqual(parsed.rendering_enabled, 0)
+
+        fast[25] = 1
+        with self.assertRaisesRegex(
+            runner.ReplayGateError,
+            "non-rendered",
+        ):
+            runner.parse_mailbox_words(fast)
+
     def test_mailbox_parser_accepts_pre_stage_and_invalid_stage_states(
         self,
     ) -> None:
@@ -298,12 +514,16 @@ class MailboxTests(unittest.TestCase):
         tail_pass[3] = tail_pass[16] + 2
         tail_pass[4] = 2
         tail_pass[23] = 67104 + 3
+        tail_pass[25] = tail_pass[23]
+        tail_pass[26] = tail_pass[25] + 2
         parsed = runner.parse_mailbox_words(tail_pass)
         self.assertEqual(parsed.tail_frame, 2)
 
         incomplete = tail_pass.copy()
         incomplete[2] = runner.INCOMPLETE_RESULT
         incomplete[23] = 67104 + 2
+        incomplete[25] = incomplete[23]
+        incomplete[26] = incomplete[25] + 2
         parsed = runner.parse_mailbox_words(incomplete)
         self.assertEqual(parsed.result, runner.INCOMPLETE_RESULT)
 
@@ -349,6 +569,8 @@ class MailboxTests(unittest.TestCase):
             words = sample_words()
             words[3] = frame
             words[23] = frame + 1 - words[20] - words[22]
+            words[25] = words[23]
+            words[26] = words[25] + 2
             lines.extend(
                 "REPLAY_PROGRESS_WORD "
                 f"sample={sample} index={index} value=0x{value:08x}"
@@ -381,6 +603,316 @@ class MailboxTests(unittest.TestCase):
                     ]
                 )
             )
+
+    def test_stage_parser_requires_contiguous_complete_ordered_samples(
+        self,
+    ) -> None:
+        lines: list[str] = []
+        for sample, stage in ((1, 0), (2, 1)):
+            words = stage_words(stage, frame=1000 + stage * 100)
+            lines.extend(
+                "REPLAY_STAGE_WORD "
+                f"sample={sample} index={index} value=0x{value:08x}"
+                for index, value in enumerate(words)
+            )
+            lines.append(f"REPLAY_STAGE_END sample={sample}")
+
+        captures = runner.parse_stage_snapshots("\n".join(lines))
+
+        self.assertEqual([item.sample for item in captures], [1, 2])
+        self.assertEqual(captures[1].status.current_stage, 1)
+
+        skipped = "\n".join(line.replace("sample=2", "sample=3") for line in lines)
+        with self.assertRaisesRegex(runner.ReplayGateError, "contiguous"):
+            runner.parse_stage_snapshots(skipped)
+
+        with self.assertRaisesRegex(runner.ReplayGateError, "missing"):
+            runner.parse_stage_snapshots(
+                "\n".join(
+                    [
+                        (
+                            "REPLAY_STAGE_WORD "
+                            "sample=1 index=0 value=0x534d4252"
+                        ),
+                        "REPLAY_STAGE_END sample=1",
+                    ]
+                )
+            )
+
+    def test_transition_parser_maps_complete_samples(self) -> None:
+        words = stage_words(0, frame=998)
+        lines = [
+            (
+                "REPLAY_TRANSITION_WORD "
+                f"sample=1 index={index} value=0x{value:08x}"
+            )
+            for index, value in enumerate(words)
+        ]
+        lines.append("REPLAY_TRANSITION_END sample=1")
+
+        captures = runner.parse_transition_snapshots("\n".join(lines))
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0].status.current_stage, 0)
+
+
+class RenderedEvidenceTests(unittest.TestCase):
+    def populate_images(self, directory: Path, count: int = 32) -> None:
+        stages = directory / "stages"
+        transitions = directory / "transitions"
+        stages.mkdir()
+        transitions.mkdir()
+        for index in range(1, count + 1):
+            write_visual_png(
+                stages / f"stage-{index:04d}.png",
+                index,
+            )
+            write_transition_png(
+                transitions / f"stage-{index:04d}.png"
+            )
+        write_visual_png(directory / "terminal.png", 100)
+
+    def test_complete_rendered_evidence_binds_all_stage_images(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+
+            result = runner._rendered_evidence_result(
+                stage_captures(),
+                transition_captures(),
+                rendered_capture(),
+                directory,
+                runner.MAX_SCREENSHOT_BYTES,
+                True,
+            )
+
+        self.assertEqual(result["stage_count"], 32)
+        self.assertTrue(result["complete_stage_set"])
+        self.assertEqual(result["stages"][0]["world"], 1)
+        self.assertEqual(result["stages"][-1]["level"], 4)
+        self.assertEqual(
+            result["stages"][5]["game_frame_count"],
+            result["stages"][5]["core_frames_advanced"],
+        )
+        self.assertEqual(result["terminal"]["image"]["width"], 1024)
+
+    def test_complete_result_manifest_fits_its_hard_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            rendered = runner._rendered_evidence_result(
+                stage_captures(),
+                transition_captures(),
+                rendered_capture(),
+                directory,
+                runner.MAX_SCREENSHOT_BYTES,
+                True,
+            )
+            result = {
+                "schema_version": runner.RESULT_SCHEMA_VERSION,
+                "outcome": "complete",
+                "passed": True,
+                "arguments": {
+                    "argv": ["--rendered-evidence"],
+                    "evidence_dir": str(directory),
+                    "timeout_effective_seconds": 7200,
+                    "m68k_overclock_percent": 0,
+                },
+                "artifacts": {
+                    f"artifact_{index}": {
+                        "path": f"inputs/artifact-{index}.bin",
+                        "bytes": 1048576,
+                        "sha256": "a" * 64,
+                    }
+                    for index in range(9)
+                },
+                "mailbox": {
+                    "bytes": runner.STATUS_BYTES,
+                    "raw_words": sample_words(),
+                    "fields": asdict(rendered_capture().status),
+                },
+                "progress": {
+                    "sample_count": 38,
+                    "latest": {
+                        "sample": 38,
+                        "raw_words": sample_words(),
+                        "fields": asdict(rendered_capture().status),
+                    },
+                },
+                "rendered_evidence": rendered,
+            }
+            result_path = directory / "result.json"
+            runner._write_result(result_path, result)
+
+            self.assertLessEqual(
+                result_path.stat().st_size,
+                runner.MAX_RESULT_JSON_BYTES,
+            )
+
+    def test_missing_stale_black_and_nonrendered_evidence_fail(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            (directory / "stages" / "stage-0032.png").unlink()
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "do not match",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            (directory / "stages" / "stage-0002.png").write_bytes(
+                (directory / "stages" / "stage-0001.png").read_bytes()
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "pixel-identical",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            (directory / "transitions" / "stage-0001.png").write_bytes(
+                (directory / "stages" / "stage-0001.png").read_bytes()
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "immediate transition",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            from PIL import Image
+
+            Image.new("RGB", (1024, 768), (0, 0, 0)).save(
+                directory / "stages" / "stage-0001.png"
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "visible game content",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            (directory / "terminal.png").write_bytes(
+                (directory / "stages" / "stage-0032.png").read_bytes()
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "terminal playfield",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            stages = stage_captures()
+            stages[0] = replace(
+                stages[0],
+                status=replace(
+                    stages[0].status,
+                    stage_settle_frames=3,
+                ),
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "two settling",
+            ):
+                runner._rendered_evidence_result(
+                    stages,
+                    transition_captures(),
+                    rendered_capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "hardware-playable",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    capture(),
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate_images(directory)
+            terminal = rendered_capture()
+            terminal = replace(
+                terminal,
+                status=replace(
+                    terminal.status,
+                    rendering_enabled=0,
+                    game_frame_count=0,
+                ),
+            )
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "non-rendered",
+            ):
+                runner._rendered_evidence_result(
+                    stage_captures(),
+                    transition_captures(),
+                    terminal,
+                    directory,
+                    runner.MAX_SCREENSHOT_BYTES,
+                    True,
+                )
 
 
 class ClassificationTests(unittest.TestCase):
@@ -438,6 +970,36 @@ class ClassificationTests(unittest.TestCase):
         self.assertIn("entered=", failed.detail)
 
 
+class ArtifactProvenanceTests(unittest.TestCase):
+    def test_frozen_input_is_recorded_and_change_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            source = evidence / "source.bin"
+            source.write_bytes(b"original replay input")
+            frozen = runner._snapshot_file(
+                source,
+                evidence / "inputs" / "source.bin",
+            )
+            artifacts = {
+                "source": runner._artifact_record(
+                    frozen,
+                    relative_to=evidence,
+                )
+            }
+
+            runner._verify_frozen_artifacts(artifacts, evidence)
+            source.write_bytes(b"changed workspace input")
+            runner._verify_frozen_artifacts(artifacts, evidence)
+
+            frozen.chmod(0o644)
+            frozen.write_bytes(b"mutated frozen input")
+            with self.assertRaisesRegex(
+                runner.ReplayGateError,
+                "changed during replay",
+            ):
+                runner._verify_frozen_artifacts(artifacts, evidence)
+
+
 class TimeoutAndArgumentsTests(unittest.TestCase):
     def test_explicit_timeout_is_preserved_and_default_is_finite(self) -> None:
         self.assertEqual(runner.derive_gate_timeout(42.5, 0), 42.5)
@@ -488,6 +1050,32 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
         self.assertEqual(args.rom_set, "smbneogeo")
         self.assertEqual(args.timeout, 90)
         self.assertEqual(args.m68k_overclock, 500)
+        self.assertFalse(args.rendered_evidence)
+
+    def test_rendered_mode_selects_rendered_paths_and_records_clock(
+        self,
+    ) -> None:
+        args = runner.build_argument_parser().parse_args(
+            [
+                "--rendered-evidence",
+            ]
+        )
+        runner._apply_default_paths(args)
+
+        self.assertIn("build/replay-rendered/", str(args.elf))
+        self.assertIn("build/replay-rendered/rom", str(args.rom_dir))
+        self.assertEqual(
+            runner._validate_runtime_arguments(args),
+            runner.DEFAULT_RENDERED_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(args.m68k_overclock, 0)
+
+        args.timeout = 42
+        args.m68k_overclock = 1000
+        self.assertEqual(
+            runner._validate_runtime_arguments(args),
+            42,
+        )
 
     def test_runtime_validation_rejects_unsafe_romset_and_bad_intervals(
         self,
@@ -505,6 +1093,10 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.ReplayGateError, "startup"):
             runner._validate_runtime_arguments(
                 replace_namespace(args, startup_timeout=float("inf"))
+            )
+        with self.assertRaisesRegex(runner.ReplayGateError, "screenshot"):
+            runner._validate_runtime_arguments(
+                replace_namespace(args, screenshot_timeout=61)
             )
 
 

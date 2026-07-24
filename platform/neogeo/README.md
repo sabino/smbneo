@@ -36,6 +36,13 @@ make -C platform/neogeo replay-cart \
   REPLAY_FM2="/path/to/full-warpless.fm2" \
   REPLAY_FAST=1 REPLAY_HARDWARE_PLAYABLE=1
 python3 tools/run_neogeo_replay_gate.py --timeout 900
+
+# Exercise the direct renderer through every stage and retain 65 PNGs
+make -C platform/neogeo replay-rendered-evidence \
+  SMB_ROM="/path/to/owned/smb.zip" \
+  REPLAY_FM2="/path/to/full-warpless.fm2" \
+  REPLAY_HARDWARE_PLAYABLE=1 \
+  REPLAY_EVIDENCE_DIR="/tmp/smb-neogeo-rendered-evidence"
 ```
 
 `verify` does not need an SMB ROM. It builds and tests the integer audio
@@ -51,7 +58,23 @@ directions. The runner owns an isolated display and emulator process group,
 resolves the cartridge's raw trap/mailbox addresses from its ELF, applies a
 finite deadline, and writes a bounded evidence directory.
 
-Generated output is intentionally ignored:
+`replay-rendered-evidence` selects `build/replay-rendered`, uses stock
+MC68000 timing by default, and retains an immediate plus two-rendered-frame
+settled screenshot for each of the 32 ordered stages, followed by the stable
+victory screen. It preflights `scrot` and Python Pillow before launching the
+emulator, requires a hardware-playable movie with zero opposite-direction
+transitions, and rejects any settling interval other than exactly two rendered
+frames. The runner requires renderer and VBlank counters to match the
+mailbox's translated-frame accounting and rejects missing, blank, malformed,
+or consecutively stale settled-stage images. A new external evidence directory
+below `/tmp` retains immutable, hashed snapshots of the exercised artifacts,
+capture/validation provenance, the 65 PNGs, logs, and a manifest bounded to
+128 KiB. GnGeo debugger mode disables its Z80/audio path, so this lane proves
+renderer endurance and full-game progression, not audio, pixel-perfect
+source-console fidelity, or physical-hardware behavior; the normal-mode audio
+probe remains separate.
+
+The following repository-local build output is intentionally ignored:
 
 - ROM-less `build/smbneogeo.elf` / `.map` verification outputs
 - title-enabled `build/smbneogeo-cart.elf` / `.map` cartridge outputs
@@ -60,6 +83,9 @@ Generated output is intentionally ignored:
 - `build/rom/smbneogeo.zip`
 - `build/replay-fast/` and `build/replay-rendered/`
 - emulator BIOS/hash support files
+
+Rendered evidence is deliberately written to the caller-selected external
+`/tmp` directory; it is not described as repository-ignored output.
 
 The repository contains no Nintendo graphics. The local cartridge does, so it
 must not be redistributed.

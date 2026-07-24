@@ -11,6 +11,7 @@ CART_MAP := $(BUILD)/smbneogeo-cart.map
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
+REPLAY_CHECKPOINT_TEST := $(BUILD)/test_neogeo_replay_checkpoint
 JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
@@ -86,6 +87,10 @@ REPLAY_HARDWARE_PLAYABLE ?= 0
 REPLAY_TAIL_FRAMES ?= 1800
 REPLAY_BOOTSTRAP_FRAMES ?= 7
 REPLAY_AREA_INIT_HOLD_FRAMES ?= 1
+REPLAY_STAGE_SETTLE_FRAMES ?= 2
+REPLAY_EVIDENCE_TIMEOUT ?= 7200
+REPLAY_EVIDENCE_OVERCLOCK ?= 0
+REPLAY_EVIDENCE_DIR ?=
 GNGEO ?= ngdevkit-gngeo
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
@@ -127,7 +132,7 @@ REPLAY_FAST_FLAG := \
 
 .PHONY: \
 	all elf test verify verify-codegen verify-sound-driver assets cart run \
-	replay-cart replay-run clean FORCE
+	replay-cart replay-run replay-rendered-evidence clean FORCE
 
 all: verify
 
@@ -173,12 +178,14 @@ $(REPLAY_HEADER): FORCE | $(REPLAYDIR)
 		--output "$@"
 
 $(REPLAY_MAIN_OBJECT): \
-		replay_main.c replay_gate.h replay_timing.h $(REPLAY_HEADER) | $(REPLAYDIR)
+		replay_main.c replay_checkpoint.h replay_gate.h replay_timing.h \
+		$(REPLAY_HEADER) | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) -I$(REPLAYDIR) $(CFLAGS) \
 		$(REPLAY_FAST_FLAG) \
 		-DSMB_NEOGEO_REPLAY_TAIL_FRAMES=$(REPLAY_TAIL_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES=$(REPLAY_BOOTSTRAP_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES=$(REPLAY_AREA_INIT_HOLD_FRAMES) \
+		-DSMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES=$(REPLAY_STAGE_SETTLE_FRAMES) \
 		-c $< -o $@
 
 $(REPLAY_GATE_OBJECT): replay_gate.c replay_gate.h | $(REPLAYDIR)
@@ -219,6 +226,13 @@ $(REPLAY_TIMING_TEST): \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
 		-I. \
 		$(ROOT)/tools/test_neogeo_replay_timing.c -o $@
+
+$(REPLAY_CHECKPOINT_TEST): \
+		$(ROOT)/tools/test_neogeo_replay_checkpoint.c \
+		replay_checkpoint.h | $(BUILD)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_replay_checkpoint.c -o $@
 
 $(JUMP_ENGINE_TEST): \
 		$(ROOT)/tools/test_jump_engine_dispatch.c \
@@ -265,7 +279,8 @@ $(APU_BRIDGE_TEST): \
 
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
-		$(REPLAY_TIMING_TEST) $(JUMP_ENGINE_TEST) \
+		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
+		$(JUMP_ENGINE_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST)
 	$(PYTHON) -m unittest discover \
@@ -273,6 +288,7 @@ test: \
 	$(PPU_STATE_TEST)
 	$(REPLAY_GATE_TEST)
 	$(REPLAY_TIMING_TEST)
+	$(REPLAY_CHECKPOINT_TEST)
 	$(JUMP_ENGINE_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
@@ -389,6 +405,24 @@ replay-run: replay-cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		--system home \
 		-i $(REPLAY_ROMDIR) -d $(REPLAY_GNGEO_DATA) $(GAMEROM)
+
+replay-rendered-evidence: replay-cart
+	@test "$(REPLAY_FAST)" = "0" || { \
+		echo "replay-rendered-evidence requires REPLAY_FAST=0" >&2; \
+		exit 2; \
+	}
+	@test "$(REPLAY_HARDWARE_PLAYABLE)" = "1" || { \
+		echo "replay-rendered-evidence requires REPLAY_HARDWARE_PLAYABLE=1" >&2; \
+		exit 2; \
+	}
+	@test "$(REPLAY_STAGE_SETTLE_FRAMES)" = "2" || { \
+		echo "replay-rendered-evidence requires REPLAY_STAGE_SETTLE_FRAMES=2" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(ROOT)/tools/run_neogeo_replay_gate.py \
+		--rendered-evidence \
+		--68k-overclock "$(REPLAY_EVIDENCE_OVERCLOCK)" \
+		--timeout "$(REPLAY_EVIDENCE_TIMEOUT)" $(if $(strip $(REPLAY_EVIDENCE_DIR)),--evidence-dir "$(REPLAY_EVIDENCE_DIR)",)
 
 clean:
 	rm -rf $(BUILD)
