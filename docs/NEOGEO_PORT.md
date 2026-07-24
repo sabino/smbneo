@@ -50,6 +50,12 @@ The port converts each NES 8x8 2bpp CHR tile in two ways at build time:
    value `$077f` displays it at 8x8.
 2. S-ROM: the original 8x8 pixels are encoded directly for the FIX layer.
 
+The game also reads 314 bytes at CHR `$1ec0-$1ff9` to construct its title
+nametable. Cartridge builds generate a small read-only C array for that
+window from the user-supplied ROM. The normal ROM-less verification ELF links
+a zero stub instead, and the Makefile uses distinct ELF outputs so one mode
+cannot accidentally reuse the other's link product.
+
 At runtime:
 
 - 33 vertical SCB strips cover the scrolling 256-pixel background, including
@@ -106,7 +112,7 @@ VBlank before swapping SCB3. The repeated display frame is preferable to
 crossing into active scanout.
 
 The final linked ELF (SHA-256
-`62b056c0b0cbb6c890ef4f3a28d01783dcd68411cb2103c8fe48314d4a2169cb`)
+`1c2f093adcfa48725efd5b53f2f8b7a2d3f1fc5b63f55ce8a3c17963368317e3`)
 was audited instruction by instruction with these worst-case MC68000 cycle
 bounds, including a successful VBlank-poll iteration:
 
@@ -130,7 +136,7 @@ hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 180,162 |
+| MC68000 text + read-only data | 180,534 |
 | Initialized work RAM (`.data`) | 4 |
 | Zeroed work RAM (`.bss`) | 16,112 |
 | Static user work RAM total | 16,116 |
@@ -165,8 +171,10 @@ exactly one `.nes` member. It:
 3. reads the CHR bank only;
 4. generates 512 C-ROM and 512 S-ROM NES tiles plus transparent/solid helper
    tiles;
-5. pads C1/C2/S1 to cartridge sizes; and
-6. records a manifest confirming that zero PRG bytes were written.
+5. emits the 314-byte CHR-resident title nametable payload as an ignored C
+   translation unit for the cartridge-only ELF;
+6. pads C1/C2/S1 to cartridge sizes; and
+7. records a manifest confirming that zero source PRG bytes were written.
 
 The Makefile then builds the one-megabyte P1, null-sound M1, empty V1,
 cartridge ZIP, and GnGeo hash data. All derived assets live below the ignored
@@ -174,9 +182,9 @@ cartridge ZIP, and GnGeo hash data. All derived assets live below the ignored
 
 For the final audited program, the two isolated builds produced identical
 1 MiB P regions with SHA-256
-`fe77bbd31d7f2acb44459ee0f6343a8576763070c6e1d3c3021d373417be5b88`
-and identical 104,589-byte cartridge ZIPs with SHA-256
-`017b9f5fa73ceca8941c3e44ca8095fe10a49c7e6cf888d9fc9bb3b567243a96`.
+`5799b073ae3744dd4153b538db461b90021c0e004281032fb1a3f6029120c38d`
+and identical 104,898-byte cartridge ZIPs with SHA-256
+`11e12daaa15129daed997839be7d0c6a4afd8dd61e3dd74d715d5f68064b62f6`.
 
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
@@ -227,6 +235,7 @@ SHA-1. The generated cartridge loaded all P/M/V/S/C regions in
 ngdevkit-gngeo, initialized the AES BIOS and 68000, and produced stable
 640x448 captures (2x scale) showing:
 
+- the large centered title panel and complete one/two-player menu;
 - the centered/cropped 256x224 viewport;
 - the fixed `MARIO / WORLD / TIME` HUD;
 - sky, cloud, mountain, bush, and ground background tiles;

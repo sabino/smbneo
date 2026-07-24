@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Convert a user-supplied SMB iNES dump into Neo Geo C-ROM/S-ROM data.
+"""Convert a user-supplied SMB iNES dump into Neo Geo cartridge assets.
 
 The ROM is read in memory (including when it is inside a ZIP archive), and
-only converted CHR graphics are written.  PRG data is never copied to output.
+only converted CHR graphics plus the CHR-resident title nametable payload are
+written. PRG data is never copied to output.
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ import zipfile
 EXPECTED_ROM_SHA1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922"
 NES_CHR_SIZE = 8 * 1024
 NES_CHR_TILES = 512
+TITLE_SCREEN_CHR_OFFSET = 0x1EC0
+TITLE_SCREEN_CHR_SIZE = 0x013A
+TITLE_SCREEN_SOURCE = "smbneogeo-title.c"
 
 CROM_TILE_BYTES_PER_CHIP = 64
 CROM_RESERVED_TILES = 256
@@ -188,7 +192,37 @@ def pad_file(path: Path, content: bytes, size: int) -> None:
             remaining -= chunk
 
 
-def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int]:
+def title_screen_data(chr_data: bytes) -> bytes:
+    """Return the nametable payload the game reads from unused CHR space."""
+
+    if len(chr_data) != NES_CHR_SIZE:
+        raise AssetError(f"expected {NES_CHR_SIZE} CHR bytes, found {len(chr_data)}")
+
+    end = TITLE_SCREEN_CHR_OFFSET + TITLE_SCREEN_CHR_SIZE
+    return chr_data[TITLE_SCREEN_CHR_OFFSET:end]
+
+
+def format_title_screen_source(data: bytes) -> str:
+    """Build a deterministic C translation unit for the P-ROM title payload."""
+
+    if len(data) != TITLE_SCREEN_CHR_SIZE:
+        raise AssetError(
+            f"expected {TITLE_SCREEN_CHR_SIZE} title bytes, found {len(data)}"
+        )
+
+    lines = [
+        '#include "title_data.h"',
+        "",
+        "const uint8_t neogeo_title_screen_data[TITLE_SCREEN_CHR_SIZE] = {",
+    ]
+    for offset in range(0, len(data), 12):
+        values = ", ".join(f"0x{value:02x}" for value in data[offset : offset + 12])
+        lines.append(f"    {values},")
+    lines.extend(("};", ""))
+    return "\n".join(lines)
+
+
+def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
     if len(chr_data) != NES_CHR_SIZE:
         raise AssetError(f"expected {NES_CHR_SIZE} CHR bytes, found {len(chr_data)}")
 
@@ -208,9 +242,14 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int]:
     srom.extend(encode_srom_tile(bytes([1]) * 64))
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    title_data = title_screen_data(chr_data)
     pad_file(output_dir / "smbneogeo-c1.c1", bytes(crom1), CROM_CHIP_SIZE)
     pad_file(output_dir / "smbneogeo-c2.c2", bytes(crom2), CROM_CHIP_SIZE)
     pad_file(output_dir / "smbneogeo-s1.s1", bytes(srom), SROM_SIZE)
+    (output_dir / TITLE_SCREEN_SOURCE).write_text(
+        format_title_screen_source(title_data),
+        encoding="ascii",
+    )
 
     return {
         "crom_blank_tile": CROM_BLANK_TILE,
@@ -219,6 +258,8 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int]:
         "srom_blank_tile": SROM_BLANK_TILE,
         "srom_solid_tile": SROM_SOLID_TILE,
         "srom_tiles_generated": SROM_SOLID_TILE + 1,
+        "title_screen_chr_bytes": len(title_data),
+        "title_screen_chr_sha256": hashlib.sha256(title_data).hexdigest(),
     }
 
 
@@ -262,7 +303,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         required=True,
         type=Path,
-        help="ignored build directory for generated C/S ROMs",
+        help="ignored build directory for generated cartridge assets",
     )
     parser.add_argument(
         "--allow-unverified",
@@ -280,7 +321,7 @@ def main() -> int:
         raise SystemExit(f"asset generation failed: {error}") from error
 
     print(
-        "Generated Neo Geo graphics from verified SMB CHR "
+        "Generated Neo Geo graphics and title data from verified SMB CHR "
         f"({manifest['source_sha1']}); no PRG bytes were written."
     )
     return 0

@@ -4,7 +4,8 @@ This target statically compiles the translated SMB C core for the Neo Geo
 MC68000 and replaces the desktop PPU/APU modules with:
 
 - `ppu_direct.c`: 2 KiB nametable, 256-byte OAM, 32-byte palette, and PPU
-  register behavior without CHR/framebuffer storage.
+  register behavior without full CHR/framebuffer storage. Cartridge builds
+  retain only the 314-byte CHR read window used to construct the title menu.
 - `video.c`: direct C-ROM/S-ROM, palette RAM, FIX-map, and SCB1-4 writes with
   two 161-sprite frame sets, generation caches, and next-VBlank live swaps.
 - `apu_null.c`: a zero-allocation placeholder for a future YM2610 driver.
@@ -31,7 +32,8 @@ debugger listener, and applies a finite sampling deadline.
 
 Generated output is intentionally ignored:
 
-- `build/smbneogeo.elf` and `build/smbneogeo.map`
+- ROM-less `build/smbneogeo.elf` / `.map` verification outputs
+- title-enabled `build/smbneogeo-cart.elf` / `.map` cartridge outputs
 - `build/assets/asset-manifest.json`
 - `build/rom/smbneogeo.zip`
 - emulator BIOS/hash support files
@@ -52,4 +54,6 @@ desktop bindings are:
 - `2`: player-two Start / NES Select
 
 Press `1` at the title screen before trying to move Mario. The attract-mode
-demo does not accept movement input.
+demo does not accept movement input. The original large title panel,
+copyright line, top score, and one/two-player menu are reconstructed through
+the game's own nametable writes from locally generated title data.

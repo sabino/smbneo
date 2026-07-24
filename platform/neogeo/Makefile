@@ -2,9 +2,12 @@ ROOT := ../..
 BUILD := build
 ROMDIR := $(BUILD)/rom
 ASSETDIR := $(BUILD)/assets
+TITLE_SOURCE := $(ASSETDIR)/smbneogeo-title.c
 
 TARGET := $(BUILD)/smbneogeo.elf
 MAP := $(BUILD)/smbneogeo.map
+CART_TARGET := $(BUILD)/smbneogeo-cart.elf
+CART_MAP := $(BUILD)/smbneogeo-cart.map
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 GAMEROM := smbneogeo
 
@@ -39,15 +42,19 @@ CFLAGS := \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-MMD -MP $(WARN_FLAGS)
 LDFLAGS := \
-	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
-	-Wl,-Map,$(MAP)
+	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS)
 
 LOCAL_SOURCES := main.c video.c ppu_direct.c apu_null.c
 CORE_NAMES := instructions code data cpu
-OBJECTS := \
+BASE_OBJECTS := \
 	$(LOCAL_SOURCES:%.c=$(BUILD)/%.o) \
 	$(CORE_NAMES:%=$(BUILD)/%.o)
-DEPENDENCIES := $(OBJECTS:.o=.d)
+ELF_OBJECTS := $(BASE_OBJECTS) $(BUILD)/title_data_stub.o
+CART_OBJECTS := $(BASE_OBJECTS) $(BUILD)/smbneogeo-title.o
+DEPENDENCIES := \
+	$(BASE_OBJECTS:.o=.d) \
+	$(BUILD)/title_data_stub.d \
+	$(BUILD)/smbneogeo-title.d
 
 PROM := $(ROMDIR)/$(GAMEROM)-p1.p1
 CROM1 := $(ROMDIR)/$(GAMEROM)-c1.c1
@@ -66,7 +73,7 @@ CARTRIDGE_TIMESTAMP ?= 202601010000.00
 
 .DEFAULT_GOAL := elf
 
-.PHONY: all elf test verify assets cart run clean
+.PHONY: all elf test verify assets cart run clean FORCE
 
 all: verify
 
@@ -84,16 +91,26 @@ $(BUILD)/%.o: %.c | $(BUILD)
 $(BUILD)/%.o: $(ROOT)/codegen/lib/%.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(TARGET): $(OBJECTS)
-	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(NG_LIBS)
+$(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(ELF_OBJECTS)
+	$(CC) -o $@ $(ELF_OBJECTS) $(LDFLAGS) \
+		-Wl,-Map,$(MAP) $(NG_LIBS)
+
+$(CART_TARGET): $(CART_OBJECTS)
+	$(CC) -o $@ $(CART_OBJECTS) $(LDFLAGS) \
+		-Wl,-Map,$(CART_MAP) $(NG_LIBS)
 
 $(PPU_STATE_TEST): \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
-		ppu_direct.c ppu_render_state.h video.h | $(BUILD)
+		ppu_direct.c ppu_render_state.h title_data_stub.c title_data.h \
+		video.h | $(BUILD)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
 		-I. -I$(ROOT)/codegen/lib \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
-		ppu_direct.c -o $@
+		ppu_direct.c title_data_stub.c -o $@
 
 test: $(PPU_STATE_TEST)
 	$(PYTHON) -m unittest discover \
@@ -103,7 +120,9 @@ test: $(PPU_STATE_TEST)
 verify: test $(TARGET)
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(TARGET)
 
-assets: | $(ASSETDIR)
+assets: $(TITLE_SOURCE)
+
+$(TITLE_SOURCE): FORCE | $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
@@ -112,17 +131,17 @@ assets: | $(ASSETDIR)
 		--input "$(SMB_ROM)" \
 		--output-dir "$(ASSETDIR)"
 
-cart: $(TARGET) | $(ROMDIR) $(ASSETDIR)
+FORCE:
+
+cart: assets $(CART_TARGET) | $(ROMDIR) $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
 	}
-	$(PYTHON) $(ROOT)/tools/gen_neogeo_assets.py \
-		--input "$(SMB_ROM)" \
-		--output-dir "$(ASSETDIR)"
+	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(CART_TARGET)
 	$(OBJCOPY) -O binary -S -R .text2 \
 		--gap-fill 0xff --pad-to 1048576 \
-		$(TARGET) $(PROM)
+		$(CART_TARGET) $(PROM)
 	dd if=$(PROM) of=$(PROM) conv=notrunc,swab status=none
 	cp $(ASSETDIR)/$(GAMEROM)-c1.c1 $(CROM1)
 	cp $(ASSETDIR)/$(GAMEROM)-c2.c2 $(CROM2)

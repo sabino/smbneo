@@ -4,6 +4,7 @@
 #include "external.h"
 #include "video.h"
 #include "ppu_render_state.h"
+#include "title_data.h"
 
 uint8_t nametable[NAMETABLE_SIZE];
 Palette palette;
@@ -183,11 +184,20 @@ void ppu_write_data(uint8_t value) {
 uint8_t ppu_read(uint16_t addr) {
     addr = normalize_ppu_address(addr);
 
-    /*
-     * Pattern data lives in the cartridge C/S ROMs on this target.  SMB never
-     * reads CHR through the PPU, so no 8 KiB runtime copy is needed.
-     */
     if (addr < 0x2000u) {
+        /*
+         * Pattern pixels live in the cartridge C/S ROMs and do not need an
+         * 8 KiB CPU-side copy. The title-screen setup is the one exception:
+         * it reads a 314-byte nametable payload hidden at the end of CHR.
+         */
+        if (
+            addr >= TITLE_SCREEN_CHR_OFFSET &&
+            addr < TITLE_SCREEN_CHR_OFFSET + TITLE_SCREEN_CHR_SIZE
+        ) {
+            return neogeo_title_screen_data[
+                addr - TITLE_SCREEN_CHR_OFFSET
+            ];
+        }
         return 0;
     }
     if (addr < 0x3f00u) {

@@ -66,8 +66,11 @@ make -C platform/neogeo run \
 
 The supported ROM revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`. The converter reads only its
-8 KiB CHR bank and writes no PRG bytes. Do not redistribute generated
-cartridge or graphics files.
+8 KiB CHR bank, converts the graphics, and carries the 314-byte title
+nametable payload into the P-ROM. It writes no source PRG bytes. The large,
+centered original title panel and one/two-player menu are therefore restored
+without a tracked bitmap or ROM-derived source file. Do not redistribute
+generated cartridge or graphics files.
 
 Current Neo Geo controls are joystick, A (jump), B (run/fire), Start, and
 Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,

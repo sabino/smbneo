@@ -1,6 +1,7 @@
 #include "cpu.h"
 #include "ppu.h"
 #include "ppu_render_state.h"
+#include "title_data.h"
 #include "video.h"
 
 #include <assert.h>
@@ -26,6 +27,25 @@ static void assert_column_range(
 
 int main(void) {
     ppu_init(0);
+
+    /* The only CPU-readable CHR window is the generated title payload. */
+    assert(ppu_read(TITLE_SCREEN_CHR_OFFSET - 1u) == 0);
+    assert(ppu_read(TITLE_SCREEN_CHR_OFFSET) == 0xa5u);
+    assert(ppu_read(TITLE_SCREEN_CHR_OFFSET + 1u) == 0);
+    assert(
+        ppu_read(
+            TITLE_SCREEN_CHR_OFFSET + TITLE_SCREEN_CHR_SIZE - 1u
+        ) == 0x5au
+    );
+    assert(
+        ppu_read(TITLE_SCREEN_CHR_OFFSET + TITLE_SCREEN_CHR_SIZE) == 0
+    );
+
+    /* PPU_DATA retains the original buffered-read behavior for this window. */
+    ppu_write_address((uint8_t)(TITLE_SCREEN_CHR_OFFSET >> 8));
+    ppu_write_address((uint8_t)TITLE_SCREEN_CHR_OFFSET);
+    assert(ppu_read_register(0x2007u) == 0);
+    assert(ppu_read_register(0x2007u) == 0xa5u);
 
     assert_column_range(0, 64, 0);
     assert(neogeo_ppu_hud_generation == 0);

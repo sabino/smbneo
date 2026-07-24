@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -81,15 +82,26 @@ class AssetConversionTests(unittest.TestCase):
         self.assertEqual(decode_srom_tile(encoded), self.tile)
 
     def test_complete_asset_layout_and_helper_tiles(self) -> None:
-        chr_data = encode_nes_tile(self.tile) + bytes(
-            assets.NES_CHR_SIZE - 16
+        chr_data = bytearray(
+            encode_nes_tile(self.tile) + bytes(assets.NES_CHR_SIZE - 16)
         )
+        expected_title = bytes(
+            (index * 29 + 7) & 0xFF
+            for index in range(assets.TITLE_SCREEN_CHR_SIZE)
+        )
+        title_end = (
+            assets.TITLE_SCREEN_CHR_OFFSET + assets.TITLE_SCREEN_CHR_SIZE
+        )
+        chr_data[assets.TITLE_SCREEN_CHR_OFFSET:title_end] = expected_title
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            info = assets.build_assets(chr_data, output)
+            info = assets.build_assets(bytes(chr_data), output)
             crom1 = (output / "smbneogeo-c1.c1").read_bytes()
             crom2 = (output / "smbneogeo-c2.c2").read_bytes()
             srom = (output / "smbneogeo-s1.s1").read_bytes()
+            title_source = (output / assets.TITLE_SCREEN_SOURCE).read_text(
+                encoding="ascii"
+            )
 
             self.assertEqual(len(crom1), assets.CROM_CHIP_SIZE)
             self.assertEqual(len(crom2), assets.CROM_CHIP_SIZE)
@@ -122,6 +134,26 @@ class AssetConversionTests(unittest.TestCase):
                 bytes([1]) * 64,
             )
             self.assertEqual(info["crom_nes_tile_base"], 257)
+            self.assertEqual(
+                info["title_screen_chr_bytes"],
+                assets.TITLE_SCREEN_CHR_SIZE,
+            )
+            emitted_title = bytes(
+                int(value, 16)
+                for value in re.findall(r"0x([0-9a-f]{2})", title_source)
+            )
+            self.assertEqual(emitted_title, expected_title)
+            self.assertIn('#include "title_data.h"', title_source)
+
+    def test_title_screen_data_requires_complete_chr(self) -> None:
+        with self.assertRaisesRegex(assets.AssetError, "expected 8192 CHR bytes"):
+            assets.title_screen_data(bytes(assets.NES_CHR_SIZE - 1))
+
+    def test_title_screen_source_requires_exact_payload(self) -> None:
+        with self.assertRaisesRegex(assets.AssetError, "expected 314 title bytes"):
+            assets.format_title_screen_source(
+                bytes(assets.TITLE_SCREEN_CHR_SIZE - 1)
+            )
 
     def test_zip_is_read_without_extracting_member(self) -> None:
         rom = (
