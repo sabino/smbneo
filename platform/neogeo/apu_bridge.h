@@ -64,9 +64,10 @@ void neogeo_apu_bridge_write(
 
 /*
  * Emit only changed YM2610 SSG/ADPCM-B registers, then advance the NES-style
- * envelopes, length/linear counters, and pulse sweep units by one 60 Hz game
- * frame. A null writer advances state without acknowledging any registers,
- * which is useful while the Z80 starts.
+ * envelopes, length/linear counters, and pulse sweep units by one source-style
+ * 60 Hz hardware interval. Ordinary game frames call this once; the target may
+ * add bounded display-period catch-up steps. A null writer advances state
+ * without acknowledging registers, which is useful while the Z80 starts.
  */
 bool neogeo_apu_bridge_step(
     NeogeoApuBridge *bridge,

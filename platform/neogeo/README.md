@@ -12,6 +12,8 @@ MC68000 and replaces the desktop PPU/APU modules with:
   state, and changed-register coalescing for YM2610 SSG plus ADPCM-B.
 - `apu_neogeo.c`: acknowledged MC68000-to-Z80 transport, startup recovery, and
   the target implementation of the translated core's APU interface.
+- `audio_cadence.c`: bounded display-period catch-up for native APU hardware
+  state without advancing translated music queues or gameplay RAM.
 - `sound_driver.s`: custom nullsound command table and timing-safe YM2610
   port-A writes for the M1 sound ROM.
 - `tools/gen_neogeo_triangle_vrom.py`: deterministic 64 KiB encoded triangle
@@ -110,8 +112,8 @@ must not be redistributed.
 
 The Neo Geo target does not link the desktop PCM mixer. The translated game
 continues writing its normal APU registers. `apu_bridge.c` shadows the
-relevant state and emits only changed YM2610 registers once per rendered game
-frame:
+relevant state and emits only changed YM2610 registers on ordinary sound
+frames and bounded native-hardware catch-up periods:
 
 - pulse 1 and pulse 2 use SSG tone channels A and B;
 - noise uses SSG noise on channel C;
@@ -120,6 +122,13 @@ frame:
   counter, and integer period conversion avoid runtime PCM buffers and
   floating point.
 
+Source pulse levels do not pass directly into the logarithmic SSG ladder. A
+16-entry curve models the source pulse mixer's compressed relative amplitude,
+keeps the common source level 8 at target level 8, and caps source levels
+13..15 at target level 10. This reduces the jump/fire-to-music gap while
+preserving headroom. Noise remains independent because its source mixer path
+differs.
+
 The bridge clocks both pulse sweep units twice per game frame, including
 divider/reload ordering, continuous target-overflow muting, and the distinct
 negate arithmetic of the two source pulse channels. Changed target periods
@@ -127,6 +136,14 @@ continue through the same coalesced register transport. Length counters clock
 twice per game frame, while envelopes and the triangle linear counter receive
 four quarter-frame clocks. Channel-disable writes clear lengths immediately,
 and disabled timer-high writes cannot revive a channel.
+
+If rendering consumes more than one display period, `audio_cadence.c` advances
+only these native sweep/envelope/length/linear units for the missed periods
+before the next ordinary frame. It reserves the latest period for the normal
+game/audio update and caps recovery at four steps, with a dropped-period
+diagnostic, so transport trouble cannot create an unbounded catch-up loop.
+Translated music/SFX queues are deliberately not advanced out of band because
+their event-music state is also read by end-of-level gameplay logic.
 
 Each target register update is encoded as three commands: register selector,
 high data nibble, and low data nibble/commit. The MC68000 waits for the
@@ -155,8 +172,10 @@ Remaining approximations are explicit:
 - the noise mode bit is retained in bridge state, but the SSG cannot reproduce
   the source short-noise sequence and slow periods saturate at 31;
 - direct DAC/DMC mixer bias is not modeled;
-- sweep is clocked at two half-frame steps per game frame, while changed SSG
-  periods are transported on the next 60 Hz bridge boundary;
+- translated music-note and SFX-duration sequencing remains tied to completed
+  game frames, while native sweep/envelope/length units additionally follow
+  bounded elapsed-display-period catch-up;
+- changed SSG periods are transported on the next 60 Hz bridge boundary;
 - APU units are aggregated at the 60 Hz bridge boundary instead of exact
   source-chip sub-frame instants; and
 - physical-cartridge exposure of V1 to the ADPCM-B bus still needs validation.
@@ -199,9 +218,12 @@ The host bridge regression covers initial mute, changed-register coalescing,
 pitch conversion including A4, envelope decay, master disable/re-enable,
 length-table/halt behavior, triangle linear reload and timer muting,
 independent ADPCM-B triangle/noise state, representative noise periods,
-coarse-before-fine tone writes, and retry behavior after a failed transport
-write. Python tests exercise the Z80 protocol/map rejection paths and verify
-the generated V1 waveform, decode error, loop seam, padding, and hash.
+the flagpole sweep, pulse-volume normalization, coarse-before-fine tone writes,
+and retry behavior after a failed transport write. A separate cadence
+regression covers single/multiple missed periods, counter wrap, catch-up that
+itself crosses a display boundary, and bounded debt dropping. Python tests
+exercise the Z80 protocol/map rejection paths and verify the generated V1
+waveform, decode error, loop seam, padding, and hash.
 
 ## Controls
 

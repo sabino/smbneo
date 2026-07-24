@@ -23,6 +23,12 @@ void neogeo_video_render(void);
  */
 void neogeo_video_wait_for_present(void);
 
+/*
+ * Return the low 16 bits of the display interrupt counter. This access is
+ * atomic on the MC68000 and is suitable for short wrap-safe cadence deltas.
+ */
+uint16_t neogeo_video_current_vblank(void);
+
 /* Map the Neo Geo player-one controls to the bit order expected by SMB. */
 uint8_t neogeo_read_controller1(void);
 

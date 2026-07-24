@@ -120,6 +120,26 @@ static uint8_t envelope_volume(
     return envelope->decay;
 }
 
+/*
+ * The source pulse mixer compresses its 0..15 level range, while the YM2610
+ * SSG fixed-volume ladder is logarithmic at roughly 3 dB per step. Passing the
+ * source number through directly makes level-14/15 effects tower over music
+ * whose pulse envelopes commonly sit around 4..8.
+ *
+ * This table follows the source pulse mixer's relative amplitudes, keeps level
+ * 8 at the existing target level, and caps peaks at 10 for transport/capture
+ * headroom. Noise remains independently mapped because it uses a different
+ * source mixer path.
+ */
+static uint8_t pulse_ssg_volume(uint8_t source_volume) {
+    static const uint8_t levels[16] = {
+        0, 3, 5, 6, 7, 7, 8, 8,
+        8, 9, 9, 9, 9, 10, 10, 10
+    };
+
+    return levels[source_volume & 0x0fu];
+}
+
 static void restart_envelope(
     NeogeoApuEnvelope *envelope,
     uint8_t control
@@ -393,6 +413,9 @@ static void build_ym_registers(
         pulse_volume[channel] = envelope_volume(
             bridge->pulse_control[channel],
             &bridge->pulse_envelope[channel]
+        );
+        pulse_volume[channel] = pulse_ssg_volume(
+            pulse_volume[channel]
         );
     }
 

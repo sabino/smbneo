@@ -16,6 +16,7 @@ JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
+AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 GAMEROM := smbneogeo
 
 CC := m68k-neogeo-elf-gcc
@@ -56,7 +57,8 @@ CFLAGS := \
 LDFLAGS := \
 	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS)
 
-ENGINE_SOURCES := video.c ppu_direct.c apu_bridge.c apu_neogeo.c
+ENGINE_SOURCES := \
+	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
 CORE_NAMES := instructions code data cpu
 ENGINE_OBJECTS := \
 	$(ENGINE_SOURCES:%.c=$(BUILD)/%.o) \
@@ -286,12 +288,21 @@ $(APU_BRIDGE_TEST): \
 		$(ROOT)/tools/test_neogeo_apu_bridge.c \
 		apu_bridge.c -o $@
 
+$(AUDIO_CADENCE_TEST): \
+		$(ROOT)/tools/test_neogeo_audio_cadence.c \
+		$(ROOT)/codegen/lib/apu.h \
+		audio_cadence.c audio_cadence.h video.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_neogeo_audio_cadence.c \
+		audio_cadence.c -o $@
+
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
-		$(APU_BRIDGE_TEST)
+		$(APU_BRIDGE_TEST) $(AUDIO_CADENCE_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
@@ -302,6 +313,7 @@ test: \
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
 	$(APU_BRIDGE_TEST)
+	$(AUDIO_CADENCE_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \

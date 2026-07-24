@@ -176,6 +176,10 @@ static void wait_for_next_vblank(void) {
     }
 }
 
+uint16_t neogeo_video_current_vblank(void) {
+    return neogeo_vblank_signal;
+}
+
 void neogeo_video_wait_for_present(void) {
     uint16_t target_generation = neogeo_render_generation;
 

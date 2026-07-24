@@ -131,11 +131,14 @@ Native audio maps the two pulse voices to YM2610 SSG A/B, percussion noise to
 SSG C, and the triangle voice to an independently pitched looping ADPCM-B
 waveform. A custom Z80 M1 driver receives acknowledged, coalesced port-A
 register updates from the MC68000, while a deterministic 512 KiB V1 contains
-the generated triangle loop. Pulse sweep, hardware length counters, and the
-triangle linear counter are modeled in software. This is substantially closer
-to the source mix, but it is not cycle- or waveform-exact: SSG pulse duty,
-short-noise mode, direct DAC behavior, sub-frame register timing, and physical
-AES/MVS-compatible hardware validation remain open.
+the generated triangle loop. Pulse levels pass through a source-mixer-derived
+curve so jump/fire peaks no longer overload logarithmic SSG volume steps, and
+native sweep/envelope counters catch up safely when rendering spans an extra
+display period. Music sequencing and gameplay-coupled sound state remain on
+ordinary game frames. This is substantially closer to the source mix, but it
+is not cycle- or waveform-exact: SSG pulse duty, short-noise mode, direct DAC
+behavior, sub-frame register timing, and physical AES/MVS-compatible hardware
+validation remain open.
 After building the cartridge, `tools/probe_neogeo_audio.py` supplies a bounded
 normal-mode smoke test: it enters gameplay under an isolated emulator
 configuration, records an exact post-activation interval through an SDL disk

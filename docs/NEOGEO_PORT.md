@@ -149,8 +149,9 @@ hardware.
 
 The Neo Geo link replaces the desktop PCM mixer with a compact native bridge.
 The translated game still performs its normal APU register writes; the bridge
-shadows the relevant channel state and, once per rendered game frame, derives
-YM2610 SSG and ADPCM-B registers:
+shadows the relevant channel state and derives YM2610 SSG and ADPCM-B
+registers on ordinary game/audio frames plus bounded native-hardware catch-up
+periods:
 
 | Source voice | Native target |
 | --- | --- |
@@ -166,6 +167,13 @@ division therefore occurs only when a note timer byte changes, never in the
 60 Hz emission loop. The bridge adds no runtime PCM buffers or floating
 point.
 
+Pulse amplitude also uses a 16-entry integer curve. The source pulse mixer
+compresses its 0..15 range, while each fixed SSG step is approximately 3 dB;
+direct passthrough therefore exaggerated the gap between music around 4..8 and
+jump/fire effects at 14..15. The curve retains target level 8 for source level
+8, maps 14/15 to 10, and leaves noise independent. This keeps capture headroom
+while reducing pulse-effect peaks by up to five SSG steps.
+
 Writes to the two source pulse-sweep registers are retained as compact
 MC68000 state. Each 60 Hz bridge step clocks both sweep units twice, applies
 the source divider/reload order, continuously mutes invalid targets, and
@@ -176,6 +184,17 @@ clocks. Source halt/control bits, disabled length loads, immediate disable
 clears, linear reload, and triangle timers zero through two are modeled. The
 resulting state still passes through the changed-register coalescer and
 generic Z80 command path.
+
+The renderer may occasionally consume more than one display period.
+`audio_cadence.c` detects that with an atomic 16-bit VBlank snapshot and clocks
+only the native bridge units for the missed periods before the next ordinary
+game frame. It leaves the newest period for that normal frame, handles counter
+wrap, and caps catch-up at four steps; older debt increments an exported
+diagnostic instead of forming a transport/recovery spiral. It intentionally
+does not call the translated `SoundEngine()` out of band: that routine consumes
+queues and changes `EventMusicBuffer`, which end-of-level gameplay also reads.
+Music-note and software-effect duration counters therefore remain tied to
+completed game frames.
 
 The YM2610 is driven by the Z80 rather than directly by the MC68000. Each
 register update uses three commands below `$80`: a register selector, a high
@@ -213,6 +232,8 @@ This is a major fidelity improvement, not a claim of source-chip exactness:
 - Sweep control is advanced with two half-frame clocks, but changed SSG tone
   periods are emitted at the next 60 Hz bridge boundary rather than at a
   source-chip sub-frame instant.
+- Music-note and software-effect duration sequencing remains game-frame-bound;
+  only native hardware units receive missed-display-period catch-up.
 - Frame-sequencer units are aggregated at the 60 Hz bridge boundary rather
   than exact source-chip sub-frame instants.
 - The startup handshake proves that the command FIFO accepts input after the
@@ -285,7 +306,11 @@ targets, per-channel negate behavior, divider/reload cadence, sweep overflow
 muting, envelope decay, hardware length/halt semantics, triangle linear reload
 and low-timer muting, master disable/re-enable behavior, independent
 ADPCM-B/noise registers, representative noise periods, coarse-before-fine
-tone updates, and dirty-register retry after a transport failure.
+tone updates, the exact flagpole sweep start/first update, normalized
+music/effect pulse levels, and dirty-register retry after a transport failure.
+`tools/test_neogeo_audio_cadence.c` verifies no-op/single/multiple display
+periods, 16-bit wrap, a catch-up step that crosses another VBlank, and the
+bounded debt-drop path.
 `tools/test_gen_neogeo_triangle_vrom.py` independently decodes the waveform
 and fixes its dimensions, error bound, seam, padding, and SHA-256. These host
 tests and emulator-oriented packaging checks do not replace listening tests
@@ -297,12 +322,12 @@ or electrical/timing validation on physical AES/MVS-compatible hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 199,690 |
+| MC68000 text + read-only data | 199,902 |
 | Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 16,196 |
-| Static user work RAM total | 16,200 |
+| Zeroed work RAM (`.bss`) | 16,200 |
+| Static user work RAM total | 16,204 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 46,008 |
+| Remaining stack/heap headroom | 46,004 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -560,7 +585,7 @@ the following VBlank callback latches it as presented, and screenshot traps
 wait for equality without advancing the translated core or renderer frame.
 Those two shared words and one 16-bit callback copy also exist in normal
 cartridges. Existing linker padding absorbs the words; the later native-audio
-state brings the measured final BSS to 16,196 bytes.
+and cadence state brings the measured final BSS to 16,200 bytes.
 
 Immediately before invoking `scrot`, the host also applies a bounded display
 settling allowance: 50 milliseconds by default, configurable from 0 through

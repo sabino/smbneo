@@ -1,4 +1,5 @@
 #include "apu.h"
+#include "audio_cadence.h"
 #include "code.h"
 #include "constants.h"
 #include "cpu.h"
@@ -125,6 +126,9 @@ volatile NeogeoReplayStatus neogeo_replay_status
 
 static NeogeoReplayTiming replay_timing;
 static uint32_t replay_core_frames_advanced;
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+static uint16_t replay_audio_vblank;
+#endif
 
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
 static void present_rendered_checkpoint(void) {
@@ -244,12 +248,21 @@ static NeogeoReplayGateResult run_replay_frame(
 ) {
     NeogeoReplaySnapshot snapshot;
     NeogeoReplayGateResult result;
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+    uint16_t game_frame_vblank;
+
+    replay_audio_vblank = neogeo_audio_prepare_game_frame(
+        replay_audio_vblank,
+        &game_frame_vblank
+    );
+#endif
 
     update_controller1(controller_state);
     next_frame();
     ++replay_core_frames_advanced;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
     apu_step_frame();
+    replay_audio_vblank = game_frame_vblank;
     ppu_render();
 #endif
     snapshot = snapshot_core();
@@ -401,6 +414,9 @@ int main(void) {
     apu_init(0);
     ppu_init(0);
     Start();
+#if !defined(SMB_NEOGEO_REPLAY_FAST)
+    replay_audio_vblank = neogeo_video_current_vblank();
+#endif
     neogeo_replay_gate_init(&gate);
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
     neogeo_replay_checkpoint_init(

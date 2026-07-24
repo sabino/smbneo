@@ -139,6 +139,76 @@ static void test_pulse_sweep_targets_and_cadence(void) {
     assert(bridge.pulse_sweep_divider[0] == 2u);
 }
 
+static void test_flagpole_sweep_and_pulse_mix_curve(void) {
+    static const uint8_t source_levels[] = {
+        1u, 4u, 6u, 8u, 9u, 14u, 15u
+    };
+    static const uint8_t target_levels[] = {
+        3u, 7u, 8u, 8u, 9u, 10u, 10u
+    };
+    NeogeoApuBridge bridge;
+    WriteCapture capture;
+    uint16_t expected_period;
+    size_t index;
+
+    /*
+     * The flagpole slide starts at source timer $01fc and uses pulse-1 sweep
+     * $bc. Preserve its exact base pitch and one's-complement first step while
+     * normalizing its source volume 9 to SSG level 9.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x01u);
+    neogeo_apu_bridge_write(&bridge, 0x4000u, 0x99u);
+    write_pulse_timer(&bridge, 0, 0x01fcu);
+    neogeo_apu_bridge_write(&bridge, 0x4001u, 0xbcu);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    expected_period = (uint16_t)((509u * 286u + 128u) >> 8);
+    assert(expected_period == 569u);
+    assert(captured_value(&capture, 0u) == (uint8_t)expected_period);
+    assert(captured_value(&capture, 1u) == (uint8_t)(expected_period >> 8));
+    assert(captured_value(&capture, 8u) == 9u);
+    assert(bridge.pulse_timer[0] == 476u);
+
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    expected_period = (uint16_t)((477u * 286u + 128u) >> 8);
+    assert(captured_value(&capture, 0u) == (uint8_t)expected_period);
+    assert(bridge.pulse_timer[0] == 476u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_timer[0] == 446u);
+
+    /*
+     * Representative music and effect volumes follow the compressed pulse
+     * curve. In particular, jump/fire peaks 14..15 are only two target steps
+     * above the common music level 8 instead of six or seven steps above it.
+     */
+    neogeo_apu_bridge_init(&bridge);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x03u);
+    write_pulse_timer(&bridge, 0, 253u);
+    write_pulse_timer(&bridge, 1, 253u);
+    for (index = 0; index < sizeof(source_levels); ++index) {
+        neogeo_apu_bridge_write(
+            &bridge,
+            0x4000u,
+            (uint8_t)(0x30u | source_levels[index])
+        );
+        neogeo_apu_bridge_write(
+            &bridge,
+            0x4004u,
+            (uint8_t)(0x30u | source_levels[index])
+        );
+        reset_capture(&capture);
+        assert(neogeo_apu_bridge_step(
+            &bridge,
+            capture_write,
+            &capture
+        ));
+        assert(bridge.sent_registers[8] == target_levels[index]);
+        assert(bridge.sent_registers[9] == target_levels[index]);
+    }
+}
+
 static void test_pulse_sweep_mute_and_coalescing(void) {
     NeogeoApuBridge bridge;
     WriteCapture capture;
@@ -172,7 +242,7 @@ static void test_pulse_sweep_mute_and_coalescing(void) {
     reset_capture(&capture);
     assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
     assert(captured_value(&capture, 7) == 0x3eu);
-    assert(captured_value(&capture, 8) == 0x0fu);
+    assert(captured_value(&capture, 8) == 10u);
     assert(bridge.pulse_sweep_mute[0] == 0u);
 
     write_pulse_timer(&bridge, 0, 7u);
@@ -363,6 +433,7 @@ int main(void) {
     uint16_t expected_period;
 
     test_pulse_sweep_targets_and_cadence();
+    test_flagpole_sweep_and_pulse_mix_curve();
     test_pulse_sweep_mute_and_coalescing();
     test_length_and_triangle_linear_counters();
     test_adpcm_triangle_and_independent_noise();
@@ -397,7 +468,7 @@ int main(void) {
     assert(captured_value(&capture, 0) == (uint8_t)expected_period);
     assert(captured_value(&capture, 1) == (uint8_t)(expected_period >> 8));
     assert(captured_value(&capture, 7) == 0x3eu);
-    assert(captured_value(&capture, 8) == 0x0fu);
+    assert(captured_value(&capture, 8) == 10u);
 
     /* A4 is approximately pulse timer 253 and target SSG period 284. */
     neogeo_apu_bridge_write(&bridge, 0x4002u, 253u);
@@ -423,17 +494,18 @@ int main(void) {
     assert(capture.count == 0u);
 
     /*
-     * Hardware-envelope mode starts at 15 on a timer-high write and decays
-     * using four quarter-frame clocks per 60 Hz game frame.
+     * Hardware-envelope mode starts at source level 15 on a timer-high write
+     * and decays using four quarter-frame clocks per 60 Hz sound frame. The
+     * compressed target curve intentionally coalesces its 15-to-14 plateau.
      */
     neogeo_apu_bridge_write(&bridge, 0x4000u, 0x02u);
     neogeo_apu_bridge_write(&bridge, 0x4003u, 0x02u);
     reset_capture(&capture);
     assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    assert(captured_value(&capture, 8) == 0x0fu);
+    assert(captured_value(&capture, 8) == 10u);
     reset_capture(&capture);
     assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    assert(captured_value(&capture, 8) == 0x0eu);
+    assert(!captured_register(&capture, 8u));
 
     /* A failed transport write remains dirty and is retried next frame. */
     neogeo_apu_bridge_invalidate(&bridge);
