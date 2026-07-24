@@ -273,7 +273,7 @@ void lsr_acc(void) {
     update_nz(a);
 }
 
-void _lsr(uint16_t addr) {
+static SMB_INSTRUCTION_INLINE void _lsr(uint16_t addr) {
     uint8_t val = read_byte(addr);
     carry_flag = val & 1;
     val >>= 1;
@@ -291,7 +291,7 @@ void lsr_abs(uint16_t addr) {
 
 // INC - Increment Memory
 
-void _inc(uint16_t addr) {
+static SMB_INSTRUCTION_INLINE void _inc(uint16_t addr) {
     uint8_t val = read_byte(addr);
     val++;
     dynamic_ram_write(addr, val);
@@ -330,7 +330,7 @@ void iny(void) {
 
 // DEC - Decrement Memory
 
-void _dec(uint16_t addr) {
+static SMB_INSTRUCTION_INLINE void _dec(uint16_t addr) {
     uint8_t val = read_byte(addr);
     val--;
     dynamic_ram_write(addr, val);
@@ -391,7 +391,7 @@ void sed(void) {}
 
 void sei(void) {}
 
-void cmp_vals(uint8_t lhs, uint8_t rhs) {
+static SMB_INSTRUCTION_INLINE void cmp_vals(uint8_t lhs, uint8_t rhs) {
     carry_flag = lhs >= rhs;
     update_nz(lhs - rhs);
 }
@@ -467,9 +467,12 @@ void pla(void) {
 
 // BIT - Bit Test
 
-void _bit(uint8_t val) {
-    zero_flag = (a & val) == 0;
-    neg_flag = val & 0x80;
+static SMB_INSTRUCTION_INLINE void _bit(uint8_t val) {
+    /*
+     * Both BIT sites in the statically translated program consume only Z;
+     * the next flag-producing instruction overwrites N before any N branch.
+     */
+    nz_value = (uint8_t)(a & val);
 }
 
 void bit_zp(uint8_t addr) {
@@ -482,7 +485,7 @@ void bit_abs(uint16_t addr) {
 
 // ROL - Rotate Left
 
-void _rol(uint16_t addr) {
+static SMB_INSTRUCTION_INLINE void _rol(uint16_t addr) {
     uint8_t val = read_byte(addr);
     bool next_carry_flag = val & 0x80;
     val <<= 1;
@@ -510,7 +513,7 @@ void rol_abs(uint16_t addr) {
 
 // ROR - Rotate Right
 
-void _ror(uint16_t addr) {
+static SMB_INSTRUCTION_INLINE void _ror(uint16_t addr) {
     uint8_t val = read_byte(addr);
     bool old_carry = carry_flag;
     carry_flag = val & 1;

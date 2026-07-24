@@ -197,13 +197,14 @@ Music-note and software-effect duration counters therefore remain tied to
 completed game frames.
 
 The YM2610 is driven by the Z80 rather than directly by the MC68000. Each
-register update uses three commands below `$80`: a register selector, a high
-data nibble, and a low data nibble that commits the write. Selectors `$10-$1f`
-address YM port-A registers `$00-$0f`; selectors `$40-$4f` address
-`$10-$1f`. Value commands remain `$20/$30`, so bit 7 stays exclusive to the
-acknowledgement. Distinct command classes prevent the previous
-acknowledgement from satisfying the next wait. The Z80's 64-entry FIFO
-preserves order, and a full 18-register initial flush uses 54 commands.
+13-bit register/value payload uses two commands from the 122-symbol
+`$06-$7f` alphabet. The payload is split into base-121 quotient/remainder
+digits and each digit is rotated relative to the preceding symbol. Adjacent
+commands therefore always differ, including across packet boundaries, so an
+old echoed acknowledgement cannot satisfy the next wait. Bit 7 remains
+exclusive to acknowledgements. The Z80's 64-entry FIFO preserves order,
+decodes the pair before the deferred YM write, and a full 18-register initial
+flush uses 36 commands.
 
 Command 3 resets the sound driver without an acknowledgement. The MC68000
 allows eight game frames for startup and then sends one of two alternating
@@ -288,17 +289,18 @@ The current Z80 linker map reports:
 
 | Measurement | Bytes |
 | --- | ---: |
-| Fixed Z80 code | 10,785 |
-| Z80 static data | 1,944 |
-| Data-to-stack headroom | 101 |
+| Fixed Z80 code | 10,965 |
+| Z80 static data | 1,945 |
+| Data-to-stack headroom | 100 |
 
 `tools/check_neogeo_sound_driver.py` runs as part of `verify`. It rejects
 missing or inconsistent CODE/DATA summaries, code that does not start at
 `$0000` or extends beyond the fixed `$8000` window, data that does not start
 at `$f800` or reaches the `$fffd` stack start, and less than 64 bytes of stack
-headroom. It also verifies the exact 128-entry low/high-register command
-dispatch, the high-selector semantics, and exactly two bytes of driver-owned
-mutable DATA. Its parser and rejection paths have Python unit coverage.
+headroom. It also verifies the exact 128-entry packet command dispatch,
+ready-ping state reset, decoder instructions, base-121 lookup table, and
+exactly three bytes of driver-owned mutable DATA. Its parser and rejection
+paths have Python unit coverage.
 
 `tools/test_neogeo_apu_bridge.c` verifies initial mute, changed-register
 coalescing, A4 and general period conversion, positive and negative sweep
@@ -722,7 +724,7 @@ python3 tools/run_neogeo_replay_gate.py \
 
 The current `verify` result includes a passing native audio bridge regression
 and Z80 map-checker regression. It also links the custom sound driver and
-reports 10,785 bytes of Z80 fixed code, 1,944 bytes of static data, and 101
+reports 10,965 bytes of Z80 fixed code, 1,945 bytes of static data, and 100
 bytes of data-to-stack headroom. The cartridge pipeline packages that driver
 as M1, packages the hash-checked generated triangle as V1, and includes M1/V1
 in reproducibility size and hash checks. The M1 image and linker map are

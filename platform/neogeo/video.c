@@ -48,6 +48,8 @@
 
 #define NEO_ATTR_HORIZONTAL_FLIP 0x0001u
 #define NEO_ATTR_VERTICAL_FLIP 0x0002u
+#define NEO_SCB3_STICKY 0x0040u
+#define BACKGROUND_MAX_DRIVERS 2u
 
 #define NES_RIGHT 0x80u
 #define NES_LEFT 0x40u
@@ -104,7 +106,8 @@ static BackgroundTileCache
     background_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
 static uint16_t
     background_x_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint16_t next_background_x[BACKGROUND_STRIPS];
+static uint8_t
+    background_chain_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint32_t
     background_generation_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint8_t
@@ -118,9 +121,15 @@ static OamSpriteCache oam_cache[SPRITE_SET_COUNT][SPRITES_PER_SET];
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
 static uint8_t active_oam_count[SPRITE_SET_COUNT];
 static uint8_t active_background[SPRITE_SET_COUNT];
+static uint8_t
+    active_background_drivers[SPRITE_SET_COUNT][BACKGROUND_MAX_DRIVERS];
+static uint8_t active_background_driver_count[SPRITE_SET_COUNT];
 static uint8_t next_oam[OAM_SPRITES];
 static uint8_t next_oam_count;
 static uint8_t next_background_active;
+static uint8_t next_background_drivers[BACKGROUND_MAX_DRIVERS];
+static uint8_t next_background_driver_count;
+static uint16_t next_background_y_word;
 
 static uint16_t desired_hud[HUD_ENTRY_COUNT];
 static uint16_t cached_hud[HUD_ENTRY_COUNT];
@@ -383,10 +392,10 @@ static void build_background(
     uint8_t tile_rows = show_hud ? 26u : 28u;
     uint16_t output_y = show_hud ? 24u : 0u;
     uint8_t ring_origin;
-    uint8_t background_x_changed = 0;
     uint8_t strip;
 
     next_background_active = 0;
+    next_background_driver_count = 0;
     if ((ppu_mask & 0x08u) == 0u) {
         return;
     }
@@ -458,9 +467,6 @@ static void build_background(
         uint8_t physical_strip = (uint8_t)(ring_origin + strip);
         uint16_t relative_sprite;
         uint16_t sprite;
-        uint16_t x =
-            (uint16_t)(NES_CONTENT_X - fine_scroll + (uint16_t)strip * 8u);
-        uint16_t x_word = sprite_x_word(x);
 
         if (physical_strip >= BACKGROUND_STRIPS) {
             physical_strip =
@@ -523,30 +529,59 @@ static void build_background(
             background_generation_cache[set][physical_strip] =
                 column_generation;
         }
-
-        next_background_x[physical_strip] = x_word;
-        if (background_x_cache[set][physical_strip] != x_word) {
-            background_x_changed = 1;
-        }
-        next_scb3[relative_sprite] =
-            sprite_y_word((int16_t)output_y, tile_rows);
     }
 
     /*
-     * Fine scrolling moves every strip together. One sequential SCB4
-     * transfer is substantially cheaper than 33 address-register writes.
+     * Hardware sticky sprites inherit the preceding strip's position, height,
+     * and vertical shrink. The circular strip ring therefore needs only one
+     * chain when its origin is slot zero, or two chains around the physical
+     * slot wrap. Configure sticky control words while this set is hidden;
+     * VBlank then has only one or two live driver words to reveal.
      */
-    if (background_x_changed != 0u) {
+    next_background_drivers[0] = ring_origin;
+    next_background_driver_count = 1;
+    if (ring_origin != 0u) {
+        next_background_drivers[1] = 0;
+        next_background_driver_count = 2;
+    }
+    next_background_y_word =
+        sprite_y_word((int16_t)output_y, tile_rows);
+
+    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+        uint8_t sticky = (uint8_t)(
+            strip != ring_origin &&
+            (ring_origin == 0u || strip != 0u)
+        );
+
+        if (background_chain_cache[set][strip] != sticky) {
+            *REG_VRAMMOD = 1;
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB3 + set_base + BACKGROUND_OFFSET + strip
+            );
+            *REG_VRAMRW = sticky != 0u ? NEO_SCB3_STICKY : 0u;
+            background_chain_cache[set][strip] = sticky;
+        }
+    }
+
+    for (strip = 0; strip < next_background_driver_count; ++strip) {
+        uint8_t physical_strip = next_background_drivers[strip];
+        uint8_t logical_strip = physical_strip == ring_origin
+            ? 0u
+            : (uint8_t)(BACKGROUND_STRIPS - ring_origin);
+        uint16_t x = (uint16_t)(
+            NES_CONTENT_X - fine_scroll + (uint16_t)logical_strip * 8u
+        );
+        uint16_t x_word = sprite_x_word(x);
+
+        if (background_x_cache[set][physical_strip] == x_word) {
+            continue;
+        }
         *REG_VRAMMOD = 1;
         *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB4 + set_base + BACKGROUND_OFFSET
+            ADDR_SCB4 + set_base + BACKGROUND_OFFSET + physical_strip
         );
-        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
-            uint16_t value = next_background_x[strip];
-
-            *REG_VRAMRW = value;
-            background_x_cache[set][strip] = value;
-        }
+        *REG_VRAMRW = x_word;
+        background_x_cache[set][physical_strip] = x_word;
     }
 }
 
@@ -736,10 +771,11 @@ static void hide_sprite_set(uint8_t set) {
 
     *REG_VRAMMOD = 1;
     if (active_background[set] != 0u) {
-        *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB3 + set_base + BACKGROUND_OFFSET
-        );
-        for (i = 0; i < BACKGROUND_STRIPS; ++i) {
+        for (i = 0; i < active_background_driver_count[set]; ++i) {
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB3 + set_base + BACKGROUND_OFFSET +
+                active_background_drivers[set][i]
+            );
             *REG_VRAMRW = 0;
         }
     }
@@ -758,11 +794,12 @@ static void show_next_sprite_set(uint8_t set) {
 
     *REG_VRAMMOD = 1;
     if (next_background_active != 0u) {
-        *REG_VRAMADDR = (uint16_t)(
-            ADDR_SCB3 + set_base + BACKGROUND_OFFSET
-        );
-        for (i = 0; i < BACKGROUND_STRIPS; ++i) {
-            *REG_VRAMRW = next_scb3[BACKGROUND_OFFSET + i];
+        for (i = 0; i < next_background_driver_count; ++i) {
+            *REG_VRAMADDR = (uint16_t)(
+                ADDR_SCB3 + set_base + BACKGROUND_OFFSET +
+                next_background_drivers[i]
+            );
+            *REG_VRAMRW = next_background_y_word;
         }
     }
 
@@ -775,6 +812,13 @@ static void show_next_sprite_set(uint8_t set) {
     }
 
     active_background[set] = next_background_active;
+    active_background_driver_count[set] =
+        next_background_driver_count;
+    memcpy(
+        active_background_drivers[set],
+        next_background_drivers,
+        next_background_driver_count
+    );
     active_oam_count[set] = next_oam_count;
     memcpy(active_oam[set], next_oam, next_oam_count);
 }
@@ -827,6 +871,7 @@ void neogeo_video_init(void) {
 
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
+    memset(background_chain_cache, 0, sizeof(background_chain_cache));
     memset(
         background_generation_cache,
         0xff,
@@ -842,6 +887,11 @@ void neogeo_video_init(void) {
     memset(oam_cache, 0xff, sizeof(oam_cache));
     memset(active_oam_count, 0, sizeof(active_oam_count));
     memset(active_background, 0, sizeof(active_background));
+    memset(
+        active_background_driver_count,
+        0,
+        sizeof(active_background_driver_count)
+    );
     memset(cached_palettes, 0xff, sizeof(cached_palettes));
     cached_backdrop = 0xffffu;
     built_palette_generation = 0xffffffffu;

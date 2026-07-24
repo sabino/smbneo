@@ -10,8 +10,7 @@ uint8_t y;
 uint8_t sp;
 
 bool carry_flag;
-bool zero_flag;
-bool neg_flag;
+uint8_t nz_value;
 
 uint8_t ram[2048];
 
@@ -36,8 +35,7 @@ void cpu_init(void) {
 
     // flags
     carry_flag = false;
-    zero_flag = false;
-    neg_flag = false;
+    nz_value = 1;
 
     // controller
     controller1_state = 0;
@@ -119,8 +117,7 @@ void write_word(uint16_t addr, uint16_t value) {
 // addressing mode utils
 
 void update_nz(uint8_t value) {
-    zero_flag = value == 0;
-    neg_flag = (value & 0b010000000) != 0;
+    nz_value = value;
 }
 
 inline uint8_t zero_page(uint8_t addr) {

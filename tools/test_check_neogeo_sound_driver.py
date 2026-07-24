@@ -21,9 +21,9 @@ DRIVER_SOURCE = (
 
 def map_text(
     code_address: int = 0,
-    code_size: int = 0x2A21,
+    code_size: int = 0x2AD5,
     data_address: int = 0xF800,
-    data_size: int = 0x798,
+    data_size: int = 0x799,
 ) -> str:
     return f"""\
 Area                                    Addr        Size
@@ -39,9 +39,9 @@ class SoundDriverSourceTests(unittest.TestCase):
     def test_current_command_table_and_data_layout_are_exact(self) -> None:
         commands = sound_map.parse_explicit_commands(self.source)
 
-        self.assertEqual(len(commands), 0x50)
+        self.assertEqual(len(commands), 0x80)
         self.assertEqual(
-            commands[0x00:0x10],
+            commands[0x00:0x06],
             (
                 "snd_command_unused",
                 "snd_command_01_prepare_for_rom_switch",
@@ -49,52 +49,66 @@ class SoundDriverSourceTests(unittest.TestCase):
                 "snd_command_03_reset_driver",
                 "apu_ready_ping",
                 "apu_ready_ping",
-            ) + ("snd_command_unused",) * 10,
+            ),
         )
         self.assertEqual(
-            commands[0x10:0x20],
-            ("apu_select_register",) * 16,
-        )
-        self.assertEqual(
-            commands[0x20:0x30],
-            ("apu_store_high_nibble",) * 16,
-        )
-        self.assertEqual(
-            commands[0x30:0x40],
-            ("apu_commit_low_nibble",) * 16,
-        )
-        self.assertEqual(
-            commands[0x40:0x50],
-            ("apu_select_high_register",) * 16,
+            commands[0x06:0x80],
+            ("apu_packet_byte",) * 122,
         )
         self.assertEqual(
             sound_map.validate_driver_source(self.source),
-            (128, 2),
+            (128, 3),
         )
 
-    def test_wrong_high_register_dispatch_is_rejected(self) -> None:
+    def test_wrong_packet_dispatch_is_rejected(self) -> None:
         broken = self.source.replace(
-            "jp      apu_select_high_register",
-            "jp      apu_select_register",
+            "jp      apu_packet_byte",
+            "jp      snd_command_unused",
             1,
         )
 
         with self.assertRaisesRegex(
             sound_map.SoundMapError,
-            r"command \$40 .* expected apu_select_high_register",
+            r"command \$06 .* expected apu_packet_byte",
         ):
             sound_map.validate_driver_source(broken)
 
-    def test_high_register_selector_semantics_are_exact(self) -> None:
+    def test_ready_ping_resets_packet_state(self) -> None:
         broken = self.source.replace(
-            "or      a, #0x10",
-            "or      a, #0x20",
+            "ld      (apu_previous_symbol), a",
+            "ld      (apu_packet_quotient), a",
             1,
         )
 
         with self.assertRaisesRegex(
             sound_map.SoundMapError,
-            "high-register selector",
+            "ready-ping reset",
+        ):
+            sound_map.validate_driver_source(broken)
+
+    def test_packet_decoder_semantics_are_exact(self) -> None:
+        broken = self.source.replace(
+            "cp      #60",
+            "cp      #61",
+            1,
+        )
+
+        with self.assertRaisesRegex(
+            sound_map.SoundMapError,
+            "packet decoder",
+        ):
+            sound_map.validate_driver_source(broken)
+
+    def test_packet_base_table_is_exact(self) -> None:
+        broken = self.source.replace(
+            "0x0079",
+            "0x007a",
+            1,
+        )
+
+        with self.assertRaisesRegex(
+            sound_map.SoundMapError,
+            "packet base table",
         ):
             sound_map.validate_driver_source(broken)
 
@@ -114,13 +128,13 @@ class SoundDriverMapTests(unittest.TestCase):
 
         self.assertEqual(
             sound_map.validate_areas(areas),
-            (0x2A21, 0x798, 0x65),
+            (0x2AD5, 0x799, 0x64),
         )
 
     def test_repeated_identical_area_summaries_are_accepted(self) -> None:
         text = map_text() + map_text()
 
-        self.assertEqual(sound_map.parse_areas(text)["CODE"], (0, 0x2A21))
+        self.assertEqual(sound_map.parse_areas(text)["CODE"], (0, 0x2AD5))
 
     def test_inconsistent_or_missing_areas_are_rejected(self) -> None:
         with self.assertRaisesRegex(

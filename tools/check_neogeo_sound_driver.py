@@ -14,13 +14,14 @@ Z80_STACK_START = 0xFFFD
 MINIMUM_STACK_HEADROOM = 64
 Z80_COMMAND_TABLE_ENTRIES = 128
 EXPECTED_LOCAL_DATA = (
-    ("apu_pending_register", 1),
-    ("apu_pending_value", 1),
+    ("apu_packet_phase", 1),
+    ("apu_packet_quotient", 1),
+    ("apu_previous_symbol", 1),
 )
-EXPECTED_HIGH_SELECTOR_BODY = (
-    "and a, #0x0f",
-    "or a, #0x10",
-    "ld (apu_pending_register), a",
+EXPECTED_READY_PING_BODY = (
+    "xor a",
+    "ld (apu_packet_phase), a",
+    "ld (apu_previous_symbol), a",
     "ret",
 )
 EXPECTED_EXPLICIT_COMMANDS = (
@@ -30,12 +31,72 @@ EXPECTED_EXPLICIT_COMMANDS = (
     "snd_command_03_reset_driver",
     "apu_ready_ping",
     "apu_ready_ping",
-) + ("snd_command_unused",) * 10 + (
-    ("apu_select_register",) * 16
-    + ("apu_store_high_nibble",) * 16
-    + ("apu_commit_low_nibble",) * 16
-    + ("apu_select_high_register",) * 16
+) + ("apu_packet_byte",) * 122
+EXPECTED_PACKET_BODY = (
+    "sub a, #6",
+    "ld e, a",
+    "ld a, (apu_packet_phase)",
+    "or a",
+    "jr nz, apu_packet_second",
+    "ld a, (apu_previous_symbol)",
+    "ld c, a",
+    "ld a, e",
+    "sub c",
+    "ret z",
+    "jr nc, apu_packet_first_delta",
+    "add a, #122",
+    "apu_packet_first_delta:",
+    "dec a",
+    "cp #60",
+    "ret nc",
+    "ld (apu_packet_quotient), a",
+    "ld a, e",
+    "ld (apu_previous_symbol), a",
+    "ld a, #1",
+    "ld (apu_packet_phase), a",
+    "ret",
+    "apu_packet_second:",
+    "ld d, e",
+    "ld a, (apu_previous_symbol)",
+    "ld c, a",
+    "ld a, e",
+    "sub c",
+    "jr z, apu_packet_abort",
+    "jr nc, apu_packet_second_delta",
+    "add a, #122",
+    "apu_packet_second_delta:",
+    "dec a",
+    "ld e, a",
+    "xor a",
+    "ld (apu_packet_phase), a",
+    "ld a, d",
+    "ld (apu_previous_symbol), a",
+    "ld a, (apu_packet_quotient)",
+    "ld l, a",
+    "ld h, #0",
+    "add hl, hl",
+    "ld bc, #apu_packet_bases",
+    "add hl, bc",
+    "ld c, (hl)",
+    "inc hl",
+    "ld b, (hl)",
+    "ld a, c",
+    "add a, e",
+    "ld c, a",
+    "jr nc, apu_packet_validate",
+    "inc b",
+    "apu_packet_validate:",
+    "ld a, b",
+    "cp #0x1c",
+    "ret nc",
+    "call ym2610_write_port_a",
+    "ret",
+    "apu_packet_abort:",
+    "xor a",
+    "ld (apu_packet_phase), a",
+    "ret",
 )
+EXPECTED_PACKET_BASES = tuple(index * 121 for index in range(60))
 DEFAULT_DRIVER_SOURCE = (
     Path(__file__).resolve().parent.parent
     / "platform"
@@ -133,6 +194,56 @@ def parse_handler(text: str, name: str) -> tuple[str, ...]:
     return tuple(body)
 
 
+def parse_code_region(
+    text: str,
+    start_label: str,
+    end_label: str,
+) -> tuple[str, ...]:
+    lines = _source_lines(text)
+    start = f"{start_label}:"
+    end = f"{end_label}:"
+    if lines.count(start) != 1 or lines.count(end) != 1:
+        raise SoundMapError(
+            f"sound driver must define exactly one {start_label} "
+            f"and {end_label}"
+        )
+    start_index = lines.index(start) + 1
+    end_index = lines.index(end)
+    if end_index < start_index:
+        raise SoundMapError(
+            f"{end_label} precedes {start_label}"
+        )
+    return tuple(lines[start_index:end_index])
+
+
+def parse_word_table(text: str, name: str) -> tuple[int, ...]:
+    lines = _source_lines(text)
+    label = f"{name}:"
+    if lines.count(label) != 1:
+        raise SoundMapError(
+            f"sound driver must define exactly one {name}"
+        )
+
+    values: list[int] = []
+    for line in lines[lines.index(label) + 1:]:
+        if line.startswith(".area") or line.endswith(":"):
+            break
+        if not line.startswith(".dw "):
+            raise SoundMapError(
+                f"unsupported {name} statement: {line}"
+            )
+        try:
+            values.extend(
+                int(value.strip(), 0)
+                for value in line[4:].split(",")
+            )
+        except ValueError as error:
+            raise SoundMapError(
+                f"invalid word in {name}: {line}"
+            ) from error
+    return tuple(values)
+
+
 def parse_local_data(text: str) -> tuple[tuple[str, int], ...]:
     lines = _source_lines(text)
     data_areas = [
@@ -198,11 +309,29 @@ def validate_driver_source(text: str) -> tuple[int, int]:
                     f"expected {expected}"
                 )
 
-    high_selector = parse_handler(text, "apu_select_high_register")
-    if high_selector != EXPECTED_HIGH_SELECTOR_BODY:
+    ready_ping = parse_handler(text, "apu_ready_ping")
+    if ready_ping != EXPECTED_READY_PING_BODY:
         raise SoundMapError(
-            f"high-register selector is {high_selector!r}; "
-            f"expected {EXPECTED_HIGH_SELECTOR_BODY!r}"
+            f"ready-ping reset is {ready_ping!r}; "
+            f"expected {EXPECTED_READY_PING_BODY!r}"
+        )
+
+    packet_body = parse_code_region(
+        text,
+        "apu_packet_byte",
+        "apu_packet_bases",
+    )
+    if packet_body != EXPECTED_PACKET_BODY:
+        raise SoundMapError(
+            f"packet decoder is {packet_body!r}; "
+            f"expected {EXPECTED_PACKET_BODY!r}"
+        )
+
+    packet_bases = parse_word_table(text, "apu_packet_bases")
+    if packet_bases != EXPECTED_PACKET_BASES:
+        raise SoundMapError(
+            f"packet base table is {packet_bases!r}; "
+            f"expected {EXPECTED_PACKET_BASES!r}"
         )
 
     data = parse_local_data(text)

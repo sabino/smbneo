@@ -145,17 +145,18 @@ diagnostic, so transport trouble cannot create an unbounded catch-up loop.
 Translated music/SFX queues are deliberately not advanced out of band because
 their event-music state is also read by end-of-level gameplay logic.
 
-Each target register update is encoded as three commands: register selector,
-high data nibble, and low data nibble/commit. The MC68000 waits for the
-nullsound `command | 0x80` acknowledgement after each byte. The Z80 command
-table uses `$10-$1f` to select YM port-A registers `$00-$0f` and `$40-$4f`
-to select `$10-$1f`; value commands remain `$20/$30`, and bit 7 remains
-reserved for acknowledgements. The handler preserves FIFO order and calls
-`ym2610_write_port_a`, which supplies the chip's required write delays and
-interrupt-safe port restoration. Driver reset uses an eight-frame startup
-delay and an alternating ready ping. A failed handshake triggers up to two
-reset retries; the third consecutive failure disables transport rather than
-hanging gameplay.
+Each 13-bit target register/value payload is encoded as two commands from the
+122-symbol `$06-$7f` alphabet. Base-121 quotient/remainder digits are rotated
+relative to the preceding symbol, guaranteeing distinct adjacent commands
+even across packet boundaries. This prevents a stale
+`command | 0x80` echo from satisfying the next acknowledgement wait, while
+leaving bit 7 reserved for acknowledgements. The Z80 FIFO preserves order;
+its main loop decodes the pair and calls `ym2610_write_port_a`, which supplies
+the chip's required write delays and interrupt-safe port restoration. Driver
+reset uses an eight-frame startup delay and an alternating ready ping that
+also resets packet state. A failed handshake triggers up to two reset retries;
+the third consecutive failure disables transport rather than hanging
+gameplay.
 
 The cartridge contains the custom 128 KiB M1 image and a deterministic
 512 KiB V1 image. The first 64 KiB of V1 encode 2,048 periods of a generated,
@@ -203,16 +204,16 @@ python3 tools/probe_neogeo_audio.py \
 The debugger cadence probe remains a separate renderer/game-loop VBlank-budget
 gate and intentionally runs with sound and wall-clock pacing disabled.
 
-At this milestone the Z80 linker map reports 10,785 bytes of fixed code,
-1,944 bytes of data, and 101 bytes between static data and the stack start.
+At this milestone the Z80 linker map reports 10,965 bytes of fixed code,
+1,945 bytes of data, and 100 bytes between static data and the stack start.
 `tools/check_neogeo_sound_driver.py` requires:
 
 - non-empty code starting at `$0000` and fitting below `$8000`;
 - data starting exactly at `$f800` and ending below the `$fffd` stack start;
 - at least 64 bytes of stack headroom; and
 - one consistent CODE and DATA summary in the linker map;
-- the exact 128-entry low/high-register command dispatch; and
-- exactly the two locally owned pending-register bytes in Z80 DATA.
+- the exact 128-entry packet command dispatch and decoder semantics; and
+- exactly the three locally owned packet-state bytes in Z80 DATA.
 
 The host bridge regression covers initial mute, changed-register coalescing,
 pitch conversion including A4, envelope decay, master disable/re-enable,

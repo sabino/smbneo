@@ -11,7 +11,10 @@
 extern uint8_t a, x, y, sp;
 
 // flags
-extern bool carry_flag, zero_flag, neg_flag; 
+extern bool carry_flag;
+extern uint8_t nz_value;
+#define zero_flag (nz_value == 0u)
+#define neg_flag ((nz_value & 0x80u) != 0u)
 // the overflow flag is never used :)
 
 // memory
