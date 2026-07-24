@@ -8,12 +8,14 @@ MC68000 and replaces the desktop PPU/APU modules with:
   retain only the 314-byte CHR read window used to construct the title menu.
 - `video.c`: direct C-ROM/S-ROM, palette RAM, FIX-map, and SCB1-4 writes with
   two 161-sprite frame sets, generation caches, and next-VBlank live swaps.
-- `apu_bridge.c`: integer-only NES APU register shadowing, envelope/pitch
-  approximation, and changed-register coalescing for the YM2610 SSG.
+- `apu_bridge.c`: NES APU register shadowing, envelope/sweep/length/linear
+  state, and changed-register coalescing for YM2610 SSG plus ADPCM-B.
 - `apu_neogeo.c`: acknowledged MC68000-to-Z80 transport, startup recovery, and
   the target implementation of the translated core's APU interface.
-- `sound_driver.s`: custom nullsound command table and timing-safe YM2610 SSG
-  writes for the M1 sound ROM.
+- `sound_driver.s`: custom nullsound command table and timing-safe YM2610
+  port-A writes for the M1 sound ROM.
+- `tools/gen_neogeo_triangle_vrom.py`: deterministic 64 KiB encoded triangle
+  loop inside a padded 512 KiB V1 image.
 - `main.c`: Neo Geo input mapping and the 60 Hz game loop.
 
 ## Commands
@@ -104,50 +106,60 @@ Rendered evidence is deliberately written to the caller-selected external
 The repository contains no Nintendo graphics. The local cartridge does, so it
 must not be redistributed.
 
-## Native audio MVP
+## Native audio
 
 The Neo Geo target does not link the desktop PCM mixer. The translated game
-continues writing its normal APU registers, while `apu_bridge.c` shadows the
-relevant state and emits only changed YM2610 SSG registers once per rendered
-game frame:
+continues writing its normal APU registers. `apu_bridge.c` shadows the
+relevant state and emits only changed YM2610 registers once per rendered game
+frame:
 
 - pulse 1 and pulse 2 use SSG tone channels A and B;
-- triangle uses SSG tone channel C;
-- noise uses SSG noise on channel C; and
-- software envelope, pulse sweep, and integer period conversion avoid audio
-  buffers, floating point, and division in the frame loop.
+- noise uses SSG noise on channel C;
+- triangle uses a separately pitched, looping ADPCM-B waveform; and
+- software envelopes, pulse sweep, length counters, the triangle linear
+  counter, and integer period conversion avoid runtime PCM buffers and
+  floating point.
 
 The bridge clocks both pulse sweep units twice per game frame, including
 divider/reload ordering, continuous target-overflow muting, and the distinct
 negate arithmetic of the two source pulse channels. Changed target periods
-continue through the same coalesced SSG register transport.
+continue through the same coalesced register transport. Length counters clock
+twice per game frame, while envelopes and the triangle linear counter receive
+four quarter-frame clocks. Channel-disable writes clear lengths immediately,
+and disabled timer-high writes cannot revive a channel.
 
 Each target register update is encoded as three commands: register selector,
 high data nibble, and low data nibble/commit. The MC68000 waits for the
 nullsound `command | 0x80` acknowledgement after each byte. The Z80 command
-handler preserves FIFO order and calls `ym2610_write_port_a`, which supplies
-the chip's required write delays and interrupt-safe port restoration. Driver
-reset uses an eight-frame startup delay and an alternating ready ping. A
-failed handshake triggers up to two reset retries; the third consecutive
-failure disables transport rather than hanging gameplay.
+table uses `$10-$1f` to select YM port-A registers `$00-$0f` and `$40-$4f`
+to select `$10-$1f`; value commands remain `$20/$30`, and bit 7 remains
+reserved for acknowledgements. The handler preserves FIFO order and calls
+`ym2610_write_port_a`, which supplies the chip's required write delays and
+interrupt-safe port restoration. Driver reset uses an eight-frame startup
+delay and an alternating ready ping. A failed handshake triggers up to two
+reset retries; the third consecutive failure disables transport rather than
+hanging gameplay.
 
-The cartridge contains the custom 128 KiB M1 image. V1 remains a 512 KiB
-zero-filled region because the MVP uses no ADPCM samples. `run` and rendered
-`replay-run` start GnGeo with sound enabled. `REPLAY_FAST=1` deliberately skips
-both rendering and per-frame sound transport and therefore remains a
-core-progression gate, not an audio test.
+The cartridge contains the custom 128 KiB M1 image and a deterministic
+512 KiB V1 image. The first 64 KiB of V1 encode 2,048 periods of a generated,
+DC-centered 64-point triangle; the remainder is reserved as zeroes. Its
+predictor-reset seam differs from the ideal adjacent sample by one PCM unit,
+and its fixed SHA-256 is checked before both normal and replay packaging.
+`run` and rendered `replay-run` start GnGeo with sound enabled.
+`REPLAY_FAST=1` deliberately skips both rendering and per-frame sound
+transport and therefore remains a core-progression gate, not an audio test.
 
-This bridge is intentionally approximate:
+Remaining approximations are explicit:
 
 - SSG tones have a fixed 50-percent duty cycle, so source pulse duty is lost;
-- hardware length counters, the triangle linear counter, short-noise mode,
-  and direct DAC/DMC behavior are not implemented;
+- the noise mode bit is retained in bridge state, but the SSG cannot reproduce
+  the source short-noise sequence and slow periods saturate at 31;
+- direct DAC/DMC mixer bias is not modeled;
 - sweep is clocked at two half-frame steps per game frame, while changed SSG
   periods are transported on the next 60 Hz bridge boundary;
-- the triangle voice is represented by a square tone and very low triangle
-  periods clamp to the SSG's 12-bit maximum; and
-- triangle and noise share SSG C's volume and are AND-gated when simultaneous,
-  rather than being independently mixed.
+- APU units are aggregated at the 60 Hz bridge boundary instead of exact
+  source-chip sub-frame instants; and
+- physical-cartridge exposure of V1 to the ADPCM-B bus still needs validation.
 
 The implementation and ROM packaging have host-side and emulator-oriented
 coverage, but audio fidelity has not been validated on physical
@@ -172,20 +184,24 @@ python3 tools/probe_neogeo_audio.py \
 The debugger cadence probe remains a separate renderer/game-loop VBlank-budget
 gate and intentionally runs with sound and wall-clock pacing disabled.
 
-At this milestone the Z80 linker map reports 10,777 bytes of fixed code,
+At this milestone the Z80 linker map reports 10,785 bytes of fixed code,
 1,944 bytes of data, and 101 bytes between static data and the stack start.
 `tools/check_neogeo_sound_driver.py` requires:
 
 - non-empty code starting at `$0000` and fitting below `$8000`;
 - data starting exactly at `$f800` and ending below the `$fffd` stack start;
 - at least 64 bytes of stack headroom; and
-- one consistent CODE and DATA summary in the linker map.
+- one consistent CODE and DATA summary in the linker map;
+- the exact 128-entry low/high-register command dispatch; and
+- exactly the two locally owned pending-register bytes in Z80 DATA.
 
 The host bridge regression covers initial mute, changed-register coalescing,
 pitch conversion including A4, envelope decay, master disable/re-enable,
-triangle/noise mixer state and representative noise periods, coarse-before-
-fine tone writes, and retry behavior after a failed transport write. Python
-unit tests exercise all Z80 map rejection paths.
+length-table/halt behavior, triangle linear reload and timer muting,
+independent ADPCM-B triangle/noise state, representative noise periods,
+coarse-before-fine tone writes, and retry behavior after a failed transport
+write. Python tests exercise the Z80 protocol/map rejection paths and verify
+the generated V1 waveform, decode error, loop seam, padding, and hash.
 
 ## Controls
 

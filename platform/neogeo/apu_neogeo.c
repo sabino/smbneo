@@ -11,9 +11,10 @@ enum {
     SOUND_RESET_COMMAND = 3,
     SOUND_READY_PING_0 = 4,
     SOUND_READY_PING_1 = 5,
-    SOUND_REGISTER_COMMAND = 0x10,
+    SOUND_REGISTER_LOW_COMMAND = 0x10,
     SOUND_VALUE_HIGH_COMMAND = 0x20,
     SOUND_VALUE_LOW_COMMAND = 0x30,
+    SOUND_REGISTER_HIGH_COMMAND = 0x40,
     SOUND_ACK_BIT = 0x80,
     SOUND_ACK_SPINS = 4096,
     SOUND_STARTUP_FRAMES = 8,
@@ -48,15 +49,29 @@ static bool send_ym_register(
     uint8_t reg,
     uint8_t value
 ) {
+    uint8_t register_command;
+
     (void)context;
 
     /*
      * Every command stays below $80, leaving bit 7 exclusively available
-     * for the Z80 acknowledgement. The three command classes differ, so an
-     * acknowledgement from the previous byte cannot satisfy the next wait.
+     * for the Z80 acknowledgement. The three bytes in a register packet use
+     * distinct command classes, so an acknowledgement from the previous byte
+     * cannot satisfy the next wait.
+     * Registers $00-$0f retain the original $1r selector; $4r selects
+     * registers $10-$1f without consuming the acknowledgement bit.
      */
+    register_command = (uint8_t)(
+        (
+            (reg & 0x10u) != 0u
+                ? SOUND_REGISTER_HIGH_COMMAND
+                : SOUND_REGISTER_LOW_COMMAND
+        ) |
+        (reg & 0x0fu)
+    );
+
     return
-        send_command((uint8_t)(SOUND_REGISTER_COMMAND | reg)) &&
+        send_command(register_command) &&
         send_command(
             (uint8_t)(SOUND_VALUE_HIGH_COMMAND | (value >> 4))
         ) &&

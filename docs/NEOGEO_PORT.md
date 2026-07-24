@@ -147,38 +147,44 @@ hardware.
 
 ## Native audio bridge
 
-The Neo Geo link replaces the desktop PCM mixer with an integer-only bridge.
+The Neo Geo link replaces the desktop PCM mixer with a compact native bridge.
 The translated game still performs its normal APU register writes; the bridge
 shadows the relevant channel state and, once per rendered game frame, derives
-the YM2610 SSG registers:
+YM2610 SSG and ADPCM-B registers:
 
 | Source voice | Native target |
 | --- | --- |
 | Pulse 1 | SSG tone A |
 | Pulse 2 | SSG tone B |
-| Triangle | SSG tone C |
-| Noise | SSG noise gated through channel C |
+| Triangle | Variable-rate looping ADPCM-B |
+| Noise | SSG noise C |
 
-Only changed target registers are sent. Pulse and triangle timer periods use
-8.8 fixed-point multiplication and shifts, while a 16-entry integer table
-maps noise periods. Software envelope state is clocked four quarter-frame
-times per game frame. The bridge therefore adds no PCM buffers, floating
-point, or division to the MC68000 frame loop.
+Only changed target registers are sent. Pulse periods use 8.8 fixed-point
+multiplication and shifts, while a 16-entry integer table maps noise periods.
+Triangle timer writes calculate ADPCM-B Delta-N from a 64-sample period;
+division therefore occurs only when a note timer byte changes, never in the
+60 Hz emission loop. The bridge adds no runtime PCM buffers or floating
+point.
 
 Writes to the two source pulse-sweep registers are retained as compact
 MC68000 state. Each 60 Hz bridge step clocks both sweep units twice, applies
 the source divider/reload order, continuously mutes invalid targets, and
 distinguishes pulse 1's one's-complement negate from pulse 2's two's-
-complement negate. The resulting tone-period changes still pass through the
-existing changed-register coalescer and generic Z80 command path.
+complement negate. Hardware length counters also receive two half-frame
+clocks; envelopes and the triangle linear counter receive four quarter-frame
+clocks. Source halt/control bits, disabled length loads, immediate disable
+clears, linear reload, and triangle timers zero through two are modeled. The
+resulting state still passes through the changed-register coalescer and
+generic Z80 command path.
 
-The YM2610 is driven by the Z80 rather than directly by the MC68000. Each SSG
+The YM2610 is driven by the Z80 rather than directly by the MC68000. Each
 register update uses three commands below `$80`: a register selector, a high
-data nibble, and a low data nibble that commits the write. The MC68000 waits
-for the nullsound `command | $80` acknowledgement after every byte. Distinct
-command classes prevent the previous acknowledgement from satisfying the
-next wait. The Z80's 64-entry FIFO preserves order, and a full initial flush
-uses 33 commands.
+data nibble, and a low data nibble that commits the write. Selectors `$10-$1f`
+address YM port-A registers `$00-$0f`; selectors `$40-$4f` address
+`$10-$1f`. Value commands remain `$20/$30`, so bit 7 stays exclusive to the
+acknowledgement. Distinct command classes prevent the previous
+acknowledgement from satisfying the next wait. The Z80's 64-entry FIFO
+preserves order, and a full 18-register initial flush uses 54 commands.
 
 Command 3 resets the sound driver without an acknowledgement. The MC68000
 allows eight game frames for startup and then sends one of two alternating
@@ -188,24 +194,35 @@ failure disables audio transport instead of hanging gameplay. The Z80 commit
 handler calls nullsound's `ym2610_write_port_a`, retaining its required YM2610
 delays and interrupt-safe port restoration.
 
-This is the native audio MVP, not a claim of source-chip fidelity:
+The triangle sample is generated from source code rather than stored as a
+copyrighted asset. A 64-point, DC-centered, +/-10,000 PCM triangle is repeated
+2,048 times and deterministically encoded into the first 64 KiB of V1. The
+remaining 448 KiB are zero-reserved. Independent decoding measures
+`-10,078..10,081`, 47.534 PCM units of RMS error, and a repeat-reset seam one
+PCM unit from the ideal adjacent slope. Its fixed V1 SHA-256 is checked before
+normal and replay packaging. The bridge sets start block `$0000`, inclusive
+stop block `$00ff`, stereo pan, volume `$70`, and START|REPEAT. It changes
+Delta-N without retriggering while notes remain audible.
+
+This is a major fidelity improvement, not a claim of source-chip exactness:
 
 - SSG tones have a fixed 50-percent duty cycle, so pulse duty is not retained.
-- Hardware length counters, the triangle linear counter, short-noise mode,
-  and direct DAC/DMC behavior are not implemented.
+- The source short-noise mode bit is retained, but the SSG cannot reproduce
+  that alternate sequence and slow noise periods saturate at 31.
+- Direct DAC/DMC mixer bias is not modeled.
 - Sweep control is advanced with two half-frame clocks, but changed SSG tone
   periods are emitted at the next 60 Hz bridge boundary rather than at a
   source-chip sub-frame instant.
-- Triangle is represented by a square tone. Very low triangle periods clamp to
-  the SSG's 12-bit maximum.
-- Triangle and noise share SSG C and one volume. When both are enabled, the SSG
-  AND-gates them rather than mixing them as independent voices.
+- Frame-sequencer units are aggregated at the 60 Hz bridge boundary rather
+  than exact source-chip sub-frame instants.
 - The startup handshake proves that the command FIFO accepts input after the
   fixed delay; it is not a processed-ready response from the driver main loop.
+- Physical hardware still needs to confirm the cartridge board exposes V1 to
+  the YM2610 ADPCM-B bus and that the emulator-tuned level transfers cleanly.
 
-The custom sound driver is packaged as a 128 KiB M1 region. V1 is still a
-512 KiB zero-filled region because this milestone uses no ADPCM samples.
-Normal and rendered-replay GnGeo commands enable sound explicitly.
+The custom sound driver is packaged as a 128 KiB M1 region and the generated
+triangle as a 512 KiB V1 region. Normal and rendered-replay GnGeo commands
+enable sound explicitly.
 `REPLAY_FAST=1` skips both hardware rendering and `apu_step_frame()`, so the
 fast all-stage lane remains a core-progression test rather than audio
 evidence.
@@ -250,7 +267,7 @@ The current Z80 linker map reports:
 
 | Measurement | Bytes |
 | --- | ---: |
-| Fixed Z80 code | 10,777 |
+| Fixed Z80 code | 10,785 |
 | Z80 static data | 1,944 |
 | Data-to-stack headroom | 101 |
 
@@ -258,16 +275,21 @@ The current Z80 linker map reports:
 missing or inconsistent CODE/DATA summaries, code that does not start at
 `$0000` or extends beyond the fixed `$8000` window, data that does not start
 at `$f800` or reaches the `$fffd` stack start, and less than 64 bytes of stack
-headroom. Its parser and every rejection path have Python unit coverage.
+headroom. It also verifies the exact 128-entry low/high-register command
+dispatch, the high-selector semantics, and exactly two bytes of driver-owned
+mutable DATA. Its parser and rejection paths have Python unit coverage.
 
 `tools/test_neogeo_apu_bridge.c` verifies initial mute, changed-register
 coalescing, A4 and general period conversion, positive and negative sweep
 targets, per-channel negate behavior, divider/reload cadence, sweep overflow
-muting, envelope decay, master disable/re-enable behavior, triangle/noise
-mixer state, representative noise periods, coarse-before-fine tone updates,
-and dirty-register retry after a transport failure. These host tests and the
-emulator-oriented packaging checks do not replace listening tests or
-electrical/timing validation on physical AES/MVS-compatible hardware.
+muting, envelope decay, hardware length/halt semantics, triangle linear reload
+and low-timer muting, master disable/re-enable behavior, independent
+ADPCM-B/noise registers, representative noise periods, coarse-before-fine
+tone updates, and dirty-register retry after a transport failure.
+`tools/test_gen_neogeo_triangle_vrom.py` independently decodes the waveform
+and fixes its dimensions, error bound, seam, padding, and SHA-256. These host
+tests and emulator-oriented packaging checks do not replace listening tests
+or electrical/timing validation on physical AES/MVS-compatible hardware.
 
 ## Measured memory and ROM size
 
@@ -275,12 +297,12 @@ electrical/timing validation on physical AES/MVS-compatible hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 214,614 |
+| MC68000 text + read-only data | 199,690 |
 | Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 16,172 |
-| Static user work RAM total | 16,176 |
+| Zeroed work RAM (`.bss`) | 16,196 |
+| Static user work RAM total | 16,200 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 46,032 |
+| Remaining stack/heap headroom | 46,008 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -316,10 +338,12 @@ exactly one `.nes` member. It:
 7. records a manifest confirming that zero source PRG bytes were written.
 
 The Makefile then builds the one-megabyte P1, custom Z80 sound-driver M1,
-zero-filled V1, cartridge ZIP, and GnGeo hash data. The V1 region is present
-for a complete cartridge layout but carries no samples in the SSG-only audio
-MVP. Each cartridge recipe recreates V1 from zero bytes and checks its fixed
-SHA-256 before packaging, so a correctly sized stale file cannot survive an
+generated triangle V1, cartridge ZIP, and GnGeo hash data. A shared V1 target
+encodes the 64 KiB ADPCM-B loop, pads the image to 512 KiB, and checks
+SHA-256
+`c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7`.
+Normal and replay recipes copy and recheck that identical artifact before
+packaging, so a correctly sized stale or zero-filled V1 cannot survive an
 incremental build. All derived assets live below the ignored
 `platform/neogeo/build/` directory.
 
@@ -535,8 +559,8 @@ live sprite/FIX/palette state, the renderer increments a 16-bit generation;
 the following VBlank callback latches it as presented, and screenshot traps
 wait for equality without advancing the translated core or renderer frame.
 Those two shared words and one 16-bit callback copy also exist in normal
-cartridges. Existing linker padding absorbs the words, so the measured final
-BSS remains 16,172 bytes.
+cartridges. Existing linker padding absorbs the words; the later native-audio
+state brings the measured final BSS to 16,196 bytes.
 
 Immediately before invoking `scrot`, the host also applies a bounded display
 settling allowance: 50 milliseconds by default, configurable from 0 through
@@ -673,11 +697,11 @@ python3 tools/run_neogeo_replay_gate.py \
 
 The current `verify` result includes a passing native audio bridge regression
 and Z80 map-checker regression. It also links the custom sound driver and
-reports 10,777 bytes of Z80 fixed code, 1,944 bytes of static data, and 101
+reports 10,785 bytes of Z80 fixed code, 1,944 bytes of static data, and 101
 bytes of data-to-stack headroom. The cartridge pipeline packages that driver
-as M1, preserves the zero-filled V1 region, and includes M1/V1 in
-reproducibility size and hash checks. The M1 image and linker map are grouped
-build outputs;
+as M1, packages the hash-checked generated triangle as V1, and includes M1/V1
+in reproducibility size and hash checks. The M1 image and linker map are
+grouped build outputs;
 changes to the nullsound library or included command helper trigger a relink,
 and the map checker runs on every verification or cartridge invocation.
 
@@ -721,9 +745,10 @@ operation on physical hardware.
 
 ## Next engineering steps
 
-1. Improve audio fidelity with an ADPCM-B triangle voice so SSG C can
-   represent noise independently, then add length/linear-counter gating.
-2. Test on actual AES/MVS-compatible hardware and tune visible-area offsets.
+1. Test audio and video on actual AES/MVS-compatible hardware, confirm the
+   ADPCM-B V1 bus mapping, and tune output level plus visible-area offsets.
+2. Evaluate pulse-duty and short-noise approximations without consuming the
+   remaining Z80 stack margin.
 3. Tighten the remaining fine-scroll left-edge masking cases.
 4. Add pixel-level reference captures for the remaining renderer fidelity
    differences.

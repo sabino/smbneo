@@ -23,20 +23,46 @@ enum {
     YM_SSG_VOLUME_A = 8,
     YM_SSG_VOLUME_B = 9,
     YM_SSG_VOLUME_C = 10,
+    YM_ADPCM_B_CONTROL = 0x10,
+    YM_ADPCM_B_PAN = 0x11,
+    YM_ADPCM_B_START_LOW = 0x12,
+    YM_ADPCM_B_START_HIGH = 0x13,
+    YM_ADPCM_B_STOP_LOW = 0x14,
+    YM_ADPCM_B_STOP_HIGH = 0x15,
+    YM_ADPCM_B_DELTA_LOW = 0x19,
+    YM_ADPCM_B_DELTA_HIGH = 0x1a,
+    YM_ADPCM_B_VOLUME = 0x1b,
 
     SSG_ALL_CHANNELS_DISABLED = 0x3f,
     SSG_TONE_A_DISABLED = 0x01,
     SSG_TONE_B_DISABLED = 0x02,
-    SSG_TONE_C_DISABLED = 0x04,
     SSG_NOISE_C_DISABLED = 0x20,
 
     NES_ENVELOPE_TICKS_PER_FRAME = 4,
+    NES_LINEAR_TICKS_PER_FRAME = 4,
+    NES_LENGTH_TICKS_PER_FRAME = 2,
     NES_SWEEP_TICKS_PER_FRAME = 2,
     NES_SWEEP_ENABLED = 0x80,
     NES_SWEEP_PERIOD_MASK = 0x70,
     NES_SWEEP_NEGATE = 0x08,
     NES_SWEEP_SHIFT_MASK = 0x07,
-    NES_PULSE_TIMER_MAX = 0x07ff
+    NES_PULSE_TIMER_MAX = 0x07ff,
+
+    /*
+     * The V1 generator emits a 64 KiB ADPCM-B loop at offset zero. YM2610
+     * sample addresses count inclusive 256-byte blocks.
+     */
+    ADPCM_B_TRIANGLE_STOP_BLOCK = 0x00ff,
+    ADPCM_B_TRIANGLE_VOLUME = 0x70,
+    ADPCM_B_TRIANGLE_START_REPEAT = 0x90,
+    ADPCM_B_TRIANGLE_RESET = 0x01
+};
+
+static const uint8_t length_table[32] = {
+    10, 254, 20, 2, 40, 4, 80, 6,
+    160, 8, 60, 10, 14, 12, 26, 14,
+    12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30
 };
 
 /*
@@ -56,6 +82,32 @@ static uint16_t scale_period(uint16_t timer, uint16_t factor_8_8) {
         return 0x0fffu;
     }
     return (uint16_t)scaled;
+}
+
+/*
+ * V1 contains a 64-sample triangle period. Matching the source triangle
+ * frequency therefore requires this ADPCM-B nibble rate:
+ *
+ *   delta-n = round(2 * 1,789,773 * 65,536 * 144
+ *                   / (8,000,000 * (timer + 1)))
+ *           = round(4,222,604.28 / (timer + 1)).
+ *
+ * This division runs only when a triangle timer byte is written, never in
+ * the 60 Hz register-emission path. Timers whose quotient exceeds the
+ * 16-bit YM register are clamped.
+ */
+static uint16_t triangle_delta_n(uint16_t timer) {
+    uint16_t divisor = (uint16_t)(timer + 1u);
+    uint32_t delta;
+
+    if (divisor < 65u) {
+        return 0xffffu;
+    }
+    delta = (4222604u + (uint32_t)(divisor / 2u)) / divisor;
+    if (delta > 0xffffu) {
+        return 0xffffu;
+    }
+    return (uint16_t)delta;
 }
 
 static uint8_t envelope_volume(
@@ -111,6 +163,57 @@ static void clock_frame_envelopes(NeogeoApuBridge *bridge) {
         clock_envelope(
             &bridge->noise_envelope,
             bridge->noise_control
+        );
+    }
+}
+
+static void clock_triangle_linear_counter(
+    NeogeoApuBridge *bridge
+) {
+    uint8_t tick;
+
+    for (tick = 0; tick < NES_LINEAR_TICKS_PER_FRAME; ++tick) {
+        if (bridge->triangle_linear_reload != 0u) {
+            bridge->triangle_linear_counter =
+                (uint8_t)(bridge->triangle_control & 0x7fu);
+        } else if (bridge->triangle_linear_counter != 0u) {
+            --bridge->triangle_linear_counter;
+        }
+
+        if ((bridge->triangle_control & 0x80u) == 0u) {
+            bridge->triangle_linear_reload = 0;
+        }
+    }
+}
+
+static void clock_length_counter(
+    uint8_t *counter,
+    uint8_t halted
+) {
+    if (halted == 0u && *counter != 0u) {
+        --*counter;
+    }
+}
+
+static void clock_frame_length_counters(NeogeoApuBridge *bridge) {
+    uint8_t tick;
+
+    for (tick = 0; tick < NES_LENGTH_TICKS_PER_FRAME; ++tick) {
+        clock_length_counter(
+            &bridge->pulse_length[0],
+            (uint8_t)(bridge->pulse_control[0] & 0x20u)
+        );
+        clock_length_counter(
+            &bridge->pulse_length[1],
+            (uint8_t)(bridge->pulse_control[1] & 0x20u)
+        );
+        clock_length_counter(
+            &bridge->triangle_length,
+            (uint8_t)(bridge->triangle_control & 0x80u)
+        );
+        clock_length_counter(
+            &bridge->noise_length,
+            (uint8_t)(bridge->noise_control & 0x20u)
         );
     }
 }
@@ -216,6 +319,8 @@ static void clock_frame_sweeps(NeogeoApuBridge *bridge) {
 
 static void clock_frame_units(NeogeoApuBridge *bridge) {
     clock_frame_envelopes(bridge);
+    clock_triangle_linear_counter(bridge);
+    clock_frame_length_counters(bridge);
     clock_frame_sweeps(bridge);
 }
 
@@ -228,7 +333,7 @@ static uint8_t pulse_is_audible(
 
     return (uint8_t)(
         (bridge->master_enable & enable_mask) != 0u &&
-        bridge->pulse_active[channel] != 0u &&
+        bridge->pulse_length[channel] != 0u &&
         bridge->pulse_timer[channel] >= 8u &&
         bridge->pulse_sweep_mute[channel] == 0u &&
         volume != 0u
@@ -236,10 +341,19 @@ static uint8_t pulse_is_audible(
 }
 
 static uint8_t triangle_is_audible(const NeogeoApuBridge *bridge) {
+    uint8_t linear_active = (uint8_t)(
+        bridge->triangle_linear_counter != 0u ||
+        (
+            bridge->triangle_linear_reload != 0u &&
+            (bridge->triangle_control & 0x7fu) != 0u
+        )
+    );
+
     return (uint8_t)(
         (bridge->master_enable & 0x04u) != 0u &&
-        bridge->triangle_active != 0u &&
-        (bridge->triangle_control & 0x7fu) != 0u
+        bridge->triangle_length != 0u &&
+        linear_active != 0u &&
+        bridge->triangle_timer > 2u
     );
 }
 
@@ -249,14 +363,14 @@ static uint8_t noise_is_audible(
 ) {
     return (uint8_t)(
         (bridge->master_enable & 0x08u) != 0u &&
-        bridge->noise_active != 0u &&
+        bridge->noise_length != 0u &&
         volume != 0u
     );
 }
 
 static void build_ym_registers(
     const NeogeoApuBridge *bridge,
-    uint8_t registers[NEOGEO_APU_YM_REGISTER_COUNT]
+    uint8_t registers[NEOGEO_APU_YM_REGISTER_LIMIT]
 ) {
     static const uint8_t noise_periods[16] = {
         1, 1, 1, 2, 4, 7, 9, 11,
@@ -264,12 +378,11 @@ static void build_ym_registers(
     };
     uint16_t period;
     uint8_t pulse_volume[2];
-    uint8_t triangle_volume;
     uint8_t noise_volume;
     uint8_t mixer = SSG_ALL_CHANNELS_DISABLED;
     uint8_t channel;
 
-    memset(registers, 0, NEOGEO_APU_YM_REGISTER_COUNT);
+    memset(registers, 0, NEOGEO_APU_YM_REGISTER_LIMIT);
 
     for (channel = 0; channel < 2u; ++channel) {
         uint8_t base = (uint8_t)(channel * 2u);
@@ -283,16 +396,12 @@ static void build_ym_registers(
         );
     }
 
-    period = scale_period(bridge->triangle_timer, 572u);
-    registers[4] = (uint8_t)period;
-    registers[5] = (uint8_t)(period >> 8);
     registers[6] = noise_periods[bridge->noise_period & 0x0fu];
 
     noise_volume = envelope_volume(
         bridge->noise_control,
         &bridge->noise_envelope
     );
-    triangle_volume = triangle_is_audible(bridge) != 0u ? 12u : 0u;
 
     if (pulse_is_audible(bridge, 0, pulse_volume[0]) != 0u) {
         mixer &= (uint8_t)~SSG_TONE_A_DISABLED;
@@ -304,9 +413,6 @@ static void build_ym_registers(
     } else {
         pulse_volume[1] = 0;
     }
-    if (triangle_volume != 0u) {
-        mixer &= (uint8_t)~SSG_TONE_C_DISABLED;
-    }
     if (noise_is_audible(bridge, noise_volume) != 0u) {
         mixer &= (uint8_t)~SSG_NOISE_C_DISABLED;
     } else {
@@ -316,12 +422,34 @@ static void build_ym_registers(
     registers[YM_SSG_MIXER] = mixer;
     registers[YM_SSG_VOLUME_A] = pulse_volume[0];
     registers[YM_SSG_VOLUME_B] = pulse_volume[1];
-    registers[YM_SSG_VOLUME_C] =
-        triangle_volume > noise_volume ? triangle_volume : noise_volume;
+    registers[YM_SSG_VOLUME_C] = noise_volume;
+
+    /*
+     * ADPCM-B is an independent fourth voice. The sample is kept looping
+     * through a note and pitch changes update delta-n without retriggering
+     * the predictor; control changes only on audible edges.
+     */
+    registers[YM_ADPCM_B_CONTROL] =
+        triangle_is_audible(bridge) != 0u
+            ? ADPCM_B_TRIANGLE_START_REPEAT
+            : ADPCM_B_TRIANGLE_RESET;
+    registers[YM_ADPCM_B_PAN] = 0xc0u;
+    registers[YM_ADPCM_B_START_LOW] = 0;
+    registers[YM_ADPCM_B_START_HIGH] = 0;
+    registers[YM_ADPCM_B_STOP_LOW] =
+        (uint8_t)ADPCM_B_TRIANGLE_STOP_BLOCK;
+    registers[YM_ADPCM_B_STOP_HIGH] =
+        (uint8_t)(ADPCM_B_TRIANGLE_STOP_BLOCK >> 8);
+    registers[YM_ADPCM_B_DELTA_LOW] =
+        (uint8_t)bridge->triangle_delta_n;
+    registers[YM_ADPCM_B_DELTA_HIGH] =
+        (uint8_t)(bridge->triangle_delta_n >> 8);
+    registers[YM_ADPCM_B_VOLUME] = ADPCM_B_TRIANGLE_VOLUME;
 }
 
 void neogeo_apu_bridge_init(NeogeoApuBridge *bridge) {
     memset(bridge, 0, sizeof(*bridge));
+    bridge->triangle_delta_n = triangle_delta_n(0);
     refresh_pulse_sweep_mute(bridge, 0);
     refresh_pulse_sweep_mute(bridge, 1);
 }
@@ -370,7 +498,15 @@ void neogeo_apu_bridge_write(
                     (bridge->pulse_timer[channel] & 0x00ffu) |
                     (((uint16_t)value & 0x07u) << 8)
                 );
-            bridge->pulse_active[channel] = 1;
+            if (
+                (
+                    bridge->master_enable &
+                    (uint8_t)(1u << channel)
+                ) != 0u
+            ) {
+                bridge->pulse_length[channel] =
+                    length_table[value >> 3];
+            }
             restart_envelope(
                 &bridge->pulse_envelope[channel],
                 bridge->pulse_control[channel]
@@ -385,6 +521,8 @@ void neogeo_apu_bridge_write(
         case NES_APU_TRIANGLE_TIMER_LOW:
             bridge->triangle_timer =
                 (uint16_t)((bridge->triangle_timer & 0x0700u) | value);
+            bridge->triangle_delta_n =
+                triangle_delta_n(bridge->triangle_timer);
             break;
 
         case NES_APU_TRIANGLE_TIMER_HIGH:
@@ -393,7 +531,12 @@ void neogeo_apu_bridge_write(
                     (bridge->triangle_timer & 0x00ffu) |
                     (((uint16_t)value & 0x07u) << 8)
                 );
-            bridge->triangle_active = 1;
+            bridge->triangle_delta_n =
+                triangle_delta_n(bridge->triangle_timer);
+            if ((bridge->master_enable & 0x04u) != 0u) {
+                bridge->triangle_length = length_table[value >> 3];
+            }
+            bridge->triangle_linear_reload = 1;
             break;
 
         case NES_APU_NOISE_CONTROL:
@@ -402,10 +545,13 @@ void neogeo_apu_bridge_write(
 
         case NES_APU_NOISE_PERIOD:
             bridge->noise_period = (uint8_t)(value & 0x0fu);
+            bridge->noise_mode = (uint8_t)(value >> 7);
             break;
 
         case NES_APU_NOISE_LENGTH:
-            bridge->noise_active = 1;
+            if ((bridge->master_enable & 0x08u) != 0u) {
+                bridge->noise_length = length_table[value >> 3];
+            }
             restart_envelope(
                 &bridge->noise_envelope,
                 bridge->noise_control
@@ -414,16 +560,16 @@ void neogeo_apu_bridge_write(
 
         case NES_APU_MASTER_ENABLE:
             if ((value & 0x01u) == 0u) {
-                bridge->pulse_active[0] = 0;
+                bridge->pulse_length[0] = 0;
             }
             if ((value & 0x02u) == 0u) {
-                bridge->pulse_active[1] = 0;
+                bridge->pulse_length[1] = 0;
             }
             if ((value & 0x04u) == 0u) {
-                bridge->triangle_active = 0;
+                bridge->triangle_length = 0;
             }
             if ((value & 0x08u) == 0u) {
-                bridge->noise_active = 0;
+                bridge->noise_length = 0;
             }
             bridge->master_enable = (uint8_t)(value & 0x0fu);
             break;
@@ -440,12 +586,20 @@ bool neogeo_apu_bridge_step(
 ) {
     static const uint8_t write_order[NEOGEO_APU_YM_REGISTER_COUNT] = {
         /*
-         * Yamaha recommends coarse-before-fine tone updates. The remaining
-         * SSG registers are independent and retain their numeric order.
+         * Yamaha recommends coarse-before-fine SSG tone updates. ADPCM-B
+         * configuration precedes control so a first start or transport
+         * recovery cannot run against stale sample boundaries or volume.
+         * ngdevkit's documented delta-n sequence is low byte, then high.
          */
-        1, 0, 3, 2, 5, 4, 6, 7, 8, 9, 10
+        1, 0, 3, 2, 6, 7, 8, 9, 10,
+        YM_ADPCM_B_PAN,
+        YM_ADPCM_B_START_LOW, YM_ADPCM_B_START_HIGH,
+        YM_ADPCM_B_STOP_LOW, YM_ADPCM_B_STOP_HIGH,
+        YM_ADPCM_B_DELTA_LOW, YM_ADPCM_B_DELTA_HIGH,
+        YM_ADPCM_B_VOLUME,
+        YM_ADPCM_B_CONTROL
     };
-    uint8_t registers[NEOGEO_APU_YM_REGISTER_COUNT];
+    uint8_t registers[NEOGEO_APU_YM_REGISTER_LIMIT];
     uint8_t order_index;
 
     build_ym_registers(bridge, registers);
@@ -456,7 +610,7 @@ bool neogeo_apu_bridge_step(
             ++order_index
         ) {
             uint8_t reg = write_order[order_index];
-            uint16_t mask = (uint16_t)(1u << reg);
+            uint32_t mask = (uint32_t)(1ul << reg);
 
             if (
                 (bridge->sent_valid & mask) != 0u &&

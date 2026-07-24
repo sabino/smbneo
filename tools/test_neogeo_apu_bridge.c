@@ -44,6 +44,20 @@ static uint8_t captured_value(
     return 0;
 }
 
+static bool captured_register(
+    const WriteCapture *capture,
+    uint8_t reg
+) {
+    size_t index;
+
+    for (index = 0; index < capture->count; ++index) {
+        if (capture->regs[index] == reg) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void reset_capture(WriteCapture *capture) {
     capture->count = 0;
     capture->fail_at = (size_t)-1;
@@ -193,6 +207,156 @@ static void test_pulse_sweep_mute_and_coalescing(void) {
     assert(bridge.pulse_timer[0] == 225u);
 }
 
+static void test_length_and_triangle_linear_counters(void) {
+    NeogeoApuBridge bridge;
+
+    neogeo_apu_bridge_init(&bridge);
+
+    /* Timer-high/length writes cannot reload a disabled channel. */
+    write_pulse_timer(&bridge, 0, 100u);
+    write_pulse_timer(&bridge, 1, 100u);
+    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x04u);
+    neogeo_apu_bridge_write(&bridge, 0x400au, 0x40u);
+    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x18u);
+    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x88u);
+    neogeo_apu_bridge_write(&bridge, 0x400fu, 0x58u);
+    assert(bridge.pulse_length[0] == 0u);
+    assert(bridge.pulse_length[1] == 0u);
+    assert(bridge.triangle_length == 0u);
+    assert(bridge.noise_length == 0u);
+    assert(bridge.triangle_linear_reload == 1u);
+    assert(bridge.noise_mode == 1u);
+
+    /* Enabling alone does not revive any expired or rejected length. */
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x0fu);
+    assert(bridge.pulse_length[0] == 0u);
+    assert(bridge.pulse_length[1] == 0u);
+    assert(bridge.triangle_length == 0u);
+    assert(bridge.noise_length == 0u);
+
+    /*
+     * Exercise the standard length table entries used by short effects.
+     * Halt/control bits preserve all four counters across the frame clocks.
+     */
+    neogeo_apu_bridge_write(&bridge, 0x4000u, 0x3fu);
+    neogeo_apu_bridge_write(&bridge, 0x4004u, 0x3fu);
+    neogeo_apu_bridge_write(&bridge, 0x4003u, 0x18u);
+    neogeo_apu_bridge_write(&bridge, 0x4007u, 0x58u);
+    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x84u);
+    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x18u);
+    neogeo_apu_bridge_write(&bridge, 0x400cu, 0x3fu);
+    neogeo_apu_bridge_write(&bridge, 0x400fu, 0x58u);
+    assert(bridge.pulse_length[0] == 2u);
+    assert(bridge.pulse_length[1] == 10u);
+    assert(bridge.triangle_length == 2u);
+    assert(bridge.noise_length == 10u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_length[0] == 2u);
+    assert(bridge.pulse_length[1] == 10u);
+    assert(bridge.triangle_length == 2u);
+    assert(bridge.noise_length == 10u);
+    assert(bridge.triangle_linear_counter == 4u);
+    assert(bridge.triangle_linear_reload == 1u);
+
+    /*
+     * Clearing halt lets two half-frame clocks expire the two-tick lengths.
+     * With triangle control clear, one reload plus three decrements leaves
+     * a reload value of four at one.
+     */
+    neogeo_apu_bridge_write(&bridge, 0x4000u, 0x1fu);
+    neogeo_apu_bridge_write(&bridge, 0x4004u, 0x1fu);
+    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x04u);
+    neogeo_apu_bridge_write(&bridge, 0x400cu, 0x1fu);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.pulse_length[0] == 0u);
+    assert(bridge.pulse_length[1] == 8u);
+    assert(bridge.triangle_length == 0u);
+    assert(bridge.noise_length == 8u);
+    assert(bridge.triangle_linear_counter == 1u);
+    assert(bridge.triangle_linear_reload == 0u);
+    assert(neogeo_apu_bridge_step(&bridge, NULL, NULL));
+    assert(bridge.triangle_linear_counter == 0u);
+
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0);
+    assert(bridge.pulse_length[0] == 0u);
+    assert(bridge.pulse_length[1] == 0u);
+    assert(bridge.triangle_length == 0u);
+    assert(bridge.noise_length == 0u);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x0fu);
+    assert(bridge.pulse_length[1] == 0u);
+    assert(bridge.noise_length == 0u);
+}
+
+static void test_adpcm_triangle_and_independent_noise(void) {
+    NeogeoApuBridge bridge;
+    WriteCapture capture;
+    uint16_t expected_delta;
+
+    neogeo_apu_bridge_init(&bridge);
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x0cu);
+    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x84u);
+    neogeo_apu_bridge_write(&bridge, 0x400au, 0x40u);
+    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x09u);
+    neogeo_apu_bridge_write(&bridge, 0x400cu, 0x3au);
+    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x88u);
+    neogeo_apu_bridge_write(&bridge, 0x400fu, 0x58u);
+
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(capture.count == NEOGEO_APU_YM_REGISTER_COUNT);
+    assert(!captured_register(&capture, 4u));
+    assert(!captured_register(&capture, 5u));
+    assert(captured_value(&capture, 6u) == 14u);
+    assert(captured_value(&capture, 7u) == 0x1fu);
+    assert(captured_value(&capture, 10u) == 10u);
+
+    expected_delta = (uint16_t)((4222604u + 160u) / 321u);
+    assert(bridge.triangle_timer == 320u);
+    assert(bridge.triangle_delta_n == expected_delta);
+    assert(captured_value(&capture, 0x10u) == 0x90u);
+    assert(captured_value(&capture, 0x11u) == 0xc0u);
+    assert(captured_value(&capture, 0x12u) == 0u);
+    assert(captured_value(&capture, 0x13u) == 0u);
+    assert(captured_value(&capture, 0x14u) == 0xffu);
+    assert(captured_value(&capture, 0x15u) == 0u);
+    assert(captured_value(&capture, 0x19u) == (uint8_t)expected_delta);
+    assert(
+        captured_value(&capture, 0x1au) ==
+        (uint8_t)(expected_delta >> 8)
+    );
+    assert(captured_value(&capture, 0x1bu) == 0x70u);
+    assert(capture.regs[capture.count - 1u] == 0x10u);
+
+    /* Removing noise leaves the independently looping triangle untouched. */
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x04u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 7u) == 0x3fu);
+    assert(captured_value(&capture, 10u) == 0u);
+    assert(!captured_register(&capture, 0x10u));
+
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 0x10u) == 0x01u);
+
+    /* Triangle timer periods zero through two remain muted. */
+    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x04u);
+    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x84u);
+    neogeo_apu_bridge_write(&bridge, 0x400au, 2u);
+    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x08u);
+    neogeo_apu_bridge_invalidate(&bridge);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 0x10u) == 0x01u);
+
+    neogeo_apu_bridge_write(&bridge, 0x400au, 3u);
+    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x08u);
+    reset_capture(&capture);
+    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
+    assert(captured_value(&capture, 0x10u) == 0x90u);
+}
+
 int main(void) {
     NeogeoApuBridge bridge;
     WriteCapture capture;
@@ -200,6 +364,8 @@ int main(void) {
 
     test_pulse_sweep_targets_and_cadence();
     test_pulse_sweep_mute_and_coalescing();
+    test_length_and_triangle_linear_counters();
+    test_adpcm_triangle_and_independent_noise();
 
     reset_capture(&capture);
     neogeo_apu_bridge_init(&bridge);
@@ -210,6 +376,11 @@ int main(void) {
     assert(captured_value(&capture, 8) == 0u);
     assert(captured_value(&capture, 9) == 0u);
     assert(captured_value(&capture, 10) == 0u);
+    assert(captured_value(&capture, 0x10u) == 0x01u);
+    assert(captured_value(&capture, 0x11u) == 0xc0u);
+    assert(captured_value(&capture, 0x14u) == 0xffu);
+    assert(captured_value(&capture, 0x1bu) == 0x70u);
+    assert(capture.regs[capture.count - 1u] == 0x10u);
 
     reset_capture(&capture);
     assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
@@ -263,36 +434,6 @@ int main(void) {
     reset_capture(&capture);
     assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
     assert(captured_value(&capture, 8) == 0x0eu);
-
-    /* Triangle and noise share SSG C's tone/noise mixer without floats. */
-    neogeo_apu_bridge_write(&bridge, 0x4015u, 0x0cu);
-    neogeo_apu_bridge_write(&bridge, 0x4008u, 0x1fu);
-    neogeo_apu_bridge_write(&bridge, 0x400au, 0x40u);
-    neogeo_apu_bridge_write(&bridge, 0x400bu, 0x01u);
-    neogeo_apu_bridge_write(&bridge, 0x400cu, 0x1au);
-    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x08u);
-    neogeo_apu_bridge_write(&bridge, 0x400fu, 0);
-    reset_capture(&capture);
-    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    expected_period = (uint16_t)((321u * 572u + 128u) >> 8);
-    assert(captured_value(&capture, 4) == (uint8_t)expected_period);
-    assert(captured_value(&capture, 5) == (uint8_t)(expected_period >> 8));
-    assert(captured_value(&capture, 6) == 14u);
-    assert(captured_value(&capture, 7) == 0x1bu);
-    assert(captured_value(&capture, 10) == 12u);
-
-    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x03u);
-    reset_capture(&capture);
-    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    assert(captured_value(&capture, 6) == 2u);
-    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x0au);
-    reset_capture(&capture);
-    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    assert(captured_value(&capture, 6) == 27u);
-    neogeo_apu_bridge_write(&bridge, 0x400eu, 0x0cu);
-    reset_capture(&capture);
-    assert(neogeo_apu_bridge_step(&bridge, capture_write, &capture));
-    assert(captured_value(&capture, 6) == 31u);
 
     /* A failed transport write remains dirty and is retried next frame. */
     neogeo_apu_bridge_invalidate(&bridge);

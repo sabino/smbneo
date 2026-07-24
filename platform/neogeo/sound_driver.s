@@ -2,7 +2,8 @@
 ;;; Integer-only NES APU state receiver for the Neo Geo YM2610 SSG.
 ;;;
 ;;; The MC68000 sends each target register as three acknowledged commands:
-;;;   $1r selects SSG register r
+;;;   $1r selects port-A register $0r
+;;;   $4r selects port-A register $1r
 ;;;   $2h stores the value's high nibble
 ;;;   $3l stores its low nibble and commits the write
 ;;;
@@ -27,7 +28,7 @@ cmd_jmptable::
         jp      snd_command_unused
         .endm
 
-        ;; $10-$1f: YM2610 SSG register selector.
+        ;; $10-$1f: YM2610 port-A register $00-$0f selector.
         .rept   16
         jp      apu_select_register
         .endm
@@ -42,6 +43,11 @@ cmd_jmptable::
         jp      apu_commit_low_nibble
         .endm
 
+        ;; $40-$4f: YM2610 port-A register $10-$1f selector.
+        .rept   16
+        jp      apu_select_high_register
+        .endm
+
         init_unused_cmd_jmptable
 
 apu_ready_ping:
@@ -49,6 +55,12 @@ apu_ready_ping:
 
 apu_select_register:
         and     a, #0x0f
+        ld      (apu_pending_register), a
+        ret
+
+apu_select_high_register:
+        and     a, #0x0f
+        or      a, #0x10
         ld      (apu_pending_register), a
         ret
 

@@ -77,6 +77,7 @@ CROM2 := $(ROMDIR)/$(GAMEROM)-c2.c2
 SROM1 := $(ROMDIR)/$(GAMEROM)-s1.s1
 MROM1 := $(ROMDIR)/$(GAMEROM)-m1.m1
 VROM1 := $(ROMDIR)/$(GAMEROM)-v1.v1
+TRIANGLE_VROM := $(BUILD)/$(GAMEROM)-triangle-v1.v1
 CART := $(ROMDIR)/$(GAMEROM).zip
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
@@ -124,8 +125,9 @@ SOUND_DRIVER_MAP := $(BUILD)/smbneogeo-sound.map
 SOUND_DRIVER_CHECKER := $(ROOT)/tools/check_neogeo_sound_driver.py
 SOUND_DRIVER_LIBRARY := $(NG_Z80_LIB)/nullsound.lib
 SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
-ZERO_VROM_SHA256 := \
-	07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541
+TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
+TRIANGLE_VROM_SHA256 := \
+	c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7
 REPLAY_POLICY_FLAG := \
 	$(if $(filter 1,$(REPLAY_HARDWARE_PLAYABLE)),--hardware-playable,)
 REPLAY_FAST_FLAG := \
@@ -165,6 +167,10 @@ $(SOUND_DRIVER) $(SOUND_DRIVER_MAP) &: \
 verify-sound-driver: \
 		$(SOUND_DRIVER) $(SOUND_DRIVER_MAP) $(SOUND_DRIVER_CHECKER)
 	$(PYTHON) $(SOUND_DRIVER_CHECKER) $(SOUND_DRIVER_MAP)
+
+$(TRIANGLE_VROM): $(TRIANGLE_VROM_GENERATOR) | $(BUILD)
+	$(PYTHON) $(TRIANGLE_VROM_GENERATOR) $@
+	echo "$(TRIANGLE_VROM_SHA256)  $@" | sha256sum -c -
 
 $(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -317,7 +323,9 @@ $(TITLE_SOURCE): FORCE | $(ASSETDIR)
 
 FORCE:
 
-cart: assets $(CART_TARGET) verify-sound-driver | $(ROMDIR) $(ASSETDIR)
+cart: \
+		assets $(CART_TARGET) verify-sound-driver $(TRIANGLE_VROM) \
+		| $(ROMDIR) $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
@@ -333,8 +341,8 @@ cart: assets $(CART_TARGET) verify-sound-driver | $(ROMDIR) $(ASSETDIR)
 	$(Z80_OBJCOPY) -I ihex -O binary \
 		$(SOUND_DRIVER) $(MROM1) \
 		--pad-to 131072
-	dd if=/dev/zero of=$(VROM1) bs=524288 count=1 status=none
-	echo "$(ZERO_VROM_SHA256)  $(VROM1)" | sha256sum -c -
+	cp $(TRIANGLE_VROM) $(VROM1)
+	echo "$(TRIANGLE_VROM_SHA256)  $(VROM1)" | sha256sum -c -
 	chmod 0644 $(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
 	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
 		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
@@ -361,7 +369,9 @@ run: cart
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
 
-replay-cart: assets $(REPLAY_TARGET) verify-sound-driver | $(REPLAY_ROMDIR)
+replay-cart: \
+		assets $(REPLAY_TARGET) verify-sound-driver $(TRIANGLE_VROM) \
+		| $(REPLAY_ROMDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
 		exit 2; \
@@ -381,8 +391,8 @@ replay-cart: assets $(REPLAY_TARGET) verify-sound-driver | $(REPLAY_ROMDIR)
 	$(Z80_OBJCOPY) -I ihex -O binary \
 		$(SOUND_DRIVER) $(REPLAY_MROM1) \
 		--pad-to 131072
-	dd if=/dev/zero of=$(REPLAY_VROM1) bs=524288 count=1 status=none
-	echo "$(ZERO_VROM_SHA256)  $(REPLAY_VROM1)" | sha256sum -c -
+	cp $(TRIANGLE_VROM) $(REPLAY_VROM1)
+	echo "$(TRIANGLE_VROM_SHA256)  $(REPLAY_VROM1)" | sha256sum -c -
 	chmod 0644 \
 		$(REPLAY_PROM) $(REPLAY_CROM1) $(REPLAY_CROM2) \
 		$(REPLAY_SROM1) $(REPLAY_MROM1) $(REPLAY_VROM1)

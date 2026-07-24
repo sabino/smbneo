@@ -127,16 +127,15 @@ Select. In GnGeo, the defaults are arrow keys, `A`, `S`, `1`, and `2`,
 respectively. Press `1` at the title screen before trying to move. Impossible
 left+right or up+down keyboard pairs are neutralized.
 
-The native audio MVP maps the two pulse voices to YM2610 SSG A/B and an
-approximation of the triangle and noise voices to shared SSG C. A custom Z80
-M1 driver receives acknowledged, coalesced register updates from the MC68000;
-the cartridge does not yet use ADPCM samples. This is the native-audio MVP,
-not a cycle- or waveform-exact reproduction. Pulse sweep is modeled in
-software with its divider, target-mute, and per-channel negate behavior.
-Pulse duty, length/linear counters, short-noise mode, and direct DAC behavior
-remain unsupported, while concurrent triangle and noise are constrained by
-the SSG's shared channel mixer. Physical AES/MVS-compatible hardware
-validation is also still pending.
+Native audio maps the two pulse voices to YM2610 SSG A/B, percussion noise to
+SSG C, and the triangle voice to an independently pitched looping ADPCM-B
+waveform. A custom Z80 M1 driver receives acknowledged, coalesced port-A
+register updates from the MC68000, while a deterministic 512 KiB V1 contains
+the generated triangle loop. Pulse sweep, hardware length counters, and the
+triangle linear counter are modeled in software. This is substantially closer
+to the source mix, but it is not cycle- or waveform-exact: SSG pulse duty,
+short-noise mode, direct DAC behavior, sub-frame register timing, and physical
+AES/MVS-compatible hardware validation remain open.
 After building the cartridge, `tools/probe_neogeo_audio.py` supplies a bounded
 normal-mode smoke test: it enters gameplay under an isolated emulator
 configuration, records an exact post-activation interval through an SDL disk

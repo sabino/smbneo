@@ -6,7 +6,13 @@
 #include <stdint.h>
 
 enum {
-    NEOGEO_APU_YM_REGISTER_COUNT = 11
+    /*
+     * The bridge emits nine SSG registers and nine ADPCM-B registers.
+     * REGISTER_LIMIT is the exclusive upper bound used by the coalescer;
+     * REGISTER_COUNT is the number of registers in the explicit write order.
+     */
+    NEOGEO_APU_YM_REGISTER_LIMIT = 0x1c,
+    NEOGEO_APU_YM_REGISTER_COUNT = 18
 };
 
 typedef bool (*NeogeoApuYmWrite)(
@@ -28,21 +34,25 @@ typedef struct {
     uint8_t pulse_sweep_reload[2];
     uint8_t pulse_sweep_mute[2];
     uint16_t pulse_timer[2];
-    uint8_t pulse_active[2];
+    uint8_t pulse_length[2];
     NeogeoApuEnvelope pulse_envelope[2];
 
     uint8_t triangle_control;
     uint16_t triangle_timer;
-    uint8_t triangle_active;
+    uint16_t triangle_delta_n;
+    uint8_t triangle_length;
+    uint8_t triangle_linear_counter;
+    uint8_t triangle_linear_reload;
 
     uint8_t noise_control;
     uint8_t noise_period;
-    uint8_t noise_active;
+    uint8_t noise_mode;
+    uint8_t noise_length;
     NeogeoApuEnvelope noise_envelope;
 
     uint8_t master_enable;
-    uint8_t sent_registers[NEOGEO_APU_YM_REGISTER_COUNT];
-    uint16_t sent_valid;
+    uint8_t sent_registers[NEOGEO_APU_YM_REGISTER_LIMIT];
+    uint32_t sent_valid;
 } NeogeoApuBridge;
 
 void neogeo_apu_bridge_init(NeogeoApuBridge *bridge);
@@ -53,10 +63,10 @@ void neogeo_apu_bridge_write(
 );
 
 /*
- * Emit only changed YM2610 SSG registers, then advance the three NES-style
- * volume envelopes and two pulse sweep units by one 60 Hz game frame. A null
- * writer advances state without acknowledging any registers, which is useful
- * while the Z80 starts.
+ * Emit only changed YM2610 SSG/ADPCM-B registers, then advance the NES-style
+ * envelopes, length/linear counters, and pulse sweep units by one 60 Hz game
+ * frame. A null writer advances state without acknowledging any registers,
+ * which is useful while the Z80 starts.
  */
 bool neogeo_apu_bridge_step(
     NeogeoApuBridge *bridge,
