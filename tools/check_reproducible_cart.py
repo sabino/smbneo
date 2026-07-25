@@ -15,6 +15,8 @@ import sys
 import tempfile
 from typing import Iterable, Sequence
 
+import puzzledp_compat
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 NEOGEO_DIR = REPOSITORY_ROOT / "platform" / "neogeo"
@@ -35,6 +37,13 @@ class ArtifactResult:
     sha256: str
 
 
+@dataclass(frozen=True)
+class Archive:
+    label: str
+    filename: str
+    compatibility_profile: bool = False
+
+
 REGIONS = (
     Region("P", "smbneogeo-p1.p1", 1024 * 1024),
     Region("C1", "smbneogeo-c1.c1", 2 * 1024 * 1024),
@@ -43,7 +52,10 @@ REGIONS = (
     Region("M", "smbneogeo-m1.m1", 128 * 1024),
     Region("V", "smbneogeo-v1.v1", 512 * 1024),
 )
-CART_FILENAME = "smbneogeo.zip"
+ARCHIVES = (
+    Archive("Compatibility ZIP", "puzzledp.zip", compatibility_profile=True),
+    Archive("Hardware ZIP", "smbneogeo.zip"),
+)
 MANIFEST_FILENAME = "asset-manifest.json"
 
 
@@ -174,11 +186,23 @@ def _validate_build(build_dir: Path, build_label: str) -> list[str]:
                 f"expected {region.expected_size} ({path})"
             )
 
-    cart_path = _artifact_path(build_dir, CART_FILENAME)
-    if not cart_path.is_file():
-        issues.append(f"{build_label} is missing final ZIP: {cart_path}")
-    elif cart_path.stat().st_size == 0:
-        issues.append(f"{build_label} final ZIP is empty: {cart_path}")
+    for archive in ARCHIVES:
+        cart_path = _artifact_path(build_dir, archive.filename)
+        if not cart_path.is_file():
+            issues.append(
+                f"{build_label} is missing {archive.label}: {cart_path}"
+            )
+        elif cart_path.stat().st_size == 0:
+            issues.append(
+                f"{build_label} {archive.label} is empty: {cart_path}"
+            )
+        elif archive.compatibility_profile:
+            try:
+                puzzledp_compat.validate_archive(cart_path)
+            except puzzledp_compat.CompatibilityError as error:
+                issues.append(
+                    f"{build_label} {archive.label} is invalid: {error}"
+                )
 
     issues.extend(_validate_manifest(build_dir, build_label))
     return issues
@@ -197,6 +221,7 @@ def _run_build(
         "-C",
         str(neogeo_dir),
         "cart",
+        "hardware-cart",
         f"BUILD={build_dir}",
         f"SMB_ROM={rom}",
     ]
@@ -267,15 +292,16 @@ def check_reproducible_cart(
             if issue is not None:
                 issues.append(issue)
 
-        result, issue = _compare_artifact(
-            "ZIP",
-            _artifact_path(first_build, CART_FILENAME),
-            _artifact_path(second_build, CART_FILENAME),
-        )
-        if result is not None:
-            results.append(result)
-        if issue is not None:
-            issues.append(issue)
+        for archive in ARCHIVES:
+            result, issue = _compare_artifact(
+                archive.label,
+                _artifact_path(first_build, archive.filename),
+                _artifact_path(second_build, archive.filename),
+            )
+            if result is not None:
+                results.append(result)
+            if issue is not None:
+                issues.append(issue)
 
         if issues:
             raise CartCheckError(issues)

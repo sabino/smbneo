@@ -2,7 +2,7 @@ import {
   EXPECTED_NES_SHA1,
   adaptCartridgeForWeb,
   buildCartridgeFromNes,
-  buildFbneoEntries,
+  buildPuzzledpEntries,
   classifyInput,
   formatBytes,
   sha1Hex,
@@ -82,7 +82,7 @@ async function loadConfig() {
   const config = await response.json();
   if (
     config.project !== "SMBNeo" ||
-    config.fbneo_driver !== "19yy" ||
+    config.fbneo_driver !== "puzzledp" ||
     !Number.isInteger(config.title_patch_offset)
   ) {
     throw new Error("player configuration is not compatible with this build");
@@ -105,14 +105,14 @@ function zipEntries(entries) {
 function installEmulator(gameArchive, config) {
   const gameFile = new File(
     [gameArchive],
-    "19yy.zip",
+    "puzzledp.zip",
     { type: "application/zip" }
   );
 
   window.EJS_player = "#game";
   window.EJS_core = "fbneo";
-  window.EJS_gameName = "19yy";
-  window.EJS_gameID = 64002;
+  window.EJS_gameName = "puzzledp";
+  window.EJS_gameID = 202;
   window.EJS_gameUrl = gameFile;
   window.EJS_biosUrl =
     new URL(config.bios.path, document.baseURI).href;
@@ -216,16 +216,15 @@ async function prepareSelectedFile(file) {
     );
   }
 
-  const biosBytes = await fetchVerifiedBytes(
+  await fetchVerifiedBytes(
     config.bios.path,
     config.bios.sha256,
     "open Neo Geo BIOS"
   );
-  const biosEntries = window.fflate.unzipSync(biosBytes);
 
   setStatus("Preparing the FBNeo compatibility package…", "busy");
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  const fbneoEntries = buildFbneoEntries(
+  const fbneoEntries = buildPuzzledpEntries(
     cartridge,
     (completed, total) => {
       if (completed < total) {
@@ -238,10 +237,7 @@ async function prepareSelectedFile(file) {
   );
 
   setStatus("Compressing the browser cartridge…", "busy");
-  const launchArchive = await zipEntries({
-    ...fbneoEntries,
-    ...biosEntries,
-  });
+  const launchArchive = await zipEntries(fbneoEntries);
   playerState.archiveBytes = launchArchive.length;
   playerState.phase = "loading-emulator";
   setStatus(

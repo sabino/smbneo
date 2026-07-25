@@ -5,7 +5,7 @@ import test from "node:test";
 import {
   adaptCartridgeForWeb,
   buildCartridgeFromNes,
-  buildFbneoEntries,
+  buildPuzzledpEntries,
   buildGraphics,
   classifyInput,
   crc32,
@@ -100,7 +100,7 @@ test("title payload is placed in the word-swapped P-ROM", () => {
   assert.equal(patched[offset + 0x0139], title[0x0138]);
 });
 
-test("a native cartridge receives the FBNeo-specific P-ROM", () => {
+test("a native cartridge receives the web-specific P-ROM", () => {
   const titleOffset = 0x046a;
   const title = Uint8Array.from(
     { length: 0x013a },
@@ -147,7 +147,7 @@ test("tail CRC correction preserves content and reaches the target", () => {
   assert.deepEqual(patched.slice(0, 128), input.slice(0, 128));
 });
 
-test("NES input becomes a complete FBNeo compatibility set", () => {
+test("NES input becomes an exact puzzledp compatibility set", () => {
   const template = {
     "smbneogeo-p1.p1": new Uint8Array(CART_SIZES.p),
     "smbneogeo-m1.m1": new Uint8Array(CART_SIZES.m),
@@ -165,19 +165,92 @@ test("NES input becomes a complete FBNeo compatibility set", () => {
     assert.equal(cartridge[part].length, size, part);
   }
 
-  const entries = buildFbneoEntries(cartridge);
+  const entries = buildPuzzledpEntries(cartridge);
   const expected = {
-    "19yy-p1.p1": [0x200000, 0x59374c47],
-    "19yy-s1.s1": [0x020000, 0x219b6f40],
-    "19yy-c1.c1": [0x400000, 0x622719d5],
-    "19yy-c2.c2": [0x400000, 0x41b07be5],
-    "19yy-m1.m1": [0x020000, 0x8e05762a],
-    "19yy-v1.v1": [0x800000, 0x944146c2],
-    "19yy-v2.v2": [0x800000, 0xa4bafe45],
+    "202-p1.bin": [0x080000, 0x2b61415b],
+    "202-s1.bin": [0x020000, 0xcd19264f],
+    "202-m1.bin": [0x020000, 0x9c0291ea],
+    "202-v1.bin": [0x080000, 0xdebeb8fb],
+    "202-c1.bin": [0x100000, 0xcc0095ef],
+    "202-c2.bin": [0x100000, 0x42371307],
   };
+  assert.deepEqual(Object.keys(entries).sort(), Object.keys(expected).sort());
   for (const [name, [size, expectedCrc]] of Object.entries(expected)) {
     assert.equal(entries[name].length, size, name);
     assert.equal(crc32(entries[name]), expectedCrc, name);
+  }
+});
+
+test("puzzledp P-ROM keeps address-zero word-swap loading semantics", () => {
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  cartridge.p.fill(0xff);
+  cartridge.p.set([0x12, 0x34, 0x56, 0x78], 0);
+
+  const pRom = buildPuzzledpEntries(cartridge)["202-p1.bin"];
+  assert.deepEqual([...pRom.slice(0, 4)], [0x12, 0x34, 0x56, 0x78]);
+  assert.deepEqual(
+    [pRom[1], pRom[0], pRom[3], pRom[2]],
+    [0x34, 0x12, 0x78, 0x56],
+  );
+});
+
+test("puzzledp conversion rejects live bytes in omitted or CRC padding", () => {
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  cartridge.p.fill(0xff);
+
+  const omittedLive = { ...cartridge, c1: cartridge.c1.slice() };
+  omittedLive.c1[0x100000] = 0x41;
+  assert.throws(
+    () => buildPuzzledpEntries(omittedLive),
+    /cannot omit byte 100000/,
+  );
+
+  const tailLive = { ...cartridge, v: cartridge.v.slice() };
+  tailLive.v[tailLive.v.length - 16] = 0x41;
+  assert.throws(
+    () => buildPuzzledpEntries(tailLive),
+    /safe zero\/FF padding run/,
+  );
+});
+
+test("a generated puzzledp set can be uploaded and rebuilt byte-for-byte", () => {
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  cartridge.p.fill(0xff);
+  for (let index = 0; index < 4096; index += 1) {
+    for (const [partIndex, part] of ["p", "m", "v", "s", "c1", "c2"].entries()) {
+      cartridge[part][index] = (index * 13 + partIndex * 37) & 0xff;
+    }
+  }
+  const entries = buildPuzzledpEntries(cartridge);
+  const zipSignature = Uint8Array.from([0x50, 0x4b, 0x03, 0x04]);
+  const source = classifyInput(zipSignature, () => entries);
+  assert.equal(source.kind, "cartridge");
+
+  const rebuilt = buildPuzzledpEntries(source.cartridge);
+  assert.deepEqual(Object.keys(rebuilt).sort(), Object.keys(entries).sort());
+  for (const name of Object.keys(entries)) {
+    assert.deepEqual(rebuilt[name], entries[name], name);
   }
 });
 
@@ -192,4 +265,7 @@ test("the browser mapping uses arrow keys for movement", async () => {
   assert.match(playerSource, /value: "right arrow", value2: "DPAD_RIGHT"/);
   assert.match(playerSource, /value: "a", value2: "BUTTON_2"/);
   assert.match(playerSource, /value: "s", value2: "BUTTON_1"/);
+  assert.match(playerSource, /EJS_gameName = "puzzledp"/);
+  assert.match(playerSource, /zipEntries\(fbneoEntries\)/);
+  assert.doesNotMatch(playerSource, /\.\.\.biosEntries/);
 });

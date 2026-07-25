@@ -97,7 +97,8 @@ SROM1 := $(ROMDIR)/$(GAMEROM)-s1.s1
 MROM1 := $(ROMDIR)/$(GAMEROM)-m1.m1
 VROM1 := $(ROMDIR)/$(GAMEROM)-v1.v1
 TRIANGLE_VROM := $(BUILD)/$(GAMEROM)-triangle-v1.v1
-CART := $(ROMDIR)/$(GAMEROM).zip
+COMPAT_CART := $(ROMDIR)/puzzledp.zip
+HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
@@ -167,6 +168,7 @@ SOUND_DRIVER_LIBRARY := $(NG_Z80_LIB)/nullsound.lib
 SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
 TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
 WEB_PLAYER_BUILDER := $(ROOT)/tools/build_web_player.py
+PUZZLEDP_COMPAT_BUILDER := $(ROOT)/tools/puzzledp_compat.py
 WEB_BIOS ?= $(NG_SHARE)/neogeo.zip
 MAME_SOFTWARE_GENERATOR := $(ROOT)/tools/gen_mame_neogeo_software.py
 MAME_CAPTURE_SCRIPT := $(ROOT)/tools/mame/smbneo_capture.lua
@@ -180,7 +182,8 @@ REPLAY_FAST_FLAG := \
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen verify-sound-driver assets cart run web \
+	all elf test verify verify-codegen verify-sound-driver assets \
+	native-roms cart compat-cart hardware-cart run web \
 	mame-list mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
@@ -403,16 +406,11 @@ $(TITLE_SOURCE): FORCE | $(ASSETDIR)
 
 FORCE:
 
-cart: \
+native-roms: \
 		assets $(CART_TARGET) verify-sound-driver $(TRIANGLE_VROM) \
 		| $(ROMDIR) $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
-		exit 2; \
-	}
-	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
-		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
-		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
 		exit 2; \
 	}
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(CART_TARGET)
@@ -431,12 +429,27 @@ cart: \
 	chmod 0644 $(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
 	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
 		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
+
+cart: compat-cart
+
+compat-cart: native-roms $(PUZZLEDP_COMPAT_BUILDER)
+	$(PYTHON) $(PUZZLEDP_COMPAT_BUILDER) \
+		--rom-dir $(ROMDIR) \
+		--output $(COMPAT_CART)
+	@echo "Default emulator cartridge: $(COMPAT_CART)"
+
+hardware-cart: native-roms
+	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
+		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
+		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
+		exit 2; \
+	}
 	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
 		-n $(GAMEROM) -l "SMBNeo" \
 		-y 2026 --publisher "Community port" \
-		-o $(CART)
+		-o $(HARDWARE_CART)
 	$(ROMTOOL) -b hash -f gngeo \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
@@ -445,16 +458,16 @@ cart: \
 		-o $(GNGEO_DATA)
 	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
 	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
-	@echo "Built $(CART)"
+	@echo "Canonical hardware cartridge: $(HARDWARE_CART)"
 
-run: cart
+run: hardware-cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		$(GNGEO_REALTIME_FLAGS) \
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
 
-mame-list: cart | $(MAME_HASHDIR)
+mame-list: hardware-cart | $(MAME_HASHDIR)
 	$(PYTHON) $(MAME_SOFTWARE_GENERATOR) \
 		--rom-dir $(ROMDIR) \
 		--output $(MAME_SOFTWARE_LIST)

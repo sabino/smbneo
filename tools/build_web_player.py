@@ -17,7 +17,7 @@ import zipfile
 
 
 PROJECT_NAME = "SMBNeo"
-FBNEO_DRIVER = "19yy"
+FBNEO_DRIVER = "puzzledp"
 EXPECTED_NES_SHA1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922"
 TITLE_SYMBOL = "neogeo_title_screen_data"
 TITLE_BYTES = 0x013A

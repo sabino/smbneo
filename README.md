@@ -15,7 +15,8 @@ progress, but the game is playable from the title screen through the ending.
 **[Launch SMBNeo in your browser](https://sabino.pro/smbneo/)**
 
 Choose your own supported `.nes` file, ZIP, or locally built
-`smbneogeo.zip`. The file stays in your browser and is never uploaded.
+`puzzledp.zip`/`smbneogeo.zip`. The file stays in your browser and is never
+uploaded.
 
 Use the arrow keys to move, `A` to jump, `S` to run or throw fireballs, `1`
 to start, and `2` to select.
@@ -71,12 +72,27 @@ make run SMB_ROM="/path/to/smb.zip"
 The supported game revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`.
 
-The build creates the Neo Geo cartridge locally under
-`platform/neogeo/build/`. Generated graphics and cartridge files are ignored
-by Git and must not be redistributed.
+`make cart` creates the default emulator package at
+`platform/neogeo/build/rom/puzzledp.zip`. FBNeo and NEO.emu recognize it
+through their Puzzle De Pon cartridge profile. It contains SMBNeo data, not
+Puzzle De Pon data, and needs a separate emulator-compatible `neogeo.zip`
+BIOS file.
+
+`make run` builds and launches the full native cartridge through ngdevkit
+GnGeo. To build that canonical hardware/MAME/GnGeo archive without launching
+the emulator, use:
+
+```bash
+make hardware-cart SMB_ROM="/path/to/smb.zip"
+```
+
+That archive is `platform/neogeo/build/rom/smbneogeo.zip`. Generated graphics
+and cartridge files are ignored by Git and must not be redistributed.
 
 The versions used for the current build are listed in
 [Tested toolchain](docs/TESTED_TOOLCHAIN.md).
+Exact FBNeo, NEO.emu, MAME, GnGeo, BIOS, and hardware package instructions are
+in [Emulator and cartridge packages](docs/EMULATOR_COMPATIBILITY.md).
 
 ### Hardware-accurate emulator check
 
@@ -144,6 +160,7 @@ For contribution guidelines and deeper technical information, see:
 
 - [Contributing](CONTRIBUTING.md)
 - [Neo Geo port architecture](docs/NEOGEO_PORT.md)
+- [Emulator and cartridge packages](docs/EMULATOR_COMPATIBILITY.md)
 - [Visual fidelity](docs/VISUAL_FIDELITY.md)
 - [Changelog](CHANGELOG.md)
 

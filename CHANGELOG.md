@@ -14,5 +14,7 @@
 - Added ROM-free host CI.
 - Added a ROM-free browser player with local game conversion, arrow-key
   controls, and GitHub Pages deployment.
+- Made the exact `puzzledp` profile the default FBNeo/NEO.emu package while
+  retaining the full native `smbneogeo.zip` for hardware, MAME, and GnGeo.
 - Focused the active fork branch on Neo Geo and removed the upstream desktop,
   original WebAssembly, and 3DS frontends.

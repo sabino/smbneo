@@ -127,7 +127,7 @@ class WebPlayerBuilderTests(unittest.TestCase):
 
             manifest = json.loads(first_manifest)
             self.assertEqual(manifest["project"], "SMBNeo")
-            self.assertEqual(manifest["fbneo_driver"], "19yy")
+            self.assertEqual(manifest["fbneo_driver"], "puzzledp")
             self.assertEqual(manifest["title_patch_offset"], 0x046A)
             self.assertFalse(manifest["privacy"]["game_image_included"])
             self.assertFalse(

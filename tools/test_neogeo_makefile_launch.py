@@ -34,6 +34,22 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         self.assertIn("--68kclock=0", flags)
         self.assertIn("--z80clock=0", flags)
 
+    def test_default_and_hardware_cartridge_targets_are_separate(self) -> None:
+        self.assertIn(
+            "COMPAT_CART := $(ROMDIR)/puzzledp.zip",
+            self.makefile,
+        )
+        self.assertIn(
+            "HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip",
+            self.makefile,
+        )
+        self.assertIn("cart: compat-cart", self.makefile)
+        self.assertIn("compat-cart: native-roms", self.makefile)
+        self.assertIn("hardware-cart: native-roms", self.makefile)
+        self.assertIn("--output $(COMPAT_CART)", self.makefile)
+        self.assertIn("-o $(HARDWARE_CART)", self.makefile)
+        self.assertIn("run: hardware-cart", self.makefile)
+
     def test_both_interactive_recipes_use_realtime_flags(self) -> None:
         for target in ("run", "replay-run"):
             match = re.search(
@@ -50,7 +66,7 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
             )
 
     def test_mame_capture_is_isolated_and_scripted(self) -> None:
-        self.assertIn("mame-list: cart", self.makefile)
+        self.assertIn("mame-list: hardware-cart", self.makefile)
         self.assertIn("MAME_SYSTEM ?= ng_mv1", self.makefile)
         self.assertIn(
             "$(MAME) $(MAME_SYSTEM) $(GAMEROM)",

@@ -49,6 +49,7 @@ jobs:
           make web
           jq -e '
             .project == "SMBNeo" and
+            .fbneo_driver == "puzzledp" and
             .privacy.game_image_included == false and
             .privacy.generated_graphics_included == false and
             .privacy.generated_cartridge_included == false
