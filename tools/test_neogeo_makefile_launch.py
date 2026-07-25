@@ -44,7 +44,11 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         self.assertIn("--68kclock=0", flags)
         self.assertIn("--z80clock=0", flags)
 
-    def test_default_and_hardware_cartridge_targets_are_separate(self) -> None:
+    def test_canonical_default_and_optional_compatibility_targets_are_separate(
+        self,
+    ) -> None:
+        self.assertIn("GAMEROM := smbneo", self.makefile)
+        self.assertIn("--defsym=rom_NGH_ID=0x534d", self.makefile)
         self.assertIn(
             "COMPAT_CART := $(ROMDIR)/puzzledp.zip",
             self.makefile,
@@ -53,21 +57,28 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
             "HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip",
             self.makefile,
         )
-        self.assertIn("cart: compat-cart", self.makefile)
+        self.assertIn("cart: hardware-cart", self.makefile)
         self.assertIn("compat-cart: native-roms", self.makefile)
         self.assertIn("hardware-cart: native-roms", self.makefile)
         self.assertIn("--output $(COMPAT_CART)", self.makefile)
         self.assertIn("-o $(HARDWARE_CART)", self.makefile)
-        self.assertIn("GNGEO_COMPAT_GAME := puzzledp", self.makefile)
-        self.assertIn("run: compat-cart", self.makefile)
+        self.assertNotIn("GNGEO_COMPAT_GAME", self.makefile)
+        self.assertIn("run: hardware-cart", self.makefile)
 
-        run_recipe = self.makefile.split("run: compat-cart", 1)[1].split(
+        run_recipe = self.makefile.split("run: hardware-cart", 1)[1].split(
             "mame-list:",
             1,
         )[0]
-        self.assertIn("-d $(GNGEO_SUPPORT_DATA) $(GNGEO_COMPAT_GAME)", run_recipe)
-        self.assertNotIn("$(GNGEO_DATA)", run_recipe)
-        self.assertNotIn("$(GAMEROM)", run_recipe)
+        self.assertIn("-d $(GNGEO_DATA) $(GAMEROM)", run_recipe)
+        self.assertNotIn("puzzledp", run_recipe)
+
+        hardware_recipe = self.makefile.split(
+            "hardware-cart: native-roms",
+            1,
+        )[1].split("run: hardware-cart", 1)[0]
+        self.assertIn("-n $(GAMEROM)", hardware_recipe)
+        self.assertIn('-l "Super Mario Bros. Neo"', hardware_recipe)
+        self.assertIn("$(GNGEO_DRIVER_CHECKER)", hardware_recipe)
 
     def test_both_interactive_recipes_use_realtime_flags(self) -> None:
         for target in ("run", "replay-run"):

@@ -155,7 +155,7 @@ class CommandConstructionTests(unittest.TestCase):
             "/usr/bin/ngdevkit-gngeo",
             Path("/work/rom"),
             Path("/work/rom/gngeo_data.zip"),
-            "smbneogeo",
+            "smbneo",
             scale=2,
         )
 
@@ -166,7 +166,7 @@ class CommandConstructionTests(unittest.TestCase):
         self.assertIn("--no-sleepidle", command)
         self.assertIn("-D", command)
         self.assertIn("--no-sound", command)
-        self.assertEqual(command[-1], "smbneogeo")
+        self.assertEqual(command[-1], "smbneo")
 
     def test_xvfb_command_requests_an_isolated_dynamic_display(self) -> None:
         command = cadence.build_xvfb_command("Xvfb")

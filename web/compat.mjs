@@ -15,13 +15,15 @@ const SROM_SOLID_TILE = 514;
 const SROM_SIZE = 128 * 1024;
 
 const CART_ENTRIES = Object.freeze({
-  p: "smbneogeo-p1.p1",
-  m: "smbneogeo-m1.m1",
-  v: "smbneogeo-v1.v1",
-  s: "smbneogeo-s1.s1",
-  c1: "smbneogeo-c1.c1",
-  c2: "smbneogeo-c2.c2",
+  p: "smbneo-p1.p1",
+  m: "smbneo-m1.m1",
+  v: "smbneo-v1.v1",
+  s: "smbneo-s1.s1",
+  c1: "smbneo-c1.c1",
+  c2: "smbneo-c2.c2",
 });
+
+const WEB_PROM_ENTRY = "smbneo-web-p1.p1";
 
 const CART_SIZES = Object.freeze({
   p: 0x100000,
@@ -101,7 +103,7 @@ export function classifyInput(input, unzipSync) {
       cartridge[part] = entries.get(name);
     }
     validateCartridgeParts(cartridge);
-    return { kind: "cartridge", cartridge };
+    return { kind: "cartridge", profile: "canonical", cartridge };
   }
 
   const hasPuzzledpCartridge = PUZZLEDP_LAYOUT.every(([name]) =>
@@ -145,7 +147,7 @@ export function classifyInput(input, unzipSync) {
       cartridge[part] = expanded;
     }
     validateCartridgeParts(cartridge);
-    return { kind: "cartridge", cartridge };
+    return { kind: "cartridge", profile: "compatibility", cartridge };
   }
 
   const nesEntries = [...entries.entries()].filter(([name]) =>
@@ -338,20 +340,45 @@ export function adaptCartridgeForWeb(
 ) {
   validateCartridgeParts(cartridge);
   const entries = entriesByBaseName(templateEntries);
+  if (!entries.has(WEB_PROM_ENTRY)) {
+    throw new Error(`browser template is missing ${WEB_PROM_ENTRY}`);
+  }
+
+  const title = new Uint8Array(TITLE_SCREEN_CHR_SIZE);
+  for (let index = 0; index < title.length; index += 1) {
+    title[index] = cartridge.p[titleOffset.native + (index ^ 1)];
+  }
+  return {
+    ...cartridge,
+    p: patchTemplateProm(
+      entries.get(WEB_PROM_ENTRY),
+      title,
+      titleOffset.web
+    ),
+  };
+}
+
+export function adaptCompatibilityCartridgeForNative(
+  cartridge,
+  templateEntries,
+  titleOffset
+) {
+  validateCartridgeParts(cartridge);
+  const entries = entriesByBaseName(templateEntries);
   if (!entries.has(CART_ENTRIES.p)) {
     throw new Error(`browser template is missing ${CART_ENTRIES.p}`);
   }
 
   const title = new Uint8Array(TITLE_SCREEN_CHR_SIZE);
   for (let index = 0; index < title.length; index += 1) {
-    title[index] = cartridge.p[titleOffset + (index ^ 1)];
+    title[index] = cartridge.p[titleOffset.web + (index ^ 1)];
   }
   return {
     ...cartridge,
     p: patchTemplateProm(
       entries.get(CART_ENTRIES.p),
       title,
-      titleOffset
+      titleOffset.native
     ),
   };
 }
@@ -397,6 +424,15 @@ export function validateCartridgeParts(cartridge) {
       );
     }
   }
+}
+
+export function buildCanonicalEntries(cartridge) {
+  validateCartridgeParts(cartridge);
+  const output = {};
+  for (const [part, name] of Object.entries(CART_ENTRIES)) {
+    output[name] = asBytes(cartridge[part]).slice();
+  }
+  return output;
 }
 
 function getCrcTable() {

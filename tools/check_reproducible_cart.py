@@ -19,6 +19,7 @@ import zipfile
 
 import gen_mame_neogeo_software as mame_software
 import puzzledp_compat
+import check_gngeo_driver
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -48,17 +49,19 @@ class Archive:
 
 
 REGIONS = (
-    Region("P", "smbneogeo-p1.p1", 1024 * 1024),
-    Region("C1", "smbneogeo-c1.c1", 2 * 1024 * 1024),
-    Region("C2", "smbneogeo-c2.c2", 2 * 1024 * 1024),
-    Region("S", "smbneogeo-s1.s1", 128 * 1024),
-    Region("M", "smbneogeo-m1.m1", 128 * 1024),
-    Region("V", "smbneogeo-v1.v1", 512 * 1024),
+    Region("P", "smbneo-p1.p1", 1024 * 1024),
+    Region("C1", "smbneo-c1.c1", 2 * 1024 * 1024),
+    Region("C2", "smbneo-c2.c2", 2 * 1024 * 1024),
+    Region("S", "smbneo-s1.s1", 128 * 1024),
+    Region("M", "smbneo-m1.m1", 128 * 1024),
+    Region("V", "smbneo-v1.v1", 512 * 1024),
 )
 ARCHIVES = (
+    Archive("Canonical ZIP", "smbneo.zip"),
     Archive("Compatibility ZIP", "puzzledp.zip", compatibility_profile=True),
-    Archive("Hardware ZIP", "smbneogeo.zip"),
 )
+GNGEO_DATA = "gngeo_data.zip"
+GNGEO_DATA_LABEL = "GnGeo custom driver data"
 MAME_SOFTWARE_LIST = Path("mame") / "hash" / "neogeo.xml"
 MAME_SOFTWARE_LIST_LABEL = "MAME software list"
 MANIFEST_FILENAME = "asset-manifest.json"
@@ -161,6 +164,17 @@ def _validate_manifest(build_dir: Path, build_label: str) -> list[str]:
         return [f"{build_label} asset manifest must contain a JSON object"]
 
     issues = []
+    if manifest.get("product_shortname") != "smbneo":
+        issues.append(
+            f"{build_label} asset manifest has product_shortname="
+            f"{manifest.get('product_shortname')!r}; expected 'smbneo'"
+        )
+    if manifest.get("product_title") != "Super Mario Bros. Neo":
+        issues.append(
+            f"{build_label} asset manifest has product_title="
+            f"{manifest.get('product_title')!r}; "
+            "expected 'Super Mario Bros. Neo'"
+        )
     if manifest.get("verified_revision") is not True:
         issues.append(
             f"{build_label} asset manifest has verified_revision="
@@ -235,8 +249,10 @@ def _validate_mame_software_list(
     software = software_entries[0]
     if software.get("name") != mame_software.GAME_NAME:
         raise ValueError(
-            "MAME XML must use the unique smbneogeo software identity"
+            "MAME XML must use the unique smbneo software identity"
         )
+    if software.findtext("description") != "Super Mario Bros. Neo":
+        raise ValueError("MAME XML must use the Super Mario Bros. Neo title")
 
     parts = software.findall("./part")
     if len(parts) != 1:
@@ -345,6 +361,26 @@ def _validate_build(build_dir: Path, build_label: str) -> list[str]:
                     f"{build_label} {archive.label} is invalid: {error}"
                 )
 
+    gngeo_data_path = _artifact_path(build_dir, GNGEO_DATA)
+    if not gngeo_data_path.is_file():
+        issues.append(
+            f"{build_label} is missing {GNGEO_DATA_LABEL}: {gngeo_data_path}"
+        )
+    elif gngeo_data_path.stat().st_size == 0:
+        issues.append(
+            f"{build_label} {GNGEO_DATA_LABEL} is empty: {gngeo_data_path}"
+        )
+    else:
+        try:
+            check_gngeo_driver.validate_archive(
+                gngeo_data_path,
+                build_dir / "rom",
+            )
+        except check_gngeo_driver.DriverError as error:
+            issues.append(
+                f"{build_label} {GNGEO_DATA_LABEL} is invalid: {error}"
+            )
+
     software_list_path = build_dir / MAME_SOFTWARE_LIST
     if not software_list_path.is_file():
         issues.append(
@@ -381,6 +417,7 @@ def _run_build(
         "-C",
         str(neogeo_dir),
         "cart",
+        "compat-cart",
         "mame-cart",
         f"BUILD={build_dir}",
         f"SMB_ROM={rom}",
@@ -412,7 +449,7 @@ def check_reproducible_cart(
     make_program: str = "make",
     temp_parent: Path | None = None,
 ) -> tuple[ArtifactResult, ...]:
-    """Build twice and compare compatibility, hardware, and MAME output."""
+    """Build twice and compare canonical, compatibility, GnGeo, and MAME output."""
 
     rom = rom.expanduser().resolve()
     neogeo_dir = neogeo_dir.resolve()
@@ -464,6 +501,16 @@ def check_reproducible_cart(
                 issues.append(issue)
 
         result, issue = _compare_artifact(
+            GNGEO_DATA_LABEL,
+            _artifact_path(first_build, GNGEO_DATA),
+            _artifact_path(second_build, GNGEO_DATA),
+        )
+        if result is not None:
+            results.append(result)
+        if issue is not None:
+            issues.append(issue)
+
+        result, issue = _compare_artifact(
             MAME_SOFTWARE_LIST_LABEL,
             first_build / MAME_SOFTWARE_LIST,
             second_build / MAME_SOFTWARE_LIST,
@@ -503,7 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        "Cartridges and MAME software list are reproducible; "
+        "Cartridges, GnGeo driver data, and MAME software list are reproducible; "
         "both isolated builds match exactly:"
     )
     for result in results:

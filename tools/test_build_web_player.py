@@ -65,12 +65,20 @@ class WebPlayerBuilderTests(unittest.TestCase):
             )
             title = root / "title.png"
             title.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-            elf = root / "template.elf"
-            elf.write_bytes(b"ELF fixture")
-            prom = root / "smbneogeo-p1.p1"
-            mrom = root / "smbneogeo-m1.m1"
-            vrom = root / "smbneogeo-v1.v1"
-            prom.write_bytes(bytes(web_builder.TEMPLATE_ENTRIES[prom.name]))
+            native_elf = root / "native-template.elf"
+            native_elf.write_bytes(b"native ELF fixture")
+            web_elf = root / "web-template.elf"
+            web_elf.write_bytes(b"web ELF fixture")
+            native_prom = root / "smbneo-p1.p1"
+            web_prom = root / "smbneo-web-p1.p1"
+            mrom = root / "smbneo-m1.m1"
+            vrom = root / "smbneo-v1.v1"
+            native_prom.write_bytes(
+                bytes(web_builder.TEMPLATE_ENTRIES[native_prom.name])
+            )
+            web_prom.write_bytes(
+                bytes(web_builder.TEMPLATE_ENTRIES[web_prom.name])
+            )
             mrom.write_bytes(bytes(web_builder.TEMPLATE_ENTRIES[mrom.name]))
             vrom.write_bytes(bytes(web_builder.TEMPLATE_ENTRIES[vrom.name]))
 
@@ -83,8 +91,10 @@ class WebPlayerBuilderTests(unittest.TestCase):
 
             output = root / "site"
             args = argparse.Namespace(
-                elf=elf,
-                prom=prom,
+                native_elf=native_elf,
+                native_prom=native_prom,
+                web_elf=web_elf,
+                web_prom=web_prom,
                 mrom=mrom,
                 vrom=vrom,
                 bios=bios,
@@ -109,7 +119,7 @@ class WebPlayerBuilderTests(unittest.TestCase):
                 first_template = (
                     output / "assets" / "smbneo-template.zip"
                 ).read_bytes()
-                first_bios = (output / "assets" / "neogeo.zip").read_bytes()
+                first_bios = (output / "neogeo.zip").read_bytes()
                 web_builder.build(args)
 
             self.assertEqual(
@@ -121,14 +131,31 @@ class WebPlayerBuilderTests(unittest.TestCase):
                 first_template,
             )
             self.assertEqual(
-                (output / "assets" / "neogeo.zip").read_bytes(),
+                (output / "neogeo.zip").read_bytes(),
                 first_bios,
             )
 
             manifest = json.loads(first_manifest)
             self.assertEqual(manifest["project"], "SMBNeo")
+            self.assertEqual(manifest["product"]["shortname"], "smbneo")
+            self.assertEqual(
+                manifest["product"]["title"],
+                "Super Mario Bros. Neo",
+            )
             self.assertEqual(manifest["fbneo_driver"], "puzzledp")
-            self.assertEqual(manifest["title_patch_offset"], 0x046A)
+            self.assertEqual(manifest["bios"]["path"], "neogeo.zip")
+            self.assertEqual(
+                manifest["title_patch_offsets"],
+                {"native": 0x046A, "web": 0x046A},
+            )
+            self.assertEqual(
+                manifest["downloads"]["canonical"]["filename"],
+                "smbneo.zip",
+            )
+            self.assertEqual(
+                manifest["downloads"]["compatibility"]["filename"],
+                "puzzledp.zip",
+            )
             self.assertFalse(manifest["privacy"]["game_image_included"])
             self.assertFalse(
                 manifest["privacy"]["generated_graphics_included"]
@@ -145,7 +172,7 @@ class WebPlayerBuilderTests(unittest.TestCase):
                     set(archive.namelist()),
                     set(web_builder.TEMPLATE_ENTRIES),
                 )
-            with zipfile.ZipFile(output / "assets" / "neogeo.zip") as archive:
+            with zipfile.ZipFile(output / "neogeo.zip") as archive:
                 for name, (_, expected_crc) in web_builder.BIOS_ENTRIES.items():
                     self.assertEqual(archive.getinfo(name).CRC, expected_crc)
 

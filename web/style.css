@@ -55,6 +55,7 @@ a:hover {
 
 a:focus-visible,
 .file-button:focus-visible,
+.download-button:focus-visible,
 input:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 4px;
@@ -309,6 +310,67 @@ kbd {
   font-size: 0.9rem;
 }
 
+.downloads {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 24px;
+  padding: 28px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.download-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 18px;
+}
+
+.download-grid article {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  padding: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.download-grid h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.download-grid p {
+  flex: 1;
+  margin: 8px 0 18px;
+  color: var(--muted);
+}
+
+.download-button {
+  min-height: 44px;
+  padding: 9px 15px;
+  border: 2px solid #79280f;
+  border-bottom-width: 4px;
+  border-radius: 5px;
+  background: var(--brick-light);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+}
+
+.download-button.secondary {
+  border-color: #34436f;
+  background: var(--panel-light);
+}
+
+.download-button:hover {
+  filter: brightness(1.12);
+}
+
+.download-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .privacy {
   display: grid;
   grid-template-columns: 180px 1fr;
@@ -345,6 +407,7 @@ footer p {
   .site-header,
   .intro,
   .controls,
+  .downloads,
   .privacy,
   footer {
     padding-right: 16px;
@@ -363,6 +426,7 @@ footer p {
 
   .intro,
   .controls,
+  .downloads,
   .privacy {
     grid-template-columns: 1fr;
   }
@@ -393,6 +457,10 @@ footer p {
 
   .controller-note {
     grid-column: 1;
+  }
+
+  .download-grid {
+    grid-template-columns: 1fr;
   }
 
   footer {

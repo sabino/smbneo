@@ -148,7 +148,7 @@ class PuzzledpCompatibilityTests(unittest.TestCase):
 
             script = """
 import { readFile, writeFile } from "node:fs/promises";
-import { buildPuzzledpEntries } from %s;
+import { buildCanonicalEntries, buildPuzzledpEntries } from %s;
 const [inputDir, outputDir] = process.argv.slice(1);
 const parts = {};
 for (const part of ["p", "s", "m", "v", "c1", "c2"]) {
@@ -156,6 +156,10 @@ for (const part of ["p", "s", "m", "v", "c1", "c2"]) {
 }
 const entries = buildPuzzledpEntries(parts);
 for (const [name, data] of Object.entries(entries)) {
+  await writeFile(`${outputDir}/${name}`, data);
+}
+const canonical = buildCanonicalEntries(parts);
+for (const [name, data] of Object.entries(canonical)) {
   await writeFile(`${outputDir}/${name}`, data);
 }
 """ % json.dumps(WEB_CONVERTER.as_uri())
@@ -176,6 +180,12 @@ for (const [name, data] of Object.entries(entries)) {
                     (output_dir / name).read_bytes(),
                     expected_data,
                     name,
+                )
+            for region in compatibility.NATIVE_REGIONS:
+                self.assertEqual(
+                    (output_dir / region.filename).read_bytes(),
+                    native[region.part],
+                    region.filename,
                 )
 
 

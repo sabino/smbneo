@@ -489,25 +489,30 @@ exactly one `.nes` member. It:
 7. records a manifest confirming that zero source PRG bytes were written.
 
 The Makefile then builds the one-megabyte native P1, custom Z80 sound-driver
-M1, generated triangle V1, and full C/S regions. `make cart` converts those
-regions into the default `puzzledp.zip` emulator profile. It retains the first
-512 KiB of P1 and first 1 MiB of each C ROM only after proving that every
-omitted byte is native `FF`/zero padding. The six expected driver CRCs are
-reached by changing only the last four bytes of verified padding tails; P1
-remains at offset zero for `load16_word_swap`.
+M1, generated triangle V1, and full C/S regions. `make cart` packages those
+full regions as the authoritative `smbneo.zip`; `make hardware-cart` is an
+explicit alias for that same physical-cartridge layout.
 
-`make hardware-cart` separately packages the full regions as
-`smbneogeo.zip`. `make mame-cart` pairs that archive with a generated
-`build/mame/hash/neogeo.xml` containing the unique `smbneogeo` software
-entry, full region sizes, generated hashes, and explicit MAME loading
-semantics. MAME therefore never needs to describe the canonical build as
-Puzzle De Pon.
+The canonical build also generates `gngeo_data.zip` with one custom
+`rom/smbneo.drv` entry. A validator checks the title, full region sizes,
+filenames, destinations, and CRCs against the native ROM files. The ordinary
+`make run` path therefore launches the project as `smbneo`, not through a
+donor database entry. The cartridge header also uses the project-specific
+unofficial NGH value `0x534d` instead of ngdevkit's generic default.
 
-The ordinary `make run` GnGeo path instead loads `puzzledp.zip` through the
-emulator's bundled fixed database. Custom GnGeo hash output remains available
-for purpose-built replay and diagnostic cartridges, but it is not the public
-identity of the canonical MAME package. Exact loader paths and the separate
-`neogeo.zip` requirement are documented in
+`make mame-cart` pairs `smbneo.zip` with a generated
+`build/mame/hash/neogeo.xml` containing the unique `smbneo` software entry,
+the visible title **Super Mario Bros. Neo**, full region sizes, generated
+hashes, and explicit MAME loading semantics. MAME therefore never needs to
+describe the canonical build as another game.
+
+`make compat-cart` separately generates the optional `puzzledp.zip` profile
+for fixed-database frontends. It retains the first 512 KiB of P1 and first
+1 MiB of each C ROM only after proving that every omitted byte is native
+`FF`/zero padding. The six expected driver CRCs are reached by changing only
+the last four bytes of verified padding tails; P1 remains at offset zero for
+`load16_word_swap`. Exact loader paths and the separate `neogeo.zip`
+requirement are documented in
 [`EMULATOR_COMPATIBILITY.md`](EMULATOR_COMPATIBILITY.md).
 
 A shared V1 target encodes the 64 KiB ADPCM-B loop, pads the image to 512 KiB,
@@ -527,11 +532,12 @@ and identical 105,220-byte cartridge ZIPs with SHA-256
 
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
-sizes, the asset-clean manifest, the exact compatibility archive profile, the
-full native contents of `smbneogeo.zip`, and the unique canonical MAME
-software-list semantics. It requires byte-for-byte equality of every region,
-both ZIPs, and the generated `neogeo.xml`. It never cleans or writes the normal
-`platform/neogeo/build/` directory.
+sizes, the asset-clean manifest, the exact optional compatibility profile,
+the full native contents of `smbneo.zip`, the generated custom GnGeo driver,
+and the unique canonical MAME software-list semantics. It requires
+byte-for-byte equality of every region, both cartridge ZIPs,
+`gngeo_data.zip`, and the generated `neogeo.xml`. It never cleans or writes
+the normal `platform/neogeo/build/` directory.
 
 `tools/rec_tool.py` retains the input movie's exact frame count, source hash,
 initial reset command, and RAM-initialization provenance. Movies from

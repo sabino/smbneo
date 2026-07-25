@@ -42,7 +42,11 @@ class MameSoftwareListTests(unittest.TestCase):
             software_entries = software_list.findall("./software")
             self.assertEqual(len(software_entries), 1)
             software = software_entries[0]
-            self.assertEqual(software.get("name"), "smbneogeo")
+            self.assertEqual(software.get("name"), "smbneo")
+            self.assertEqual(
+                software.findtext("description"),
+                "Super Mario Bros. Neo",
+            )
             self.assertNotIn("puzzledp", text)
 
             actual_rom_parts = []
@@ -95,7 +99,7 @@ class MameSoftwareListTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             rom_dir = Path(temporary)
             self.write_test_roms(rom_dir)
-            (rom_dir / "smbneogeo-s1.s1").write_bytes(b"short")
+            (rom_dir / "smbneo-s1.s1").write_bytes(b"short")
 
             with self.assertRaisesRegex(ValueError, "expected 131072 bytes"):
                 mame_list.build_software_list(rom_dir)

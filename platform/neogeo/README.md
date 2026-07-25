@@ -28,6 +28,7 @@ From the repository root:
 ```bash
 make -C platform/neogeo verify
 make -C platform/neogeo cart SMB_ROM="/path/to/owned/smb.nes"
+make -C platform/neogeo compat-cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo hardware-cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo mame-cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo run SMB_ROM="/path/to/owned/smb.zip"
@@ -57,13 +58,13 @@ make -C platform/neogeo replay-rendered-evidence \
 bridge, links the custom Z80 driver, and rejects a missing or unsafe Z80 linker
 map in addition to the MC68000 checks. `cart`, `hardware-cart`, and `run`
 accept either a raw iNES file or a ZIP with exactly one `.nes` member.
-`cart` produces the default fixed-database emulator set as
-`build/rom/puzzledp.zip`. `hardware-cart` preserves the full P/C layout as
-`build/rom/smbneogeo.zip`. `mame-cart` also generates
-`build/mame/hash/neogeo.xml`, which exposes that full cartridge to MAME under
-the unique `smbneogeo` software-list identity. `run` uses the compatibility
-archive and GnGeo's bundled `puzzledp` entry; it does not present the donor
-identity as SMBNeo's canonical MAME identity. See
+`cart` and `hardware-cart` both produce the authoritative full-layout
+`build/rom/smbneo.zip`. They also generate `build/rom/gngeo_data.zip` with a
+validated custom `smbneo` driver. `run` launches that custom identity.
+`mame-cart` adds `build/mame/hash/neogeo.xml`, which exposes the same full
+cartridge to MAME as `smbneo`, titled **Super Mario Bros. Neo**.
+`compat-cart` is the optional fixed-database workaround and creates
+`build/rom/puzzledp.zip`. See
 [`docs/EMULATOR_COMPATIBILITY.md`](../../docs/EMULATOR_COMPATIBILITY.md) for
 the exact FBNeo, NEO.emu, MAME, GnGeo, and BIOS paths.
 
@@ -112,8 +113,9 @@ The following repository-local build output is intentionally ignored:
 - title-enabled `build/smbneogeo-cart.elf` / `.map` cartridge outputs
 - `build/smbneogeo-sound.ihx` / `.map` and Z80 assembler intermediates
 - `build/assets/asset-manifest.json`
-- `build/rom/puzzledp.zip` (default emulator compatibility package)
-- `build/rom/smbneogeo.zip` (canonical hardware/MAME package)
+- `build/rom/smbneo.zip` (canonical hardware/MAME/GnGeo package)
+- `build/rom/gngeo_data.zip` (generated custom `smbneo` GnGeo driver)
+- `build/rom/puzzledp.zip` (optional fixed-database compatibility package)
 - `build/mame/hash/neogeo.xml` (canonical local MAME software list)
 - `build/replay-fast/` and `build/replay-rendered/`
 - emulator BIOS/hash support files

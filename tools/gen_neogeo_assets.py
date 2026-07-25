@@ -223,7 +223,7 @@ def format_title_screen_source(data: bytes) -> str:
     return "\n".join(lines)
 
 
-def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
+def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, object]:
     if len(chr_data) != NES_CHR_SIZE:
         raise AssetError(f"expected {NES_CHR_SIZE} CHR bytes, found {len(chr_data)}")
 
@@ -246,15 +246,22 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title_data = title_screen_data(chr_data)
-    pad_file(output_dir / "smbneogeo-c1.c1", bytes(crom1), CROM_CHIP_SIZE)
-    pad_file(output_dir / "smbneogeo-c2.c2", bytes(crom2), CROM_CHIP_SIZE)
-    pad_file(output_dir / "smbneogeo-s1.s1", bytes(srom), SROM_SIZE)
+    pad_file(output_dir / "smbneo-c1.c1", bytes(crom1), CROM_CHIP_SIZE)
+    pad_file(output_dir / "smbneo-c2.c2", bytes(crom2), CROM_CHIP_SIZE)
+    pad_file(output_dir / "smbneo-s1.s1", bytes(srom), SROM_SIZE)
     (output_dir / TITLE_SCREEN_SOURCE).write_text(
         format_title_screen_source(title_data),
         encoding="ascii",
     )
 
     return {
+        "product_shortname": "smbneo",
+        "product_title": "Super Mario Bros. Neo",
+        "native_graphics_files": [
+            "smbneo-c1.c1",
+            "smbneo-c2.c2",
+            "smbneo-s1.s1",
+        ],
         "crom_blank_tile": CROM_BLANK_TILE,
         "crom_nes_tile_base": CROM_NES_TILE_BASE,
         "crom_tiles_generated": CROM_NES_TILE_BASE + NES_CHR_TILES,

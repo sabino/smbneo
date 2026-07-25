@@ -17,6 +17,8 @@ import zipfile
 
 
 PROJECT_NAME = "SMBNeo"
+PRODUCT_SHORTNAME = "smbneo"
+PRODUCT_TITLE = "Super Mario Bros. Neo"
 FBNEO_DRIVER = "puzzledp"
 EXPECTED_NES_SHA1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922"
 TITLE_SYMBOL = "neogeo_title_screen_data"
@@ -24,9 +26,10 @@ TITLE_BYTES = 0x013A
 FIXED_ZIP_TIME = (2026, 1, 1, 0, 0, 0)
 
 TEMPLATE_ENTRIES = {
-    "smbneogeo-p1.p1": 0x100000,
-    "smbneogeo-m1.m1": 0x020000,
-    "smbneogeo-v1.v1": 0x080000,
+    "smbneo-p1.p1": 0x100000,
+    "smbneo-web-p1.p1": 0x100000,
+    "smbneo-m1.m1": 0x020000,
+    "smbneo-v1.v1": 0x080000,
 }
 
 BIOS_ENTRIES = {
@@ -315,8 +318,10 @@ def copy_templates(
 
 
 def build(args: argparse.Namespace) -> None:
-    elf = args.elf.resolve()
-    prom = args.prom.resolve()
+    native_elf = args.native_elf.resolve()
+    native_prom = args.native_prom.resolve()
+    web_elf = args.web_elf.resolve()
+    web_prom = args.web_prom.resolve()
     mrom = args.mrom.resolve()
     vrom = args.vrom.resolve()
     source_bios = args.bios.resolve()
@@ -325,8 +330,10 @@ def build(args: argparse.Namespace) -> None:
     output = args.output.resolve()
 
     for path, label in (
-        (elf, "ROM-free ELF"),
-        (prom, "template P-ROM"),
+        (native_elf, "native ROM-free ELF"),
+        (native_prom, "native template P-ROM"),
+        (web_elf, "FBNeo ROM-free ELF"),
+        (web_prom, "FBNeo template P-ROM"),
         (mrom, "template M-ROM"),
         (vrom, "template V-ROM"),
         (source_bios, "NullBIOS"),
@@ -335,9 +342,10 @@ def build(args: argparse.Namespace) -> None:
             raise BuildError(f"{label} not found: {path}")
 
     template_entries = {
-        "smbneogeo-p1.p1": prom.read_bytes(),
-        "smbneogeo-m1.m1": mrom.read_bytes(),
-        "smbneogeo-v1.v1": vrom.read_bytes(),
+        "smbneo-p1.p1": native_prom.read_bytes(),
+        "smbneo-web-p1.p1": web_prom.read_bytes(),
+        "smbneo-m1.m1": mrom.read_bytes(),
+        "smbneo-v1.v1": vrom.read_bytes(),
     }
     for name, expected_size in TEMPLATE_ENTRIES.items():
         actual_size = len(template_entries[name])
@@ -346,17 +354,27 @@ def build(args: argparse.Namespace) -> None:
                 f"{name} is {actual_size} bytes, expected {expected_size}"
             )
 
-    title_offset = find_title_offset(elf, args.nm)
-    if title_offset + TITLE_BYTES > len(template_entries["smbneogeo-p1.p1"]):
-        raise BuildError(
-            f"title range {title_offset:#x}..{title_offset + TITLE_BYTES:#x} "
-            "falls outside the P-ROM"
-        )
-    title_region = template_entries["smbneogeo-p1.p1"][
-        title_offset : title_offset + TITLE_BYTES
-    ]
-    if any(title_region):
-        raise BuildError("ROM-free P-ROM title placeholder is not zero-filled")
+    title_offsets = {
+        "native": find_title_offset(native_elf, args.nm),
+        "web": find_title_offset(web_elf, args.nm),
+    }
+    for profile, entry_name in (
+        ("native", "smbneo-p1.p1"),
+        ("web", "smbneo-web-p1.p1"),
+    ):
+        title_offset = title_offsets[profile]
+        if title_offset + TITLE_BYTES > len(template_entries[entry_name]):
+            raise BuildError(
+                f"{profile} title range {title_offset:#x}.."
+                f"{title_offset + TITLE_BYTES:#x} falls outside the P-ROM"
+            )
+        title_region = template_entries[entry_name][
+            title_offset : title_offset + TITLE_BYTES
+        ]
+        if any(title_region):
+            raise BuildError(
+                f"{profile} ROM-free P-ROM title placeholder is not zero-filled"
+            )
 
     version_digest = hashlib.sha256()
     for name, data in sorted(template_entries.items()):
@@ -373,7 +391,9 @@ def build(args: argparse.Namespace) -> None:
     copy_templates(templates, output, title_image, build_id)
     assets = output / "assets"
     template_zip = assets / "smbneo-template.zip"
-    bios_zip = assets / "neogeo.zip"
+    # EmulatorJS 4.2.3 writes this name directly into its virtual root when
+    # EJS_dontExtractBIOS is enabled. Keep it slash-free for that code path.
+    bios_zip = output / "neogeo.zip"
 
     write_zip(template_zip, template_entries)
     verify_zip(
@@ -396,12 +416,29 @@ def build(args: argparse.Namespace) -> None:
 
     manifest = {
         "project": PROJECT_NAME,
-        "profile": "ROM-free browser compatibility player",
+        "product": {
+            "shortname": PRODUCT_SHORTNAME,
+            "title": PRODUCT_TITLE,
+            "canonical_archive": "smbneo.zip",
+        },
+        "profile": "ROM-free SMBNeo browser player",
         "fbneo_driver": FBNEO_DRIVER,
+        "downloads": {
+            "canonical": {
+                "filename": "smbneo.zip",
+                "shortname": "smbneo",
+                "layout": "full hardware-native P/S/M/V/C",
+            },
+            "compatibility": {
+                "filename": "puzzledp.zip",
+                "shortname": "puzzledp",
+                "layout": "fixed-database donor compatibility",
+            },
+        },
         "build_id": build_id,
         "source_commit": os.environ.get("GITHUB_SHA"),
         "expected_nes_sha1": EXPECTED_NES_SHA1,
-        "title_patch_offset": title_offset,
+        "title_patch_offsets": title_offsets,
         "title_patch_bytes": TITLE_BYTES,
         "template": {
             "path": template_zip.relative_to(output).as_posix(),
@@ -434,14 +471,19 @@ def build(args: argparse.Namespace) -> None:
     print(f"Built {PROJECT_NAME} browser player: {output}")
     print(f"Template: {template_zip.stat().st_size} bytes")
     print(f"NullBIOS: {bios_zip.stat().st_size} bytes")
-    print(f"Title patch offset: {title_offset:#x}")
+    print(
+        "Title patch offsets: "
+        f"native={title_offsets['native']:#x}, web={title_offsets['web']:#x}"
+    )
     print(f"Build ID: {build_id}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--elf", type=Path, required=True)
-    parser.add_argument("--prom", type=Path, required=True)
+    parser.add_argument("--native-elf", type=Path, required=True)
+    parser.add_argument("--native-prom", type=Path, required=True)
+    parser.add_argument("--web-elf", type=Path, required=True)
+    parser.add_argument("--web-prom", type=Path, required=True)
     parser.add_argument("--mrom", type=Path, required=True)
     parser.add_argument("--vrom", type=Path, required=True)
     parser.add_argument("--bios", type=Path, required=True)

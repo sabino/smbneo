@@ -38,12 +38,12 @@ class CompatibilityRegion:
 
 
 NATIVE_REGIONS = (
-    NativeRegion("p", "smbneogeo-p1.p1", 0x100000, 0xFF),
-    NativeRegion("s", "smbneogeo-s1.s1", 0x020000, 0x00),
-    NativeRegion("m", "smbneogeo-m1.m1", 0x020000, 0x00),
-    NativeRegion("v", "smbneogeo-v1.v1", 0x080000, 0x00),
-    NativeRegion("c1", "smbneogeo-c1.c1", 0x200000, 0x00),
-    NativeRegion("c2", "smbneogeo-c2.c2", 0x200000, 0x00),
+    NativeRegion("p", "smbneo-p1.p1", 0x100000, 0xFF),
+    NativeRegion("s", "smbneo-s1.s1", 0x020000, 0x00),
+    NativeRegion("m", "smbneo-m1.m1", 0x020000, 0x00),
+    NativeRegion("v", "smbneo-v1.v1", 0x080000, 0x00),
+    NativeRegion("c1", "smbneo-c1.c1", 0x200000, 0x00),
+    NativeRegion("c2", "smbneo-c2.c2", 0x200000, 0x00),
 )
 
 PUZZLEDP_REGIONS = (

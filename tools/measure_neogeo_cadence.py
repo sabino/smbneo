@@ -1073,7 +1073,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=build / "rom" / "gngeo_data.zip",
         help="GnGeo game-data archive",
     )
-    parser.add_argument("--rom-set", default="smbneogeo")
+    parser.add_argument("--rom-set", default="smbneo")
     parser.add_argument(
         "--warmup-vblanks",
         type=_non_negative_int,

@@ -137,9 +137,15 @@ class AssetConversionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             info = assets.build_assets(bytes(chr_data), output)
-            crom1 = (output / "smbneogeo-c1.c1").read_bytes()
-            crom2 = (output / "smbneogeo-c2.c2").read_bytes()
-            srom = (output / "smbneogeo-s1.s1").read_bytes()
+            self.assertEqual(info["product_shortname"], "smbneo")
+            self.assertEqual(info["product_title"], "Super Mario Bros. Neo")
+            self.assertEqual(
+                info["native_graphics_files"],
+                ["smbneo-c1.c1", "smbneo-c2.c2", "smbneo-s1.s1"],
+            )
+            crom1 = (output / "smbneo-c1.c1").read_bytes()
+            crom2 = (output / "smbneo-c2.c2").read_bytes()
+            srom = (output / "smbneo-s1.s1").read_bytes()
             title_source = (output / assets.TITLE_SCREEN_SOURCE).read_text(
                 encoding="ascii"
             )

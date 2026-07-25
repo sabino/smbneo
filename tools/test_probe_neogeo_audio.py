@@ -122,7 +122,7 @@ class CommandTests(unittest.TestCase):
             "/usr/bin/ngdevkit-gngeo",
             Path("/work/rom"),
             Path("/work/rom/gngeo_data.zip"),
-            "smbneogeo",
+            "smbneo",
             sample_rate=22050,
             scale=2,
         )
@@ -137,7 +137,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("--z80clock=0", command)
         self.assertIn("--no-debug", command)
         self.assertNotIn("-D", command)
-        self.assertEqual(command[-1], "smbneogeo")
+        self.assertEqual(command[-1], "smbneo")
         self.assertIn(cadence.DEFAULT_P1_CONTROLS, command)
 
     def test_xdotool_timeout_is_reported(self) -> None:
@@ -189,13 +189,13 @@ class ProbeLifecycleTests(unittest.TestCase):
     ) -> argparse.Namespace:
         rom_dir = temporary / "rom"
         rom_dir.mkdir(exist_ok=True)
-        (rom_dir / "smbneogeo.zip").write_bytes(b"cart")
+        (rom_dir / "smbneo.zip").write_bytes(b"cart")
         data_file = rom_dir / "gngeo_data.zip"
         data_file.write_bytes(b"data")
         values: dict[str, object] = {
             "rom_dir": rom_dir,
             "data_file": data_file,
-            "rom_set": "smbneogeo",
+            "rom_set": "smbneo",
             "capture_seconds": 1.0,
             "startup_timeout": 1.0,
             "input_attempts": 1,

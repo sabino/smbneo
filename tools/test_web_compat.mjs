@@ -4,6 +4,8 @@ import test from "node:test";
 
 import {
   adaptCartridgeForWeb,
+  adaptCompatibilityCartridgeForNative,
+  buildCanonicalEntries,
   buildCartridgeFromNes,
   buildPuzzledpEntries,
   buildGraphics,
@@ -101,7 +103,7 @@ test("title payload is placed in the word-swapped P-ROM", () => {
 });
 
 test("a native cartridge receives the web-specific P-ROM", () => {
-  const titleOffset = 0x046a;
+  const titleOffset = { native: 0x046a, web: 0x086a };
   const title = Uint8Array.from(
     { length: 0x013a },
     (_, index) => (index * 7) & 0xff,
@@ -109,11 +111,11 @@ test("a native cartridge receives the web-specific P-ROM", () => {
   const nativeProm = patchTemplateProm(
     new Uint8Array(CART_SIZES.p),
     title,
-    titleOffset,
+    titleOffset.native,
   );
   const webProm = new Uint8Array(CART_SIZES.p);
   webProm.fill(0xff);
-  webProm.fill(0, titleOffset, titleOffset + title.length);
+  webProm.fill(0, titleOffset.web, titleOffset.web + title.length);
   const cartridge = {
     p: nativeProm,
     m: new Uint8Array(CART_SIZES.m),
@@ -125,12 +127,12 @@ test("a native cartridge receives the web-specific P-ROM", () => {
 
   const adapted = adaptCartridgeForWeb(
     cartridge,
-    { "smbneogeo-p1.p1": webProm },
+    { "smbneo-web-p1.p1": webProm },
     titleOffset,
   );
   assert.notDeepEqual(adapted.p, nativeProm);
   for (let index = 0; index < title.length; index += 1) {
-    assert.equal(adapted.p[titleOffset + (index ^ 1)], title[index]);
+    assert.equal(adapted.p[titleOffset.web + (index ^ 1)], title[index]);
   }
   assert.equal(adapted.c1, cartridge.c1);
   assert.equal(adapted.c2, cartridge.c2);
@@ -147,14 +149,14 @@ test("tail CRC correction preserves content and reaches the target", () => {
   assert.deepEqual(patched.slice(0, 128), input.slice(0, 128));
 });
 
-test("NES input becomes an exact puzzledp compatibility set", () => {
+test("NES input becomes an exact canonical full-layout cartridge", () => {
   const template = {
-    "smbneogeo-p1.p1": new Uint8Array(CART_SIZES.p),
-    "smbneogeo-m1.m1": new Uint8Array(CART_SIZES.m),
-    "smbneogeo-v1.v1": new Uint8Array(CART_SIZES.v),
+    "smbneo-p1.p1": new Uint8Array(CART_SIZES.p),
+    "smbneo-m1.m1": new Uint8Array(CART_SIZES.m),
+    "smbneo-v1.v1": new Uint8Array(CART_SIZES.v),
   };
-  template["smbneogeo-p1.p1"].fill(0xff);
-  template["smbneogeo-p1.p1"].fill(0, 0x046a, 0x046a + 0x013a);
+  template["smbneo-p1.p1"].fill(0xff);
+  template["smbneo-p1.p1"].fill(0, 0x046a, 0x046a + 0x013a);
 
   const cartridge = buildCartridgeFromNes(
     syntheticRom(),
@@ -165,6 +167,90 @@ test("NES input becomes an exact puzzledp compatibility set", () => {
     assert.equal(cartridge[part].length, size, part);
   }
 
+  const canonical = buildCanonicalEntries(cartridge);
+  const expectedCanonical = {
+    "smbneo-p1.p1": CART_SIZES.p,
+    "smbneo-m1.m1": CART_SIZES.m,
+    "smbneo-v1.v1": CART_SIZES.v,
+    "smbneo-s1.s1": CART_SIZES.s,
+    "smbneo-c1.c1": CART_SIZES.c1,
+    "smbneo-c2.c2": CART_SIZES.c2,
+  };
+  assert.deepEqual(
+    Object.keys(canonical).sort(),
+    Object.keys(expectedCanonical).sort(),
+  );
+  for (const [name, size] of Object.entries(expectedCanonical)) {
+    assert.equal(canonical[name].length, size, name);
+  }
+  assert.deepEqual(canonical["smbneo-p1.p1"], cartridge.p);
+  assert.notEqual(canonical["smbneo-p1.p1"], cartridge.p);
+
+  const entries = buildPuzzledpEntries(cartridge);
+  const expected = {
+    "202-p1.bin": [0x080000, 0x2b61415b],
+    "202-s1.bin": [0x020000, 0xcd19264f],
+    "202-m1.bin": [0x020000, 0x9c0291ea],
+    "202-v1.bin": [0x080000, 0xdebeb8fb],
+    "202-c1.bin": [0x100000, 0xcc0095ef],
+    "202-c2.bin": [0x100000, 0x42371307],
+  };
+  assert.deepEqual(Object.keys(entries).sort(), Object.keys(expected).sort());
+  for (const [name, [size, expectedCrc]] of Object.entries(expected)) {
+    assert.equal(entries[name].length, size, name);
+    assert.equal(crc32(entries[name]), expectedCrc, name);
+  }
+});
+
+test("compatibility upload can be restored onto the native P-ROM template", () => {
+  const offsets = { native: 0x046a, web: 0x086a };
+  const title = Uint8Array.from(
+    { length: 0x013a },
+    (_, index) => (index * 11 + 5) & 0xff,
+  );
+  const compatibility = {
+    p: patchTemplateProm(new Uint8Array(CART_SIZES.p), title, offsets.web),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  compatibility.p.fill(0xff, 0x10000);
+  compatibility.p.set(
+    patchTemplateProm(
+      new Uint8Array(CART_SIZES.p),
+      title,
+      offsets.web,
+    ).slice(0, 0x10000),
+  );
+  const nativeTemplate = new Uint8Array(CART_SIZES.p);
+  nativeTemplate.fill(0xff);
+  nativeTemplate.fill(0, offsets.native, offsets.native + title.length);
+
+  const native = adaptCompatibilityCartridgeForNative(
+    compatibility,
+    { "smbneo-p1.p1": nativeTemplate },
+    offsets,
+  );
+  for (let index = 0; index < title.length; index += 1) {
+    assert.equal(native.p[offsets.native + (index ^ 1)], title[index]);
+  }
+});
+
+test("NES input also converts to the exact optional puzzledp set", () => {
+  const template = {
+    "smbneo-p1.p1": new Uint8Array(CART_SIZES.p),
+    "smbneo-m1.m1": new Uint8Array(CART_SIZES.m),
+    "smbneo-v1.v1": new Uint8Array(CART_SIZES.v),
+  };
+  template["smbneo-p1.p1"].fill(0xff);
+  template["smbneo-p1.p1"].fill(0, 0x046a, 0x046a + 0x013a);
+  const cartridge = buildCartridgeFromNes(
+    syntheticRom(),
+    template,
+    0x046a,
+  );
   const entries = buildPuzzledpEntries(cartridge);
   const expected = {
     "202-p1.bin": [0x080000, 0x2b61415b],
@@ -246,6 +332,7 @@ test("a generated puzzledp set can be uploaded and rebuilt byte-for-byte", () =>
   const zipSignature = Uint8Array.from([0x50, 0x4b, 0x03, 0x04]);
   const source = classifyInput(zipSignature, () => entries);
   assert.equal(source.kind, "cartridge");
+  assert.equal(source.profile, "compatibility");
 
   const rebuilt = buildPuzzledpEntries(source.cartridge);
   assert.deepEqual(Object.keys(rebuilt).sort(), Object.keys(entries).sort());
@@ -266,6 +353,17 @@ test("the browser mapping uses arrow keys for movement", async () => {
   assert.match(playerSource, /value: "a", value2: "BUTTON_2"/);
   assert.match(playerSource, /value: "s", value2: "BUTTON_1"/);
   assert.match(playerSource, /EJS_gameName = "puzzledp"/);
+  assert.match(
+    playerSource,
+    /mtime: ZIP_TIMESTAMP/,
+  );
+  assert.match(playerSource, /EJS_biosUrl = config\.bios\.path/);
+  assert.match(playerSource, /EJS_dontExtractBIOS = true/);
   assert.match(playerSource, /zipEntries\(fbneoEntries\)/);
+  assert.match(playerSource, /buildCanonicalEntries\(cartridge\)/);
+  assert.match(playerSource, /config\.downloads\.canonical\.filename/);
+  assert.match(playerSource, /config\.downloads\.compatibility\.filename/);
+  assert.match(playerSource, /downloadArchive\("canonical"\)/);
+  assert.match(playerSource, /downloadArchive\("compatibility"\)/);
   assert.doesNotMatch(playerSource, /\.\.\.biosEntries/);
 });
