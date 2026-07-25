@@ -15,6 +15,7 @@ import gen_neogeo_assets as assets  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 NEOGEO_VIDEO = ROOT / "platform" / "neogeo" / "video.c"
+NEOGEO_MAKEFILE = ROOT / "platform" / "neogeo" / "Makefile"
 
 
 def encode_nes_tile(pixels: bytes) -> bytes:
@@ -90,6 +91,20 @@ class AssetConversionTests(unittest.TestCase):
             video_source,
             r"(?m)^#define NEO_ZOOM_BACKGROUND_8X8 0x077fu$",
         )
+        self.assertRegex(
+            video_source,
+            r"(?m)^#define BACKGROUND_HARDWARE_CHAIN_ROWS 33u$",
+        )
+        self.assertIn(
+            "sprite_y_word(0, BACKGROUND_HARDWARE_CHAIN_ROWS)",
+            video_source,
+        )
+        self.assertIn("*REG_NOSHADOW = 1;", video_source)
+        self.assertIn("*REG_PALBANK0 = 1;", video_source)
+        self.assertIn(
+            "-Wl,--defsym=rom_eye_catcher_mode=2",
+            NEOGEO_MAKEFILE.read_text(),
+        )
 
         expanded = assets.expand_2x(self.tile)
         # The in-tile portion of both documented vertical shrink maps selects
@@ -147,6 +162,13 @@ class AssetConversionTests(unittest.TestCase):
             )
             self.assertEqual(
                 decode_srom_tile(srom[:32]),
+                bytes(64),
+            )
+            srom_nes_offset = assets.SROM_NES_TILE_BASE * 32
+            self.assertEqual(
+                decode_srom_tile(
+                    srom[srom_nes_offset : srom_nes_offset + 32]
+                ),
                 self.tile,
             )
             blank = assets.SROM_BLANK_TILE * 32
@@ -160,6 +182,7 @@ class AssetConversionTests(unittest.TestCase):
                 bytes([1]) * 64,
             )
             self.assertEqual(info["crom_nes_tile_base"], 257)
+            self.assertEqual(info["srom_nes_tile_base"], 1)
             self.assertEqual(
                 info["title_screen_chr_bytes"],
                 assets.TITLE_SCREEN_CHR_SIZE,

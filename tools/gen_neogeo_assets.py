@@ -29,8 +29,9 @@ CROM_NES_TILE_BASE = 257
 CROM_CHIP_SIZE = 2 * 1024 * 1024
 
 SROM_TILE_BYTES = 32
-SROM_BLANK_TILE = 512
-SROM_SOLID_TILE = 513
+SROM_NES_TILE_BASE = 1
+SROM_BLANK_TILE = 513
+SROM_SOLID_TILE = 514
 SROM_SIZE = 128 * 1024
 
 
@@ -228,7 +229,9 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
 
     crom1 = bytearray(CROM_NES_TILE_BASE * CROM_TILE_BYTES_PER_CHIP)
     crom2 = bytearray(CROM_NES_TILE_BASE * CROM_TILE_BYTES_PER_CHIP)
-    srom = bytearray()
+    # The BIOS clears the FIX map with tile 0 before cartridge code runs.
+    # Keep it transparent, then place the 512 source tiles at indices 1..512.
+    srom = bytearray(SROM_NES_TILE_BASE * SROM_TILE_BYTES)
 
     for tile_index in range(NES_CHR_TILES):
         tile8 = decode_nes_tile(chr_data, tile_index)
@@ -237,7 +240,7 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
         crom2.extend(tile_c2)
         srom.extend(encode_srom_tile(tile8))
 
-    # FIX tile 512 is transparent; tile 513 is an opaque border mask.
+    # FIX tile 513 is transparent; tile 514 is an opaque border mask.
     srom.extend(encode_srom_tile(bytes(64)))
     srom.extend(encode_srom_tile(bytes([1]) * 64))
 
@@ -255,6 +258,7 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, int | str]:
         "crom_blank_tile": CROM_BLANK_TILE,
         "crom_nes_tile_base": CROM_NES_TILE_BASE,
         "crom_tiles_generated": CROM_NES_TILE_BASE + NES_CHR_TILES,
+        "srom_nes_tile_base": SROM_NES_TILE_BASE,
         "srom_blank_tile": SROM_BLANK_TILE,
         "srom_solid_tile": SROM_SOLID_TILE,
         "srom_tiles_generated": SROM_SOLID_TILE + 1,

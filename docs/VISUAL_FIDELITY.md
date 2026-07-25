@@ -31,6 +31,26 @@ exactly eight rows. Multi-tile background strips retain `0x7f`; their shrink
 table diverges after the first tile. This removes the observed extra hat row
 without changing Mario's CHR data or OAM priority.
 
+## Full-height background strips
+
+Vertical shrink is applied across an entire Neo Geo sprite chain. It does not
+restart at every 16-pixel C-ROM tile. Each native background strip therefore
+uses SCB3 height 33, which selects the 32-tile full-height mode, together with
+vertical zoom `$7f`. That combination exposes all 32 physical SCB1 rows over
+one 256-line period and maps each doubled 16-pixel source tile to one displayed
+8-pixel row.
+
+The 28-row playfield occupies physical rows 0 through 27 when the HUD is
+hidden. When the three-row FIX HUD is visible, the 26-row playfield starts at
+physical row 3. Unused physical rows are transparent. This arrangement avoids
+the missing ground and downward black columns produced when a short ordinary
+chain is combined with whole-chain shrink on the real LSPC.
+
+FIX tile zero is also permanently transparent. The 512 generated source tiles
+start at tile one, followed by dedicated blank and border tiles. BIOS code can
+therefore clear the FIX map to tile zero during cartridge handoff without
+briefly filling the screen with game graphics.
+
 ## Color target
 
 The earlier port converted a different subjective NES RGB table than the one
@@ -72,5 +92,6 @@ while source OAM priority is preserved. Crowded scenes can therefore show
 pixels that would flicker or disappear on the source hardware.
 
 Physical display scaling, CRT decoder behavior, composite artifacts, and
-AES/MVS analog output are outside a square-pixel screenshot comparison and
-still require hardware validation.
+AES/MVS analog output are outside a square-pixel screenshot comparison. An
+initial MV1C run has been reviewed, but the corrected build still requires a
+physical retest.

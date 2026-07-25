@@ -49,6 +49,37 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
                 target,
             )
 
+    def test_mame_capture_is_isolated_and_scripted(self) -> None:
+        self.assertIn("mame-list: cart", self.makefile)
+        self.assertIn("MAME_SYSTEM ?= ng_mv1", self.makefile)
+        self.assertIn(
+            "$(MAME) $(MAME_SYSTEM) $(GAMEROM)",
+            self.makefile,
+        )
+        self.assertIn(
+            "$(PYTHON) $(MAME_SOFTWARE_GENERATOR)",
+            self.makefile,
+        )
+
+        recipe = self.makefile.split("mame-capture:", 1)[1].split(
+            "$(WEB_PROM):",
+            1,
+        )[0]
+        for option in (
+            '-hashpath "$(MAME_HASHDIR)"',
+            '-cfg_directory "$(MAME_CFG_DIR)"',
+            '-nvram_directory "$(MAME_NVRAM_DIR)"',
+            '-snapshot_directory "$(MAME_CAPTURE_DIR)"',
+            '-autoboot_script "$(MAME_CAPTURE_SCRIPT)"',
+        ):
+            self.assertIn(option, recipe)
+
+    def test_custom_mame_bios_directory_precedes_local_cartridge(self) -> None:
+        self.assertIn(
+            "$(if $(strip $(MAME_BIOS_DIR)),$(MAME_BIOS_DIR);)$(ROMDIR)",
+            self.makefile,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

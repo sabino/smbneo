@@ -18,8 +18,9 @@
 #define FIX_CONTENT_X (NES_CONTENT_X / 8u)
 #define FIX_CONTENT_COLUMNS 32u
 #define FIX_HUD_ROWS 3u
-#define FIX_BLANK_TILE 512u
-#define FIX_SOLID_TILE 513u
+#define FIX_NES_TILE_BASE 1u
+#define FIX_BLANK_TILE 513u
+#define FIX_SOLID_TILE 514u
 #define FIX_BORDER_PALETTE 15u
 
 /* C-ROM tiles 0..255 are reserved for the BIOS/ngdevkit eyecatcher. */
@@ -41,6 +42,9 @@
 #define OAM_SPRITES 64u
 #define BACKGROUND_STRIPS 33u
 #define BACKGROUND_MAX_ROWS 28u
+#define BACKGROUND_HARDWARE_TILE_ROWS 32u
+#define BACKGROUND_HARDWARE_CHAIN_ROWS 33u
+#define BACKGROUND_HUD_PADDING_ROWS 3u
 #if defined(SMB_NEOGEO_FBNEO)
 #define BACKGROUND_FBNEO_HALF_ROWS 16u
 #define BACKGROUND_FBNEO_CHAIN_ROWS 32u
@@ -93,6 +97,8 @@ typedef struct {
     uint16_t attributes[BACKGROUND_MAX_ROWS];
     uint8_t physical_strip;
     uint8_t tile_rows;
+    uint8_t physical_row_offset;
+    uint8_t clear_physical_map;
 } BackgroundStripUpdate;
 
 /*
@@ -440,6 +446,7 @@ static void build_background(uint8_t show_hud) {
         ? neogeo_ppu_background_hud_generation
         : neogeo_ppu_background_full_generation;
     uint8_t scan_background;
+    uint8_t reset_physical_map;
     uint8_t ring_origin;
     uint8_t strip;
 
@@ -451,13 +458,15 @@ static void build_background(uint8_t show_hud) {
         return;
     }
 
+    reset_physical_map =
+        (uint8_t)(background_config_cache != render_config);
     scan_background = (uint8_t)(
         background_ring_valid == 0u ||
-        background_config_cache != render_config ||
+        reset_physical_map != 0u ||
         background_first_column != first_column ||
         background_built_generation != source_generation
     );
-    if (background_config_cache != render_config) {
+    if (reset_physical_map != 0u) {
         memset(
             background_generation_cache,
             0xff,
@@ -540,6 +549,15 @@ static void build_background(uint8_t show_hud) {
             uint32_t changed_rows = 0;
             uint8_t row;
 
+#if defined(SMB_NEOGEO_FBNEO)
+            pending->physical_row_offset = 0;
+            pending->clear_physical_map = 0;
+#else
+            pending->physical_row_offset = show_hud != 0u
+                ? BACKGROUND_HUD_PADDING_ROWS
+                : 0u;
+            pending->clear_physical_map = reset_physical_map;
+#endif
             for (row = 0; row < tile_rows; ++row) {
                 uint8_t source_y = (uint8_t)(first_tile_y + row);
                 uint8_t tile =
@@ -562,6 +580,7 @@ static void build_background(uint8_t show_hud) {
                     &background_cache[physical_strip][row];
 
                 if (
+                    reset_physical_map != 0u ||
                     cached->tile != neogeo_tile ||
                     cached->attributes != attributes
                 ) {
@@ -614,8 +633,14 @@ static void build_background(uint8_t show_hud) {
             sprite_y_word((int16_t)output_y, tile_rows);
     }
 #else
+    /*
+     * Real LSPC hardware applies vertical shrink to the entire strip, not to
+     * each tile independently. Height 33 selects the documented 32-tile
+     * full-height mode; zoom 0x7f then maps every 16-pixel C-ROM tile to one
+     * 8-pixel source row across the complete 256-line period.
+     */
     next_background_y_word =
-        sprite_y_word((int16_t)output_y, tile_rows);
+        sprite_y_word(0, BACKGROUND_HARDWARE_CHAIN_ROWS);
 #endif
 
     for (strip = 0; strip < next_background_driver_count; ++strip) {
@@ -664,6 +689,17 @@ static void upload_background_changes(void) {
                 ++blank_row;
             }
         }
+#else
+        if (pending->clear_physical_map != 0u) {
+            uint8_t physical_row = 0;
+
+            *REG_VRAMADDR = (uint16_t)(ADDR_SCB1 + sprite * 64u);
+            while (physical_row < BACKGROUND_HARDWARE_TILE_ROWS) {
+                *REG_VRAMRW = CROM_BLANK_TILE;
+                *REG_VRAMRW = 0;
+                ++physical_row;
+            }
+        }
 #endif
 
         while (row < pending->tile_rows) {
@@ -681,7 +717,7 @@ static void upload_background_changes(void) {
 #if defined(SMB_NEOGEO_FBNEO)
                 (uint16_t)background_scb1_row(row) * 2u
 #else
-                (uint16_t)row * 2u
+                (uint16_t)(row + pending->physical_row_offset) * 2u
 #endif
             );
             do {
@@ -896,6 +932,7 @@ static void build_hud(uint8_t show_hud) {
 
                 entry = (uint16_t)(
                     ((uint16_t)palette_number << 12) +
+                    FIX_NES_TILE_BASE +
                     pattern_base +
                     tile
                 );
@@ -1027,6 +1064,14 @@ uint8_t neogeo_read_controller1(void) {
 
 void neogeo_video_init(void) {
     uint16_t i;
+
+    /*
+     * BIOS variants do not all hand the cartridge the same video-latch
+     * state. Establish the palette state used by this renderer before its
+     * first palette upload instead of inheriting shadow or bank 1.
+     */
+    *REG_NOSHADOW = 1;
+    *REG_PALBANK0 = 1;
 
     clear_hardware_sprites();
     initialize_fix_map();
