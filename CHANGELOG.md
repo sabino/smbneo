@@ -9,6 +9,8 @@
 - Replaced source-hardware scanline dropout with all-visible-sprite rendering.
 - Added deterministic replay, cadence, audio, memory, cartridge, and
   reproducibility gates.
+- Added a MAME validation lane and corrected real-LSPC full-height background
+  chains plus BIOS-safe transparent FIX tile zero.
 - Added ROM-free host CI.
 - Added a ROM-free browser player with local game conversion, arrow-key
   controls, and GitHub Pages deployment.

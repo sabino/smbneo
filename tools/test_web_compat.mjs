@@ -74,6 +74,18 @@ test("raw iNES input is recognized and its CHR bank is converted", () => {
   assert.ok(graphics.c1.some((value) => value !== 0));
   assert.ok(graphics.c2.every((value) => value === 0));
   assert.ok(graphics.s.some((value) => value !== 0));
+  assert.ok(graphics.s.slice(0, 32).every((value) => value === 0));
+  assert.ok(graphics.s.slice(32, 64).some((value) => value !== 0));
+  assert.ok(
+    graphics.s
+      .slice(513 * 32, 514 * 32)
+      .every((value) => value === 0),
+  );
+  assert.ok(
+    graphics.s
+      .slice(514 * 32, 515 * 32)
+      .some((value) => value !== 0),
+  );
 });
 
 test("title payload is placed in the word-swapped P-ROM", () => {

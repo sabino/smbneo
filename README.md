@@ -78,6 +78,32 @@ by Git and must not be redistributed.
 The versions used for the current build are listed in
 [Tested toolchain](docs/TESTED_TOOLCHAIN.md).
 
+### Hardware-accurate emulator check
+
+MAME exercises Neo Geo sprite-chain behavior that can be missed by lighter
+emulators. The target uses MAME's one-slot MV-1 configuration by default. With
+MAME installed, build the cartridge and collect a scripted set of title and
+gameplay frames with:
+
+```bash
+make mame-capture SMB_ROM="/path/to/smb.zip"
+```
+
+The PNG files are written to
+`platform/neogeo/build/mame/captures/`. For an interactive run, use
+`make mame-run` instead. To test a BIOS that you legally own and have already
+installed in a MAME ROM directory:
+
+```bash
+make mame-run SMB_ROM="/path/to/smb.zip" \
+  MAME_BIOS=unibios40 MAME_BIOS_DIR="/path/to/mame/roms"
+```
+
+No BIOS image is included in this repository.
+Without `MAME_BIOS_DIR`, the target uses ngdevkit's open replacement from the
+local build. That is enough to test the cartridge renderer, but matching a
+specific BIOS splash requires the corresponding complete MAME BIOS set.
+
 ## How it works
 
 The upstream project translates the original game logic into C. SMBNeo
@@ -99,9 +125,12 @@ The complete game is playable in the emulator, including enemy-heavy stages
 and the final ending. Performance, sound balance, input, scrolling, title
 screen rendering, and crowded scenes have all received target-specific work.
 
-Physical AES/MVS and flash-cartridge testing is still outstanding. Sound is
-adapted to the Neo Geo hardware rather than reproduced waveform-for-waveform,
-and further performance and fidelity improvements are welcome.
+An initial MV1C flash-cartridge test exposed BIOS-handoff and background-chain
+rendering errors that lighter emulation had hidden. Both failures were then
+reproduced under MAME and corrected; the corrected cartridge still needs a
+physical-hardware retest. Sound is adapted to the Neo Geo hardware rather than
+reproduced waveform-for-waveform, and further performance and fidelity
+improvements are welcome.
 
 ## Development
 

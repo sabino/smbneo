@@ -66,7 +66,8 @@ CFLAGS := \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-MMD -MP $(WARN_FLAGS)
 LDFLAGS := \
-	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS)
+	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
+	-Wl,--defsym=rom_eye_catcher_mode=2
 
 ENGINE_SOURCES := \
 	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
@@ -123,6 +124,20 @@ GNGEO_P2 ?= START=K50
 GNGEO_REALTIME_FLAGS ?= \
 	--autoframeskip --no-vsync --sleepidle \
 	--68kclock=0 --z80clock=0
+MAME ?= mame
+MAME_SYSTEM ?= ng_mv1
+MAME_BIOS ?= euro
+MAME_BIOS_DIR ?=
+MAME_BUILD := $(BUILD)/mame
+MAME_HASHDIR := $(MAME_BUILD)/hash
+MAME_SOFTWARE_LIST := $(MAME_HASHDIR)/neogeo.xml
+MAME_CAPTURE_DIR := $(MAME_BUILD)/captures
+MAME_CFG_DIR := $(MAME_BUILD)/cfg
+MAME_NVRAM_DIR := $(MAME_BUILD)/nvram
+MAME_ROMPATH := \
+	$(if $(strip $(MAME_BIOS_DIR)),$(MAME_BIOS_DIR);)$(ROMDIR)
+MAME_RUN_FLAGS ?= \
+	-skip_gameinfo -window -nomaximize -nofilter -keepaspect
 CARTRIDGE_TIMESTAMP ?= 202601010000.00
 
 REPLAY_VARIANT := $(if $(filter 1,$(REPLAY_FAST)),fast,rendered)
@@ -153,6 +168,8 @@ SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
 TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
 WEB_PLAYER_BUILDER := $(ROOT)/tools/build_web_player.py
 WEB_BIOS ?= $(NG_SHARE)/neogeo.zip
+MAME_SOFTWARE_GENERATOR := $(ROOT)/tools/gen_mame_neogeo_software.py
+MAME_CAPTURE_SCRIPT := $(ROOT)/tools/mame/smbneo_capture.lua
 TRIANGLE_VROM_SHA256 := \
 	c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7
 REPLAY_POLICY_FLAG := \
@@ -164,6 +181,7 @@ REPLAY_FAST_FLAG := \
 
 .PHONY: \
 	all elf test verify verify-codegen verify-sound-driver assets cart run web \
+	mame-list mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
 all: verify
@@ -173,7 +191,8 @@ elf: $(TARGET)
 $(BUILD):
 	mkdir -p $@
 
-$(ROMDIR) $(ASSETDIR) $(WEB_BUILD) $(REPLAYDIR) $(REPLAY_ROMDIR):
+$(ROMDIR) $(ASSETDIR) $(WEB_BUILD) $(REPLAYDIR) $(REPLAY_ROMDIR) \
+$(MAME_HASHDIR) $(MAME_CAPTURE_DIR) $(MAME_CFG_DIR) $(MAME_NVRAM_DIR):
 	mkdir -p $@
 
 $(BUILD)/%.o: %.c | $(BUILD)
@@ -434,6 +453,43 @@ run: cart
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
+
+mame-list: cart | $(MAME_HASHDIR)
+	$(PYTHON) $(MAME_SOFTWARE_GENERATOR) \
+		--rom-dir $(ROMDIR) \
+		--output $(MAME_SOFTWARE_LIST)
+
+mame-run: mame-list | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
+	@command -v "$(MAME)" >/dev/null 2>&1 || { \
+		echo "MAME executable not found: $(MAME)" >&2; \
+		exit 2; \
+	}
+	$(MAME) $(MAME_SYSTEM) $(GAMEROM) \
+		-hashpath "$(MAME_HASHDIR)" \
+		-rompath "$(MAME_ROMPATH)" \
+		-bios "$(MAME_BIOS)" \
+		-cfg_directory "$(MAME_CFG_DIR)" \
+		-nvram_directory "$(MAME_NVRAM_DIR)" \
+		$(MAME_RUN_FLAGS)
+
+mame-capture: \
+		mame-list \
+		| $(MAME_CAPTURE_DIR) $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
+	@command -v "$(MAME)" >/dev/null 2>&1 || { \
+		echo "MAME executable not found: $(MAME)" >&2; \
+		exit 2; \
+	}
+	$(MAME) $(MAME_SYSTEM) $(GAMEROM) \
+		-hashpath "$(MAME_HASHDIR)" \
+		-rompath "$(MAME_ROMPATH)" \
+		-bios "$(MAME_BIOS)" \
+		-cfg_directory "$(MAME_CFG_DIR)" \
+		-nvram_directory "$(MAME_NVRAM_DIR)" \
+		-snapshot_directory "$(MAME_CAPTURE_DIR)" \
+		-snapview native \
+		-video none -sound none -nothrottle -seconds_to_run 25 \
+		-autoboot_script "$(MAME_CAPTURE_SCRIPT)"
+	@echo "MAME captures: $(MAME_CAPTURE_DIR)"
 
 $(WEB_PROM): $(WEB_TARGET) | $(WEB_BUILD)
 	$(OBJCOPY) -O binary -S -R .text2 \

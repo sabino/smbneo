@@ -10,6 +10,8 @@ const CROM_TILE_BYTES_PER_CHIP = 64;
 const CROM_NES_TILE_BASE = 257;
 const CROM_CHIP_SIZE = 2 * 1024 * 1024;
 const SROM_TILE_BYTES = 32;
+const SROM_NES_TILE_BASE = 1;
+const SROM_SOLID_TILE = 514;
 const SROM_SIZE = 128 * 1024;
 
 const CART_ENTRIES = Object.freeze({
@@ -239,12 +241,16 @@ export function buildGraphics(chrInput) {
     const cromOffset =
       (CROM_NES_TILE_BASE + tileIndex) * CROM_TILE_BYTES_PER_CHIP;
     encodeCromTile(expand2x(tile8), c1, c2, cromOffset);
-    encodeSromTile(tile8, s, tileIndex * SROM_TILE_BYTES);
+    encodeSromTile(
+      tile8,
+      s,
+      (SROM_NES_TILE_BASE + tileIndex) * SROM_TILE_BYTES,
+    );
   }
 
   const solidTile = new Uint8Array(64);
   solidTile.fill(1);
-  encodeSromTile(solidTile, s, 513 * SROM_TILE_BYTES);
+  encodeSromTile(solidTile, s, SROM_SOLID_TILE * SROM_TILE_BYTES);
 
   return {
     c1,

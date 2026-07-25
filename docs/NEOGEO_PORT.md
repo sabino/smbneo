@@ -48,7 +48,8 @@ Not completed:
 
 - Full-fidelity audio synthesis. The current native SSG bridge intentionally
   approximates source waveforms and omits several APU behaviors.
-- Real AES/MVS or flash-cartridge validation.
+- Physical retest of the corrected background/FIX handoff on MV1C hardware,
+  plus broader AES and flash-cartridge validation.
 - Cycle/scanline-accurate PPU behavior. This port intentionally follows the
   upstream frame-at-a-time timing model.
 - Exact NES left-edge masking in every fine-scroll case.
@@ -68,7 +69,8 @@ The port converts each NES 8x8 2bpp CHR tile in two ways at build time:
    OAM uses SCB2 `$077e`; background chains use `$077f`. Both select the same
    eight in-tile rows, while `$077e` avoids a ninth-row GnGeo DDA artifact on
    one-tile objects.
-2. S-ROM: the original 8x8 pixels are encoded directly for the FIX layer.
+2. S-ROM: tile zero remains transparent for BIOS FIX-map clears. The original
+   8x8 pixels are encoded directly for FIX tiles 1 through 512.
 
 The 2x expansion followed by the in-tile SCB2 shrink map is a lossless
 sampling pair: the hardware selects one pixel from each duplicated 2x2 block.
@@ -88,7 +90,10 @@ cannot accidentally reuse the other's link product.
 At runtime:
 
 - 33 vertical SCB strips cover the scrolling 256-pixel background, including
-  the incoming fine-scroll column.
+  the incoming fine-scroll column. Each strip uses SCB3 height 33 to select
+  the LSPC's 32-tile full-height mode; HUD-visible playfields are padded by
+  three transparent physical rows so whole-chain `$7f` shrink preserves the
+  intended 8-pixel row geometry.
 - One persistent circular strip bank keeps the world-column/generation cache.
   Fine scrolling only changes one or two chain-driver SCB4 words, and crossing
   an eight-pixel boundary normally rebuilds one entering strip instead of all
@@ -802,13 +807,16 @@ run adds stock-clock renderer endurance; the version-4 smoke proves the new
 state-bound presentation mechanism at the first stage. Neither is a
 pixel-perfect source-console, audio, or physical-hardware claim. The normal
 rendered cartridge is covered separately by the stock-clock cadence probes,
-and real AES/MVS-compatible hardware validation remains pending.
+and the corrected renderer still awaits its follow-up MV1C run.
 
 ## Verification performed
 
 The milestone is checked with:
 
 ```bash
+# Uses MAME's LSPC implementation and captures title/gameplay frames.
+make mame-capture SMB_ROM="/path/to/smb.zip"
+
 # Includes isolated MoonBit lowering/transpiler tests, generated-C comparison,
 # native audio bridge tests, and MC68000 plus Z80 link/map guards.
 make -C platform/neogeo verify
@@ -881,17 +889,25 @@ VBlank rather than host wall-clock rate; interactive and audio runs exercise
 the separate real-time pacing policy.
 
 Emulator captures and generated ROMs are verification artifacts only and are
-not tracked. The normal-mode audio probe establishes non-silent emulator PCM
-from active gameplay in addition to the sound-state, linkage, and packaging
-gates. It does not establish subjective fidelity, electrical timing, or
-operation on physical hardware.
+not tracked. MAME reproduced the two failures visible in the initial MV1C
+footage: a tiled FIX screen during BIOS handoff and truncated background strips
+that left the ground missing and extended black columns below solid tiles.
+Reserving transparent FIX tile zero and using the LSPC 32-tile full-height
+chain removed both failures in the same MAME lane. The corrected cartridge
+still requires an MV1C retest.
+
+The normal-mode audio probe establishes non-silent emulator PCM from active
+gameplay in addition to the sound-state, linkage, and packaging gates. It does
+not establish subjective fidelity, electrical timing, or operation on
+physical hardware.
 
 ## Next engineering steps
 
 1. Reach one tick per stock-clock VBlank in every enemy-heavy regression
    window while rendering every in-range OAM entry.
-2. Test audio and video on actual AES/MVS-compatible hardware, confirm the
-   ADPCM-B V1 bus mapping, and tune output level plus visible-area offsets.
+2. Retest the corrected cartridge on the MV1C, then broaden audio/video testing
+   to other AES/MVS-compatible hardware, confirm the ADPCM-B V1 bus mapping,
+   and tune output level plus visible-area offsets.
 3. Evaluate pulse-duty and short-noise approximations without consuming the
    remaining Z80 stack margin.
 4. Tighten the remaining fine-scroll left-edge masking cases.
