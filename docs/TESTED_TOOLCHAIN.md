@@ -10,6 +10,7 @@ uses:
 | Host GCC | 13.3.0 |
 | Python | 3.12.12 |
 | Node.js | 24.11.0 |
+| MoonBit | `moon 0.1.20260713`, `moonc v0.10.4+2cc641edf` |
 | ngdevkit | `0.5+202607191609-17~ubuntu24.04.1` |
 | ngdevkit toolchain | `0.1+202606181616-15~ubuntu24.04.1` |
 | MC68000 GCC | 15.3.0 |
@@ -40,7 +41,46 @@ The generated browser site also needs ngdevkit and its cross-toolchain:
 make web
 ```
 
-The hardware-accurate video lane additionally needs MAME:
+The normal cartridge target creates the canonical full native package:
+
+```bash
+make cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/smbneo.zip
+# platform/neogeo/build/rom/gngeo_data.zip
+```
+
+`make run` launches that archive as `smbneo` using the generated custom GnGeo
+driver. The explicit hardware target produces the same canonical cartridge:
+
+```bash
+make hardware-cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/smbneo.zip
+```
+
+The donor package is optional:
+
+```bash
+make compat-cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/puzzledp.zip
+```
+
+Use it only for NEO.emu, FBNeo, EmulatorJS, or another frontend whose fixed
+database cannot discover `smbneo`. Standalone frontends need a compatible
+`neogeo.zip` BIOS alongside the game archive; the BIOS is not embedded.
+See
+[Emulator and cartridge packages](EMULATOR_COMPATIBILITY.md).
+
+The canonical MAME lane additionally generates a local software list:
+
+```bash
+make mame-cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/smbneo.zip
+# platform/neogeo/build/mame/hash/neogeo.xml
+```
+
+MAME launches that pair under `smbneo`; its `puzzledp` definition is only
+the optional fixed-database compatibility fallback. The hardware-accurate
+capture lane uses the canonical identity:
 
 ```bash
 make mame-capture SMB_ROM="/path/to/smb.zip"

@@ -802,7 +802,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=rom / "gngeo_data.zip",
     )
-    parser.add_argument("--rom-set", default="smbneogeo")
+    parser.add_argument("--rom-set", default="smbneo")
     parser.add_argument(
         "--capture-seconds",
         type=float,

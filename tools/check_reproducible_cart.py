@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Neo Geo cartridge twice and require byte-identical output."""
+"""Build both cartridge identities twice and require byte-identical output."""
 
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ import subprocess
 import sys
 import tempfile
 from typing import Iterable, Sequence
+import xml.etree.ElementTree as ET
+import zipfile
+
+import gen_mame_neogeo_software as mame_software
+import puzzledp_compat
+import check_gngeo_driver
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -35,15 +41,29 @@ class ArtifactResult:
     sha256: str
 
 
+@dataclass(frozen=True)
+class Archive:
+    label: str
+    filename: str
+    compatibility_profile: bool = False
+
+
 REGIONS = (
-    Region("P", "smbneogeo-p1.p1", 1024 * 1024),
-    Region("C1", "smbneogeo-c1.c1", 2 * 1024 * 1024),
-    Region("C2", "smbneogeo-c2.c2", 2 * 1024 * 1024),
-    Region("S", "smbneogeo-s1.s1", 128 * 1024),
-    Region("M", "smbneogeo-m1.m1", 128 * 1024),
-    Region("V", "smbneogeo-v1.v1", 512 * 1024),
+    Region("P", "smbneo-p1.p1", 1024 * 1024),
+    Region("C1", "smbneo-c1.c1", 2 * 1024 * 1024),
+    Region("C2", "smbneo-c2.c2", 2 * 1024 * 1024),
+    Region("S", "smbneo-s1.s1", 128 * 1024),
+    Region("M", "smbneo-m1.m1", 128 * 1024),
+    Region("V", "smbneo-v1.v1", 512 * 1024),
 )
-CART_FILENAME = "smbneogeo.zip"
+ARCHIVES = (
+    Archive("Canonical ZIP", "smbneo.zip"),
+    Archive("Compatibility ZIP", "puzzledp.zip", compatibility_profile=True),
+)
+GNGEO_DATA = "gngeo_data.zip"
+GNGEO_DATA_LABEL = "GnGeo custom driver data"
+MAME_SOFTWARE_LIST = Path("mame") / "hash" / "neogeo.xml"
+MAME_SOFTWARE_LIST_LABEL = "MAME software list"
 MANIFEST_FILENAME = "asset-manifest.json"
 
 
@@ -144,6 +164,17 @@ def _validate_manifest(build_dir: Path, build_label: str) -> list[str]:
         return [f"{build_label} asset manifest must contain a JSON object"]
 
     issues = []
+    if manifest.get("product_shortname") != "smbneo":
+        issues.append(
+            f"{build_label} asset manifest has product_shortname="
+            f"{manifest.get('product_shortname')!r}; expected 'smbneo'"
+        )
+    if manifest.get("product_title") != "Super Mario Bros. Neo":
+        issues.append(
+            f"{build_label} asset manifest has product_title="
+            f"{manifest.get('product_title')!r}; "
+            "expected 'Super Mario Bros. Neo'"
+        )
     if manifest.get("verified_revision") is not True:
         issues.append(
             f"{build_label} asset manifest has verified_revision="
@@ -157,6 +188,137 @@ def _validate_manifest(build_dir: Path, build_label: str) -> list[str]:
             f"{prg_bytes_written!r}; expected 0"
         )
     return issues
+
+
+def _validate_hardware_archive(
+    build_dir: Path,
+    archive_path: Path,
+) -> None:
+    expected_names = {region.filename for region in REGIONS}
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError(f"{archive_path} contains duplicate filenames")
+            actual_names = set(names)
+            if actual_names != expected_names:
+                missing = sorted(expected_names - actual_names)
+                extra = sorted(actual_names - expected_names)
+                details = []
+                if missing:
+                    details.append(f"missing {', '.join(missing)}")
+                if extra:
+                    details.append(f"unexpected {', '.join(extra)}")
+                raise ValueError("; ".join(details))
+
+            for region in REGIONS:
+                info = archive.getinfo(region.filename)
+                if info.file_size != region.expected_size:
+                    raise ValueError(
+                        f"{region.filename} has {info.file_size} bytes in "
+                        f"{archive_path}; expected {region.expected_size}"
+                    )
+                archived = archive.read(region.filename)
+                native = _artifact_path(build_dir, region.filename).read_bytes()
+                if archived != native:
+                    raise ValueError(
+                        f"{region.filename} in {archive_path} does not match "
+                        "the canonical native region"
+                    )
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+        raise ValueError(f"cannot read {archive_path}: {error}") from error
+
+
+def _validate_mame_software_list(
+    build_dir: Path,
+    software_list_path: Path,
+) -> None:
+    try:
+        root = ET.parse(software_list_path).getroot()
+    except (OSError, ET.ParseError) as error:
+        raise ValueError(f"cannot parse {software_list_path}: {error}") from error
+
+    if root.tag != "softwarelist" or root.get("name") != "neogeo":
+        raise ValueError("MAME XML must be the neogeo software list")
+
+    software_entries = root.findall("./software")
+    if len(software_entries) != 1:
+        raise ValueError(
+            "MAME XML must contain exactly one local software entry"
+        )
+    software = software_entries[0]
+    if software.get("name") != mame_software.GAME_NAME:
+        raise ValueError(
+            "MAME XML must use the unique smbneo software identity"
+        )
+    if software.findtext("description") != "Super Mario Bros. Neo":
+        raise ValueError("MAME XML must use the Super Mario Bros. Neo title")
+
+    parts = software.findall("./part")
+    if len(parts) != 1:
+        raise ValueError("MAME XML must contain exactly one cartridge part")
+    part = parts[0]
+    if part.get("name") != "cart" or part.get("interface") != "neo_cart":
+        raise ValueError("MAME XML must use the Neo Geo cartridge interface")
+
+    actual_parts = []
+    rom_elements = []
+    dataareas = part.findall("./dataarea")
+    if [area.get("name") for area in dataareas] != list(
+        mame_software.DATA_AREA_SIZES
+    ):
+        raise ValueError("MAME XML has missing, duplicate, or reordered data areas")
+
+    for dataarea in dataareas:
+        area_name = dataarea.get("name")
+        expected_area_size = mame_software.DATA_AREA_SIZES.get(area_name)
+        if expected_area_size is None:
+            raise ValueError(f"MAME XML has unexpected data area {area_name!r}")
+        if int(dataarea.get("size", "0"), 0) != expected_area_size:
+            raise ValueError(f"MAME XML has the wrong {area_name} area size")
+        if area_name == "maincpu":
+            if (
+                dataarea.get("width") != "16"
+                or dataarea.get("endianness") != "big"
+            ):
+                raise ValueError(
+                    "MAME XML maincpu must use 16-bit big-endian loading"
+                )
+        elif (
+            dataarea.get("width") is not None
+            or dataarea.get("endianness") is not None
+        ):
+            raise ValueError(
+                f"MAME XML {area_name} must use its native byte loading"
+            )
+        for rom in dataarea.findall("rom"):
+            actual_parts.append(
+                (
+                    area_name,
+                    rom.get("name"),
+                    int(rom.get("size", "0"), 0),
+                    int(rom.get("offset", "0"), 0),
+                    rom.get("loadflag"),
+                )
+            )
+            rom_elements.append(rom)
+
+    if actual_parts != list(mame_software.ROM_PARTS):
+        raise ValueError(
+            "MAME XML ROM names, sizes, offsets, or loading semantics differ "
+            "from the canonical full-size cartridge"
+        )
+
+    for rom in rom_elements:
+        filename = rom.get("name")
+        if filename is None:
+            raise ValueError("MAME XML ROM entry is missing its filename")
+        native_path = _artifact_path(build_dir, filename)
+        expected_crc, expected_sha1 = mame_software.file_hashes(native_path)
+        if rom.get("crc") != expected_crc or rom.get("sha1") != expected_sha1:
+            raise ValueError(
+                f"MAME XML hashes for {filename} do not match the native region"
+            )
 
 
 def _validate_build(build_dir: Path, build_label: str) -> list[str]:
@@ -174,11 +336,69 @@ def _validate_build(build_dir: Path, build_label: str) -> list[str]:
                 f"expected {region.expected_size} ({path})"
             )
 
-    cart_path = _artifact_path(build_dir, CART_FILENAME)
-    if not cart_path.is_file():
-        issues.append(f"{build_label} is missing final ZIP: {cart_path}")
-    elif cart_path.stat().st_size == 0:
-        issues.append(f"{build_label} final ZIP is empty: {cart_path}")
+    for archive in ARCHIVES:
+        cart_path = _artifact_path(build_dir, archive.filename)
+        if not cart_path.is_file():
+            issues.append(
+                f"{build_label} is missing {archive.label}: {cart_path}"
+            )
+        elif cart_path.stat().st_size == 0:
+            issues.append(
+                f"{build_label} {archive.label} is empty: {cart_path}"
+            )
+        elif archive.compatibility_profile:
+            try:
+                puzzledp_compat.validate_archive(cart_path)
+            except puzzledp_compat.CompatibilityError as error:
+                issues.append(
+                    f"{build_label} {archive.label} is invalid: {error}"
+                )
+        else:
+            try:
+                _validate_hardware_archive(build_dir, cart_path)
+            except ValueError as error:
+                issues.append(
+                    f"{build_label} {archive.label} is invalid: {error}"
+                )
+
+    gngeo_data_path = _artifact_path(build_dir, GNGEO_DATA)
+    if not gngeo_data_path.is_file():
+        issues.append(
+            f"{build_label} is missing {GNGEO_DATA_LABEL}: {gngeo_data_path}"
+        )
+    elif gngeo_data_path.stat().st_size == 0:
+        issues.append(
+            f"{build_label} {GNGEO_DATA_LABEL} is empty: {gngeo_data_path}"
+        )
+    else:
+        try:
+            check_gngeo_driver.validate_archive(
+                gngeo_data_path,
+                build_dir / "rom",
+            )
+        except check_gngeo_driver.DriverError as error:
+            issues.append(
+                f"{build_label} {GNGEO_DATA_LABEL} is invalid: {error}"
+            )
+
+    software_list_path = build_dir / MAME_SOFTWARE_LIST
+    if not software_list_path.is_file():
+        issues.append(
+            f"{build_label} is missing {MAME_SOFTWARE_LIST_LABEL}: "
+            f"{software_list_path}"
+        )
+    elif software_list_path.stat().st_size == 0:
+        issues.append(
+            f"{build_label} {MAME_SOFTWARE_LIST_LABEL} is empty: "
+            f"{software_list_path}"
+        )
+    else:
+        try:
+            _validate_mame_software_list(build_dir, software_list_path)
+        except ValueError as error:
+            issues.append(
+                f"{build_label} {MAME_SOFTWARE_LIST_LABEL} is invalid: {error}"
+            )
 
     issues.extend(_validate_manifest(build_dir, build_label))
     return issues
@@ -197,6 +417,8 @@ def _run_build(
         "-C",
         str(neogeo_dir),
         "cart",
+        "compat-cart",
+        "mame-cart",
         f"BUILD={build_dir}",
         f"SMB_ROM={rom}",
     ]
@@ -227,7 +449,7 @@ def check_reproducible_cart(
     make_program: str = "make",
     temp_parent: Path | None = None,
 ) -> tuple[ArtifactResult, ...]:
-    """Build twice in owned temporary directories and compare all cartridge output."""
+    """Build twice and compare canonical, compatibility, GnGeo, and MAME output."""
 
     rom = rom.expanduser().resolve()
     neogeo_dir = neogeo_dir.resolve()
@@ -267,10 +489,31 @@ def check_reproducible_cart(
             if issue is not None:
                 issues.append(issue)
 
+        for archive in ARCHIVES:
+            result, issue = _compare_artifact(
+                archive.label,
+                _artifact_path(first_build, archive.filename),
+                _artifact_path(second_build, archive.filename),
+            )
+            if result is not None:
+                results.append(result)
+            if issue is not None:
+                issues.append(issue)
+
         result, issue = _compare_artifact(
-            "ZIP",
-            _artifact_path(first_build, CART_FILENAME),
-            _artifact_path(second_build, CART_FILENAME),
+            GNGEO_DATA_LABEL,
+            _artifact_path(first_build, GNGEO_DATA),
+            _artifact_path(second_build, GNGEO_DATA),
+        )
+        if result is not None:
+            results.append(result)
+        if issue is not None:
+            issues.append(issue)
+
+        result, issue = _compare_artifact(
+            MAME_SOFTWARE_LIST_LABEL,
+            first_build / MAME_SOFTWARE_LIST,
+            second_build / MAME_SOFTWARE_LIST,
         )
         if result is not None:
             results.append(result)
@@ -306,7 +549,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  - {issue}", file=sys.stderr)
         return 1
 
-    print("Cartridge is reproducible; both isolated builds match exactly:")
+    print(
+        "Cartridges, GnGeo driver data, and MAME software list are reproducible; "
+        "both isolated builds match exactly:"
+    )
     for result in results:
         print(
             f"  {result.label}: {result.size} bytes, "

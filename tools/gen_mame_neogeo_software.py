@@ -10,14 +10,14 @@ import xml.etree.ElementTree as ET
 import zlib
 
 
-GAME_NAME = "smbneogeo"
+GAME_NAME = "smbneo"
 ROM_PARTS = (
-    ("maincpu", "smbneogeo-p1.p1", 0x100000, 0x000000, "load16_word_swap"),
-    ("fixed", "smbneogeo-s1.s1", 0x020000, 0x000000, None),
-    ("audiocpu", "smbneogeo-m1.m1", 0x020000, 0x000000, None),
-    ("ymsnd:adpcma", "smbneogeo-v1.v1", 0x080000, 0x000000, None),
-    ("sprites", "smbneogeo-c1.c1", 0x200000, 0x000000, "load16_byte"),
-    ("sprites", "smbneogeo-c2.c2", 0x200000, 0x000001, "load16_byte"),
+    ("maincpu", "smbneo-p1.p1", 0x100000, 0x000000, "load16_word_swap"),
+    ("fixed", "smbneo-s1.s1", 0x020000, 0x000000, None),
+    ("audiocpu", "smbneo-m1.m1", 0x020000, 0x000000, None),
+    ("ymsnd:adpcma", "smbneo-v1.v1", 0x080000, 0x000000, None),
+    ("sprites", "smbneo-c1.c1", 0x200000, 0x000000, "load16_byte"),
+    ("sprites", "smbneo-c2.c2", 0x200000, 0x000001, "load16_byte"),
 )
 DATA_AREA_SIZES = {
     "maincpu": 0x100000,
@@ -51,7 +51,7 @@ def build_software_list(rom_dir: Path) -> ET.Element:
         {"name": "neogeo", "description": "Local Neo Geo cartridge tests"},
     )
     software = ET.SubElement(software_list, "software", {"name": GAME_NAME})
-    ET.SubElement(software, "description").text = "SMBNeo local validation build"
+    ET.SubElement(software, "description").text = "Super Mario Bros. Neo"
     ET.SubElement(software, "year").text = "2026"
     ET.SubElement(software, "publisher").text = "Community port"
     ET.SubElement(

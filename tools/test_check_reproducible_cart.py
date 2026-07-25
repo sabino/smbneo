@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_reproducible_cart as checker  # noqa: E402
@@ -28,15 +29,19 @@ class FakeBuilder:
         mutate_second: dict[str, bytes] | None = None,
         manifest: dict | None = None,
         omit_manifest: bool = False,
+        omit_mame_list: bool = False,
     ) -> None:
         self.build_dirs: list[Path] = []
         self.commands: list[list[str]] = []
         self.mutate_second = mutate_second or {}
         self.manifest = manifest or {
+            "product_shortname": "smbneo",
+            "product_title": "Super Mario Bros. Neo",
             "verified_revision": True,
             "prg_bytes_written": 0,
         }
         self.omit_manifest = omit_manifest
+        self.omit_mame_list = omit_mame_list
 
     def __call__(self, command: list[str], *, check: bool) -> subprocess.CompletedProcess:
         self.commands.append(command)
@@ -57,10 +62,45 @@ class FakeBuilder:
                 content = self.mutate_second[region.filename]
             (rom_dir / region.filename).write_bytes(content)
 
-        zip_content = b"stable zip bytes"
-        if build_number == 2 and checker.CART_FILENAME in self.mutate_second:
-            zip_content = self.mutate_second[checker.CART_FILENAME]
-        (rom_dir / checker.CART_FILENAME).write_bytes(zip_content)
+        for archive in checker.ARCHIVES:
+            if build_number == 2 and archive.filename in self.mutate_second:
+                (rom_dir / archive.filename).write_bytes(
+                    self.mutate_second[archive.filename]
+                )
+            elif archive.compatibility_profile:
+                (rom_dir / archive.filename).write_bytes(
+                    f"stable {archive.label} bytes".encode()
+                )
+            else:
+                with zipfile.ZipFile(
+                    rom_dir / archive.filename,
+                    "w",
+                    compression=zipfile.ZIP_DEFLATED,
+                ) as cartridge:
+                    for region in checker.REGIONS:
+                        info = zipfile.ZipInfo(
+                            region.filename,
+                            (2026, 1, 1, 0, 0, 0),
+                        )
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        cartridge.writestr(
+                            info,
+                            (rom_dir / region.filename).read_bytes(),
+                        )
+
+        gngeo_content = b"stable custom GnGeo driver data"
+        if build_number == 2 and checker.GNGEO_DATA in self.mutate_second:
+            gngeo_content = self.mutate_second[checker.GNGEO_DATA]
+        (rom_dir / checker.GNGEO_DATA).write_bytes(gngeo_content)
+
+        if not self.omit_mame_list:
+            mame_list = build_dir / checker.MAME_SOFTWARE_LIST
+            mame_list.parent.mkdir(parents=True)
+            mame_content = b"<softwarelist name=\"neogeo\"/>\n"
+            key = checker.MAME_SOFTWARE_LIST.as_posix()
+            if build_number == 2 and key in self.mutate_second:
+                mame_content = self.mutate_second[key]
+            mame_list.write_bytes(mame_content)
 
         if not self.omit_manifest:
             (assets_dir / checker.MANIFEST_FILENAME).write_text(
@@ -80,6 +120,24 @@ class ReproducibleCartTests(unittest.TestCase):
         self.region_patch = mock.patch.object(checker, "REGIONS", TINY_REGIONS)
         self.region_patch.start()
         self.addCleanup(self.region_patch.stop)
+        self.compatibility_validator_patch = mock.patch.object(
+            checker.puzzledp_compat,
+            "validate_archive",
+        )
+        self.compatibility_validator = self.compatibility_validator_patch.start()
+        self.addCleanup(self.compatibility_validator_patch.stop)
+        self.mame_validator_patch = mock.patch.object(
+            checker,
+            "_validate_mame_software_list",
+        )
+        self.mame_validator = self.mame_validator_patch.start()
+        self.addCleanup(self.mame_validator_patch.stop)
+        self.gngeo_validator_patch = mock.patch.object(
+            checker.check_gngeo_driver,
+            "validate_archive",
+        )
+        self.gngeo_validator = self.gngeo_validator_patch.start()
+        self.addCleanup(self.gngeo_validator_patch.stop)
 
     def make_workspace(self, directory: str) -> tuple[Path, Path, Path]:
         root = Path(directory)
@@ -114,7 +172,10 @@ class ReproducibleCartTests(unittest.TestCase):
 
             self.assertEqual(
                 [result.label for result in results],
-                [region.label for region in TINY_REGIONS] + ["ZIP"],
+                [region.label for region in TINY_REGIONS]
+                + [archive.label for archive in checker.ARCHIVES]
+                + [checker.GNGEO_DATA_LABEL]
+                + [checker.MAME_SOFTWARE_LIST_LABEL],
             )
             self.assertEqual(len(fake_builder.build_dirs), 2)
             self.assertNotEqual(fake_builder.build_dirs[0], fake_builder.build_dirs[1])
@@ -134,6 +195,8 @@ class ReproducibleCartTests(unittest.TestCase):
                 fake_builder.build_dirs,
             ):
                 self.assertIn("cart", command)
+                self.assertIn("compat-cart", command)
+                self.assertIn("mame-cart", command)
                 self.assertIn(f"BUILD={build_dir}", command)
                 self.assertIn(f"SMB_ROM={rom.resolve()}", command)
 
@@ -147,7 +210,7 @@ class ReproducibleCartTests(unittest.TestCase):
             fake_builder = FakeBuilder(
                 mutate_second={
                     c1.filename: changed_c1,
-                    checker.CART_FILENAME: b"stable Zip bytes",
+                    checker.ARCHIVES[1].filename: b"stable compatibility zip bytes",
                 }
             )
 
@@ -166,8 +229,35 @@ class ReproducibleCartTests(unittest.TestCase):
             message = str(raised.exception)
             self.assertIn("C1 bytes differ at offset 0x1", message)
             self.assertIn("build 1 has 0x21, build 2 has 0x55", message)
-            self.assertIn("ZIP bytes differ at offset 0x7", message)
+            self.assertIn("Compatibility ZIP bytes differ", message)
             self.assertIn("SHA-256 values are", message)
+
+    def test_reports_mame_software_list_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder(
+                mutate_second={
+                    checker.MAME_SOFTWARE_LIST.as_posix():
+                        b"<softwarelist name=\"wrong\"/>\n",
+                }
+            )
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            self.assertIn(
+                "MAME software list bytes differ",
+                str(raised.exception),
+            )
 
     def test_reports_all_bad_sizes_and_manifest_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -176,6 +266,8 @@ class ReproducibleCartTests(unittest.TestCase):
             fake_builder = FakeBuilder(
                 mutate_second={p_region.filename: b"x"},
                 manifest={
+                    "product_shortname": "wrong",
+                    "product_title": "Wrong",
                     "verified_revision": False,
                     "prg_bytes_written": 1,
                 },
@@ -197,6 +289,8 @@ class ReproducibleCartTests(unittest.TestCase):
             self.assertIn("build 2 P region has 1 bytes", message)
             self.assertIn("verified_revision=False; expected true", message)
             self.assertIn("prg_bytes_written=1; expected 0", message)
+            self.assertIn("product_shortname='wrong'; expected 'smbneo'", message)
+            self.assertIn("product_title='Wrong'", message)
             self.assertIn("P bytes differ", message)
 
     def test_missing_manifest_is_rejected_for_both_builds(self) -> None:
@@ -220,6 +314,111 @@ class ReproducibleCartTests(unittest.TestCase):
             self.assertIn("build 1 is missing asset manifest", message)
             self.assertIn("build 2 is missing asset manifest", message)
 
+    def test_invalid_compatibility_archive_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder()
+            self.compatibility_validator.side_effect = (
+                checker.puzzledp_compat.CompatibilityError("wrong CRC")
+            )
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn(
+                "build 1 Compatibility ZIP is invalid: wrong CRC",
+                message,
+            )
+            self.assertIn(
+                "build 2 Compatibility ZIP is invalid: wrong CRC",
+                message,
+            )
+
+    def test_invalid_hardware_archive_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder(
+                mutate_second={"smbneo.zip": b"not a ZIP"},
+            )
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            self.assertIn(
+                "build 2 Canonical ZIP is invalid: cannot read",
+                str(raised.exception),
+            )
+
+    def test_invalid_mame_software_list_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder()
+            self.mame_validator.side_effect = ValueError(
+                "MAME XML must use the unique smbneo software identity"
+            )
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn(
+                "build 1 MAME software list is invalid",
+                message,
+            )
+            self.assertIn(
+                "build 2 MAME software list is invalid",
+                message,
+            )
+
+    def test_missing_mame_software_list_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder(omit_mame_list=True)
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn("build 1 is missing MAME software list", message)
+            self.assertIn("build 2 is missing MAME software list", message)
+
     def test_real_region_sizes_match_cartridge_layout(self) -> None:
         expected = {
             "P": 1024 * 1024,
@@ -234,6 +433,46 @@ class ReproducibleCartTests(unittest.TestCase):
             for region in REAL_REGIONS
         }
         self.assertEqual(actual, expected)
+
+
+class MameSoftwareListValidationTests(unittest.TestCase):
+    def test_accepts_only_the_full_smbneo_software_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            build_dir = Path(temporary)
+            rom_dir = build_dir / "rom"
+            software_list = build_dir / checker.MAME_SOFTWARE_LIST
+            rom_dir.mkdir()
+
+            for index, (_, filename, size, _, _) in enumerate(
+                checker.mame_software.ROM_PARTS
+            ):
+                (rom_dir / filename).write_bytes(bytes([index + 1]) * size)
+
+            checker.mame_software.write_software_list(
+                rom_dir,
+                software_list,
+            )
+            checker._validate_mame_software_list(
+                build_dir,
+                software_list,
+            )
+
+            text = software_list.read_text(encoding="utf-8")
+            software_list.write_text(
+                text.replace(
+                    '<software name="smbneo">',
+                    '<software name="puzzledp">',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "unique smbneo software identity",
+            ):
+                checker._validate_mame_software_list(
+                    build_dir,
+                    software_list,
+                )
 
 
 if __name__ == "__main__":

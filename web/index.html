@@ -6,20 +6,20 @@
   <meta name="theme-color" content="#131b3a">
   <meta
     name="description"
-    content="Play the SMBNeo Neo Geo port in your browser using your own local game image."
+    content="Play Super Mario Bros. Neo in your browser using your own local game image."
   >
   <link rel="icon" href="title.png">
   <link rel="preconnect" href="https://cdn.emulatorjs.org" crossorigin>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="style.css">
-  <title>SMBNeo — Play in Browser</title>
+  <title>Super Mario Bros. Neo — Play in Browser</title>
 </head>
 <body>
   <main>
     <header class="site-header">
       <div>
-        <p class="eyebrow">Neo Geo Edition</p>
-        <h1>SMBNeo</h1>
+        <p class="eyebrow">SMBNeo</p>
+        <h1>Super Mario Bros. Neo</h1>
       </div>
       <nav aria-label="Project links">
         <a href="https://github.com/sabino/smbneo">Source code</a>
@@ -34,9 +34,39 @@
       </div>
       <p>
         Choose your own supported <code>.nes</code> file, a ZIP containing it,
-        or a locally built <code>smbneogeo.zip</code>. The file is processed
-        entirely inside your browser and is never uploaded.
+        or a locally built <code>smbneo.zip</code> or
+        <code>puzzledp.zip</code>. The file is processed entirely inside
+        your browser and is never uploaded.
       </p>
+    </section>
+
+    <section id="downloads" class="downloads" aria-labelledby="downloads-title" hidden>
+      <div>
+        <p class="eyebrow">Your generated cartridges</p>
+        <h2 id="downloads-title">Download either output</h2>
+      </div>
+      <div class="download-grid">
+        <article>
+          <h3>Canonical cartridge</h3>
+          <p>
+            Full hardware-native layout for flashcarts, MAME, and the
+            project’s custom GnGeo driver.
+          </p>
+          <button id="download-canonical" class="download-button" type="button" disabled>
+            Download smbneo.zip
+          </button>
+        </article>
+        <article>
+          <h3>Fixed-database compatibility</h3>
+          <p>
+            Optional donor-compatible package for FBNeo, EmulatorJS, and
+            other frontends that cannot load custom metadata.
+          </p>
+          <button id="download-compatible" class="download-button secondary" type="button" disabled>
+            Download puzzledp.zip
+          </button>
+        </article>
+      </div>
     </section>
 
     <section class="player-section" aria-label="SMBNeo browser emulator">
@@ -107,7 +137,8 @@
       <p>
         This site contains the open-source port and an open Neo Geo BIOS, but
         no original game ROM or generated cartridge. Graphics are created in
-        memory from the file you select and disappear when the page is closed.
+        memory from the file you select. Nothing is uploaded; generated data
+        disappears when the page is closed unless you explicitly download it.
       </p>
     </section>
 

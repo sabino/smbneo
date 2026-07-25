@@ -12,9 +12,10 @@ WEB_BUILD := $(BUILD)/web
 WEB_TARGET := $(WEB_BUILD)/smbneogeo-web.elf
 WEB_MAP := $(WEB_BUILD)/smbneogeo-web.map
 WEB_VIDEO_OBJECT := $(WEB_BUILD)/video.o
-WEB_PROM := $(WEB_BUILD)/smbneogeo-p1.p1
-WEB_MROM := $(WEB_BUILD)/smbneogeo-m1.m1
-WEB_VROM := $(WEB_BUILD)/smbneogeo-v1.v1
+WEB_NATIVE_PROM := $(WEB_BUILD)/smbneo-p1.p1
+WEB_PROM := $(WEB_BUILD)/smbneo-web-p1.p1
+WEB_MROM := $(WEB_BUILD)/smbneo-m1.m1
+WEB_VROM := $(WEB_BUILD)/smbneo-v1.v1
 WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
@@ -27,7 +28,7 @@ APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
 AUDIO_PACKET_TEST := $(BUILD)/test_neogeo_audio_packet
 AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
-GAMEROM := smbneogeo
+GAMEROM := smbneo
 
 CC := m68k-neogeo-elf-gcc
 HOST_CC ?= cc
@@ -67,7 +68,8 @@ CFLAGS := \
 	-MMD -MP $(WARN_FLAGS)
 LDFLAGS := \
 	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
-	-Wl,--defsym=rom_eye_catcher_mode=2
+	-Wl,--defsym=rom_eye_catcher_mode=2 \
+	-Wl,--defsym=rom_NGH_ID=0x534d
 
 ENGINE_SOURCES := \
 	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
@@ -97,7 +99,8 @@ SROM1 := $(ROMDIR)/$(GAMEROM)-s1.s1
 MROM1 := $(ROMDIR)/$(GAMEROM)-m1.m1
 VROM1 := $(ROMDIR)/$(GAMEROM)-v1.v1
 TRIANGLE_VROM := $(BUILD)/$(GAMEROM)-triangle-v1.v1
-CART := $(ROMDIR)/$(GAMEROM).zip
+COMPAT_CART := $(ROMDIR)/puzzledp.zip
+HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
@@ -167,8 +170,10 @@ SOUND_DRIVER_LIBRARY := $(NG_Z80_LIB)/nullsound.lib
 SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
 TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
 WEB_PLAYER_BUILDER := $(ROOT)/tools/build_web_player.py
+PUZZLEDP_COMPAT_BUILDER := $(ROOT)/tools/puzzledp_compat.py
 WEB_BIOS ?= $(NG_SHARE)/neogeo.zip
 MAME_SOFTWARE_GENERATOR := $(ROOT)/tools/gen_mame_neogeo_software.py
+GNGEO_DRIVER_CHECKER := $(ROOT)/tools/check_gngeo_driver.py
 MAME_CAPTURE_SCRIPT := $(ROOT)/tools/mame/smbneo_capture.lua
 TRIANGLE_VROM_SHA256 := \
 	c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7
@@ -180,8 +185,9 @@ REPLAY_FAST_FLAG := \
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen verify-sound-driver assets cart run web \
-	mame-list mame-run mame-capture \
+	all elf test verify verify-codegen verify-sound-driver assets \
+	native-roms cart compat-cart hardware-cart run web \
+	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
 all: verify
@@ -403,16 +409,11 @@ $(TITLE_SOURCE): FORCE | $(ASSETDIR)
 
 FORCE:
 
-cart: \
+native-roms: \
 		assets $(CART_TARGET) verify-sound-driver $(TRIANGLE_VROM) \
 		| $(ROMDIR) $(ASSETDIR)
 	@test -n "$(SMB_ROM)" || { \
 		echo "SMB_ROM is required (a .nes or ZIP containing it)" >&2; \
-		exit 2; \
-	}
-	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
-		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
-		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
 		exit 2; \
 	}
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(CART_TARGET)
@@ -431,35 +432,57 @@ cart: \
 	chmod 0644 $(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
 	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
 		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
+
+cart: hardware-cart
+
+compat-cart: native-roms $(PUZZLEDP_COMPAT_BUILDER)
+	$(PYTHON) $(PUZZLEDP_COMPAT_BUILDER) \
+		--rom-dir $(ROMDIR) \
+		--output $(COMPAT_CART)
+	@echo "Optional fixed-database cartridge: $(COMPAT_CART)"
+
+hardware-cart: native-roms
+	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
+		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
+		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
+		exit 2; \
+	}
 	TZ=UTC $(ROMTOOL) -b cartridge -f zip \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
-		-n $(GAMEROM) -l "SMBNeo" \
+		-n $(GAMEROM) -l "Super Mario Bros. Neo" \
 		-y 2026 --publisher "Community port" \
-		-o $(CART)
+		-o $(HARDWARE_CART)
 	$(ROMTOOL) -b hash -f gngeo \
 		-p $(PROM) -c $(CROM1) $(CROM2) \
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
-		-n $(GAMEROM) -l "SMBNeo" \
+		-n $(GAMEROM) -l "Super Mario Bros. Neo" \
 		-x gngeo.data=$(GNGEO_SUPPORT_DATA) \
 		-o $(GNGEO_DATA)
+	$(PYTHON) $(GNGEO_DRIVER_CHECKER) \
+		--data $(GNGEO_DATA) --rom-dir $(ROMDIR) \
+		--shortname $(GAMEROM) --title "Super Mario Bros. Neo"
 	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
 	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
-	@echo "Built $(CART)"
+	@echo "Canonical hardware/MAME/GnGeo cartridge: $(HARDWARE_CART)"
 
-run: cart
+run: hardware-cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		$(GNGEO_REALTIME_FLAGS) \
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
 		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
 
-mame-list: cart | $(MAME_HASHDIR)
+mame-list: hardware-cart | $(MAME_HASHDIR)
 	$(PYTHON) $(MAME_SOFTWARE_GENERATOR) \
 		--rom-dir $(ROMDIR) \
 		--output $(MAME_SOFTWARE_LIST)
 
-mame-run: mame-list | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
+mame-cart: mame-list
+	@echo "Canonical MAME software list: $(MAME_SOFTWARE_LIST)"
+	@echo "Canonical MAME cartridge: $(HARDWARE_CART)"
+
+mame-run: mame-cart | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 	@command -v "$(MAME)" >/dev/null 2>&1 || { \
 		echo "MAME executable not found: $(MAME)" >&2; \
 		exit 2; \
@@ -473,7 +496,7 @@ mame-run: mame-list | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 		$(MAME_RUN_FLAGS)
 
 mame-capture: \
-		mame-list \
+		mame-cart \
 		| $(MAME_CAPTURE_DIR) $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 	@command -v "$(MAME)" >/dev/null 2>&1 || { \
 		echo "MAME executable not found: $(MAME)" >&2; \
@@ -490,6 +513,13 @@ mame-capture: \
 		-video none -sound none -nothrottle -seconds_to_run 25 \
 		-autoboot_script "$(MAME_CAPTURE_SCRIPT)"
 	@echo "MAME captures: $(MAME_CAPTURE_DIR)"
+
+$(WEB_NATIVE_PROM): $(TARGET) | $(WEB_BUILD)
+	$(OBJCOPY) -O binary -S -R .text2 \
+		--gap-fill 0xff --pad-to 1048576 \
+		$(TARGET) $@
+	dd if=$@ of=$@ conv=notrunc,swab status=none
+	chmod 0644 $@
 
 $(WEB_PROM): $(WEB_TARGET) | $(WEB_BUILD)
 	$(OBJCOPY) -O binary -S -R .text2 \
@@ -508,15 +538,17 @@ $(WEB_VROM): $(TRIANGLE_VROM) | $(WEB_BUILD)
 	cp $(TRIANGLE_VROM) $@
 	chmod 0644 $@
 
-web: $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) verify-sound-driver
+web: $(WEB_NATIVE_PROM) $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) verify-sound-driver
 	@test -f "$(WEB_BIOS)" || { \
 		echo "ngdevkit NullBIOS is missing: $(WEB_BIOS)" >&2; \
 		exit 2; \
 	}
 	$(PYTHON) $(ROOT)/tools/check_neogeo_elf.py $(WEB_TARGET)
 	$(PYTHON) $(WEB_PLAYER_BUILDER) \
-		--elf $(WEB_TARGET) \
-		--prom $(WEB_PROM) \
+		--native-elf $(TARGET) \
+		--native-prom $(WEB_NATIVE_PROM) \
+		--web-elf $(WEB_TARGET) \
+		--web-prom $(WEB_PROM) \
 		--mrom $(WEB_MROM) \
 		--vrom $(WEB_VROM) \
 		--bios "$(WEB_BIOS)" \

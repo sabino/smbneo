@@ -49,13 +49,21 @@ jobs:
           make web
           jq -e '
             .project == "SMBNeo" and
+            .product.shortname == "smbneo" and
+            .product.title == "Super Mario Bros. Neo" and
+            .product.canonical_archive == "smbneo.zip" and
+            .fbneo_driver == "puzzledp" and
+            .downloads.canonical.filename == "smbneo.zip" and
+            .downloads.canonical.shortname == "smbneo" and
+            .downloads.compatibility.filename == "puzzledp.zip" and
+            .downloads.compatibility.shortname == "puzzledp" and
             .privacy.game_image_included == false and
             .privacy.generated_graphics_included == false and
             .privacy.generated_cartridge_included == false
           ' dist/pages/build-manifest.json
           test -s dist/pages/index.html
           test -s dist/pages/assets/smbneo-template.zip
-          test -s dist/pages/assets/neogeo.zip
+          test -s dist/pages/neogeo.zip
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

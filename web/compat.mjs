@@ -15,13 +15,15 @@ const SROM_SOLID_TILE = 514;
 const SROM_SIZE = 128 * 1024;
 
 const CART_ENTRIES = Object.freeze({
-  p: "smbneogeo-p1.p1",
-  m: "smbneogeo-m1.m1",
-  v: "smbneogeo-v1.v1",
-  s: "smbneogeo-s1.s1",
-  c1: "smbneogeo-c1.c1",
-  c2: "smbneogeo-c2.c2",
+  p: "smbneo-p1.p1",
+  m: "smbneo-m1.m1",
+  v: "smbneo-v1.v1",
+  s: "smbneo-s1.s1",
+  c1: "smbneo-c1.c1",
+  c2: "smbneo-c2.c2",
 });
+
+const WEB_PROM_ENTRY = "smbneo-web-p1.p1";
 
 const CART_SIZES = Object.freeze({
   p: 0x100000,
@@ -32,14 +34,13 @@ const CART_SIZES = Object.freeze({
   c2: 0x200000,
 });
 
-const FBNEO_LAYOUT = Object.freeze([
-  ["19yy-p1.p1", 0x200000, 0x59374c47, "p"],
-  ["19yy-s1.s1", 0x020000, 0x219b6f40, "s"],
-  ["19yy-c1.c1", 0x400000, 0x622719d5, "c1"],
-  ["19yy-c2.c2", 0x400000, 0x41b07be5, "c2"],
-  ["19yy-m1.m1", 0x020000, 0x8e05762a, "m"],
-  ["19yy-v1.v1", 0x800000, 0x944146c2, "v"],
-  ["19yy-v2.v2", 0x800000, 0xa4bafe45, null],
+const PUZZLEDP_LAYOUT = Object.freeze([
+  ["202-p1.bin", 0x080000, 0x2b61415b, "p", 0xff],
+  ["202-s1.bin", 0x020000, 0xcd19264f, "s", 0x00],
+  ["202-m1.bin", 0x020000, 0x9c0291ea, "m", 0x00],
+  ["202-v1.bin", 0x080000, 0xdebeb8fb, "v", 0x00],
+  ["202-c1.bin", 0x100000, 0xcc0095ef, "c1", 0x00],
+  ["202-c2.bin", 0x100000, 0x42371307, "c2", 0x00],
 ]);
 
 let crcTable;
@@ -102,7 +103,51 @@ export function classifyInput(input, unzipSync) {
       cartridge[part] = entries.get(name);
     }
     validateCartridgeParts(cartridge);
-    return { kind: "cartridge", cartridge };
+    return { kind: "cartridge", profile: "canonical", cartridge };
+  }
+
+  const hasPuzzledpCartridge = PUZZLEDP_LAYOUT.every(([name]) =>
+    entries.has(name)
+  );
+  if (hasPuzzledpCartridge) {
+    const cartridge = {};
+    for (const [
+      name,
+      compatibilitySize,
+      expectedCrc,
+      part,
+      paddingByte,
+    ] of PUZZLEDP_LAYOUT) {
+      const source = entries.get(name);
+      if (source.length !== compatibilitySize) {
+        throw new Error(
+          `${name} is ${source.length} bytes; expected ${compatibilitySize}`
+        );
+      }
+      const actualCrc = crc32(source);
+      if (actualCrc !== expectedCrc) {
+        throw new Error(
+          `${name} CRC is ${actualCrc.toString(16).padStart(8, "0")}; ` +
+          `expected ${expectedCrc.toString(16).padStart(8, "0")}`
+        );
+      }
+
+      const expanded = new Uint8Array(CART_SIZES[part]);
+      expanded.fill(paddingByte);
+      expanded.set(source);
+      /*
+       * SMBNeo's compatibility builder owns these four bytes and always uses
+       * them for CRC correction. Restore padding before another conversion.
+       */
+      expanded.fill(
+        paddingByte,
+        compatibilitySize - 4,
+        compatibilitySize
+      );
+      cartridge[part] = expanded;
+    }
+    validateCartridgeParts(cartridge);
+    return { kind: "cartridge", profile: "compatibility", cartridge };
   }
 
   const nesEntries = [...entries.entries()].filter(([name]) =>
@@ -295,20 +340,45 @@ export function adaptCartridgeForWeb(
 ) {
   validateCartridgeParts(cartridge);
   const entries = entriesByBaseName(templateEntries);
+  if (!entries.has(WEB_PROM_ENTRY)) {
+    throw new Error(`browser template is missing ${WEB_PROM_ENTRY}`);
+  }
+
+  const title = new Uint8Array(TITLE_SCREEN_CHR_SIZE);
+  for (let index = 0; index < title.length; index += 1) {
+    title[index] = cartridge.p[titleOffset.native + (index ^ 1)];
+  }
+  return {
+    ...cartridge,
+    p: patchTemplateProm(
+      entries.get(WEB_PROM_ENTRY),
+      title,
+      titleOffset.web
+    ),
+  };
+}
+
+export function adaptCompatibilityCartridgeForNative(
+  cartridge,
+  templateEntries,
+  titleOffset
+) {
+  validateCartridgeParts(cartridge);
+  const entries = entriesByBaseName(templateEntries);
   if (!entries.has(CART_ENTRIES.p)) {
     throw new Error(`browser template is missing ${CART_ENTRIES.p}`);
   }
 
   const title = new Uint8Array(TITLE_SCREEN_CHR_SIZE);
   for (let index = 0; index < title.length; index += 1) {
-    title[index] = cartridge.p[titleOffset + (index ^ 1)];
+    title[index] = cartridge.p[titleOffset.web + (index ^ 1)];
   }
   return {
     ...cartridge,
     p: patchTemplateProm(
       entries.get(CART_ENTRIES.p),
       title,
-      titleOffset
+      titleOffset.native
     ),
   };
 }
@@ -354,6 +424,15 @@ export function validateCartridgeParts(cartridge) {
       );
     }
   }
+}
+
+export function buildCanonicalEntries(cartridge) {
+  validateCartridgeParts(cartridge);
+  const output = {};
+  for (const [part, name] of Object.entries(CART_ENTRIES)) {
+    output[name] = asBytes(cartridge[part]).slice();
+  }
+  return output;
 }
 
 function getCrcTable() {
@@ -497,47 +576,42 @@ export function forceTailCrc32(input, desiredCrc) {
   return bytes;
 }
 
-function paddedEntry(sourceInput, size, fillByte = 0) {
-  const output = new Uint8Array(size);
-  output.fill(fillByte);
-  if (sourceInput !== null) {
-    const source = asBytes(sourceInput);
-    if (source.length > output.length) {
+function compatibilityEntry(sourceInput, size, fillByte, label) {
+  const source = asBytes(sourceInput);
+  if (source.length < size) {
+    throw new Error(
+      `${label} source is ${source.length} bytes; target is ${size}`
+    );
+  }
+  for (let offset = size; offset < source.length; offset += 1) {
+    if (source[offset] !== fillByte) {
       throw new Error(
-        `ROM source is ${source.length} bytes; target is ${output.length}`
+        `${label} cannot omit byte ${offset.toString(16)}: expected ` +
+        `${fillByte.toString(16).padStart(2, "0")} padding`
       );
     }
-    output.set(source);
   }
-  return output;
+  return source.slice(0, size);
 }
 
-export function buildFbneoEntries(cartridge, onProgress = () => {}) {
+export function buildPuzzledpEntries(cartridge, onProgress = () => {}) {
   validateCartridgeParts(cartridge);
   const output = {};
 
-  FBNEO_LAYOUT.forEach(([name, size, desiredCrc, sourcePart], index) => {
-    onProgress(index, FBNEO_LAYOUT.length, name);
-    let entry;
-    if (sourcePart === "p") {
-      entry = new Uint8Array(size);
-      entry.fill(0xff);
-      /*
-       * This FBNeo driver swaps its two 1 MiB program halves while loading.
-       * Keeping the native P1 in the archive's second half restores it at
-       * address zero after that swap.
-       */
-      entry.set(asBytes(cartridge.p), 0x100000);
-    } else {
-      entry = paddedEntry(
-        sourcePart === null ? null : cartridge[sourcePart],
-        size
+  PUZZLEDP_LAYOUT.forEach(
+    ([name, size, desiredCrc, sourcePart, fillByte], index) => {
+      onProgress(index, PUZZLEDP_LAYOUT.length, name);
+      const entry = compatibilityEntry(
+        cartridge[sourcePart],
+        size,
+        fillByte,
+        name
       );
+      output[name] = forceTailCrc32(entry, desiredCrc);
     }
-    output[name] = forceTailCrc32(entry, desiredCrc);
-  });
+  );
 
-  onProgress(FBNEO_LAYOUT.length, FBNEO_LAYOUT.length, "complete");
+  onProgress(PUZZLEDP_LAYOUT.length, PUZZLEDP_LAYOUT.length, "complete");
   return output;
 }
 

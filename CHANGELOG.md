@@ -14,5 +14,11 @@
 - Added ROM-free host CI.
 - Added a ROM-free browser player with local game conversion, arrow-key
   controls, and GitHub Pages deployment.
+- Made the full native `smbneo.zip` the canonical hardware, MAME, and custom
+  GnGeo output, with the visible title **Super Mario Bros. Neo**.
+- Kept `puzzledp.zip` as an optional fixed-database compatibility package and
+  as the internal FBNeo/EmulatorJS launch identity only.
+- Added local browser downloads for both generated cartridge layouts without
+  uploading or committing user-supplied game data.
 - Focused the active fork branch on Neo Geo and removed the upstream desktop,
   original WebAssembly, and 3DS frontends.

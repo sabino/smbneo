@@ -28,6 +28,9 @@ From the repository root:
 ```bash
 make -C platform/neogeo verify
 make -C platform/neogeo cart SMB_ROM="/path/to/owned/smb.nes"
+make -C platform/neogeo compat-cart SMB_ROM="/path/to/owned/smb.nes"
+make -C platform/neogeo hardware-cart SMB_ROM="/path/to/owned/smb.nes"
+make -C platform/neogeo mame-cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo run SMB_ROM="/path/to/owned/smb.zip"
 python3 tools/check_reproducible_cart.py --rom="/path/to/owned/smb.zip"
 python3 tools/probe_neogeo_audio.py
@@ -53,17 +56,27 @@ make -C platform/neogeo replay-rendered-evidence \
 
 `verify` does not need an SMB ROM. It builds and tests the integer audio
 bridge, links the custom Z80 driver, and rejects a missing or unsafe Z80 linker
-map in addition to the MC68000 checks. `cart` and `run` accept either a raw
-iNES file or a ZIP with exactly one `.nes` member. Interactive `run` and
-`replay-run` explicitly use stock CPU-clock adjustments plus
-`--autoframeskip --sleepidle --no-vsync`. GnGeo implements its 60 Hz host wait
-inside the automatic-frame-skip path, so disabling that option also removes
-wall-clock throttling and lets gameplay speed follow host load. The grouped
-Z80 driver/map rule requires GNU Make 4.3 or newer. The cadence probe uses an
-isolated X display, positively verifies ownership of the emulator's fixed
-debugger listener, and applies a finite sampling deadline. It intentionally
-disables host pacing to measure guest game frames per emulated VBlank; it is
-not the interactive wall-clock-speed gate. `replay-cart`
+map in addition to the MC68000 checks. `cart`, `hardware-cart`, and `run`
+accept either a raw iNES file or a ZIP with exactly one `.nes` member.
+`cart` and `hardware-cart` both produce the authoritative full-layout
+`build/rom/smbneo.zip`. They also generate `build/rom/gngeo_data.zip` with a
+validated custom `smbneo` driver. `run` launches that custom identity.
+`mame-cart` adds `build/mame/hash/neogeo.xml`, which exposes the same full
+cartridge to MAME as `smbneo`, titled **Super Mario Bros. Neo**.
+`compat-cart` is the optional fixed-database workaround and creates
+`build/rom/puzzledp.zip`. See
+[`docs/EMULATOR_COMPATIBILITY.md`](../../docs/EMULATOR_COMPATIBILITY.md) for
+the exact FBNeo, NEO.emu, MAME, GnGeo, and BIOS paths.
+
+Interactive `run` and `replay-run` explicitly use stock CPU-clock adjustments
+plus `--autoframeskip --sleepidle --no-vsync`. GnGeo implements its 60 Hz host
+wait inside the automatic-frame-skip path, so disabling that option also
+removes wall-clock throttling and lets gameplay speed follow host load. The
+grouped Z80 driver/map rule requires GNU Make 4.3 or newer. The cadence probe
+uses an isolated X display, positively verifies ownership of the emulator's
+fixed debugger listener, and applies a finite sampling deadline. It
+intentionally disables host pacing to measure guest game frames per emulated
+VBlank; it is not the interactive wall-clock-speed gate. `replay-cart`
 requires a local text FM2; it does not download or track the movie. The
 `REPLAY_HARDWARE_PLAYABLE=1` policy rejects simultaneous opposite joystick
 directions. The runner owns an isolated display and emulator process group,
@@ -100,7 +113,10 @@ The following repository-local build output is intentionally ignored:
 - title-enabled `build/smbneogeo-cart.elf` / `.map` cartridge outputs
 - `build/smbneogeo-sound.ihx` / `.map` and Z80 assembler intermediates
 - `build/assets/asset-manifest.json`
-- `build/rom/smbneogeo.zip`
+- `build/rom/smbneo.zip` (canonical hardware/MAME/GnGeo package)
+- `build/rom/gngeo_data.zip` (generated custom `smbneo` GnGeo driver)
+- `build/rom/puzzledp.zip` (optional fixed-database compatibility package)
+- `build/mame/hash/neogeo.xml` (canonical local MAME software list)
 - `build/replay-fast/` and `build/replay-rendered/`
 - emulator BIOS/hash support files
 

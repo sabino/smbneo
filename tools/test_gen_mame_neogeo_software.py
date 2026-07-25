@@ -39,8 +39,35 @@ class MameSoftwareListTests(unittest.TestCase):
             )
 
             software_list = ET.parse(output).getroot()
-            software = software_list.find("./software[@name='smbneogeo']")
-            self.assertIsNotNone(software)
+            software_entries = software_list.findall("./software")
+            self.assertEqual(len(software_entries), 1)
+            software = software_entries[0]
+            self.assertEqual(software.get("name"), "smbneo")
+            self.assertEqual(
+                software.findtext("description"),
+                "Super Mario Bros. Neo",
+            )
+            self.assertNotIn("puzzledp", text)
+
+            actual_rom_parts = []
+            for dataarea in software.findall("./part/dataarea"):
+                for rom in dataarea.findall("rom"):
+                    actual_rom_parts.append(
+                        (
+                            dataarea.get("name"),
+                            rom.get("name"),
+                            int(rom.get("size", "0"), 0),
+                            int(rom.get("offset", "0"), 0),
+                            rom.get("loadflag"),
+                        )
+                    )
+            self.assertEqual(actual_rom_parts, list(mame_list.ROM_PARTS))
+
+            actual_area_sizes = {
+                dataarea.get("name"): int(dataarea.get("size", "0"), 0)
+                for dataarea in software.findall("./part/dataarea")
+            }
+            self.assertEqual(actual_area_sizes, mame_list.DATA_AREA_SIZES)
 
             maincpu = software.find("./part/dataarea[@name='maincpu']")
             self.assertIsNotNone(maincpu)
@@ -72,7 +99,7 @@ class MameSoftwareListTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             rom_dir = Path(temporary)
             self.write_test_roms(rom_dir)
-            (rom_dir / "smbneogeo-s1.s1").write_bytes(b"short")
+            (rom_dir / "smbneo-s1.s1").write_bytes(b"short")
 
             with self.assertRaisesRegex(ValueError, "expected 131072 bytes"):
                 mame_list.build_software_list(rom_dir)

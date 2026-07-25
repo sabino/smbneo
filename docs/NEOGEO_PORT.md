@@ -488,10 +488,35 @@ exactly one `.nes` member. It:
 6. pads C1/C2/S1 to cartridge sizes; and
 7. records a manifest confirming that zero source PRG bytes were written.
 
-The Makefile then builds the one-megabyte P1, custom Z80 sound-driver M1,
-generated triangle V1, cartridge ZIP, and GnGeo hash data. A shared V1 target
-encodes the 64 KiB ADPCM-B loop, pads the image to 512 KiB, and checks
-SHA-256
+The Makefile then builds the one-megabyte native P1, custom Z80 sound-driver
+M1, generated triangle V1, and full C/S regions. `make cart` packages those
+full regions as the authoritative `smbneo.zip`; `make hardware-cart` is an
+explicit alias for that same physical-cartridge layout.
+
+The canonical build also generates `gngeo_data.zip` with one custom
+`rom/smbneo.drv` entry. A validator checks the title, full region sizes,
+filenames, destinations, and CRCs against the native ROM files. The ordinary
+`make run` path therefore launches the project as `smbneo`, not through a
+donor database entry. The cartridge header also uses the project-specific
+unofficial NGH value `0x534d` instead of ngdevkit's generic default.
+
+`make mame-cart` pairs `smbneo.zip` with a generated
+`build/mame/hash/neogeo.xml` containing the unique `smbneo` software entry,
+the visible title **Super Mario Bros. Neo**, full region sizes, generated
+hashes, and explicit MAME loading semantics. MAME therefore never needs to
+describe the canonical build as another game.
+
+`make compat-cart` separately generates the optional `puzzledp.zip` profile
+for fixed-database frontends. It retains the first 512 KiB of P1 and first
+1 MiB of each C ROM only after proving that every omitted byte is native
+`FF`/zero padding. The six expected driver CRCs are reached by changing only
+the last four bytes of verified padding tails; P1 remains at offset zero for
+`load16_word_swap`. Exact loader paths and the separate `neogeo.zip`
+requirement are documented in
+[`EMULATOR_COMPATIBILITY.md`](EMULATOR_COMPATIBILITY.md).
+
+A shared V1 target encodes the 64 KiB ADPCM-B loop, pads the image to 512 KiB,
+and checks SHA-256
 `c52017058a226a44506a5d94fc1f692b42fe818302761da64d4f7adc5e5928a7`.
 Normal and replay recipes copy and recheck that identical artifact before
 packaging, so a correctly sized stale or zero-filled V1 cannot survive an
@@ -507,9 +532,12 @@ and identical 105,220-byte cartridge ZIPs with SHA-256
 
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
-sizes, the asset-clean manifest, and byte-for-byte equality of every region
-and the final cartridge ZIP. It never cleans or writes the normal
-`platform/neogeo/build/` directory.
+sizes, the asset-clean manifest, the exact optional compatibility profile,
+the full native contents of `smbneo.zip`, the generated custom GnGeo driver,
+and the unique canonical MAME software-list semantics. It requires
+byte-for-byte equality of every region, both cartridge ZIPs,
+`gngeo_data.zip`, and the generated `neogeo.xml`. It never cleans or writes
+the normal `platform/neogeo/build/` directory.
 
 `tools/rec_tool.py` retains the input movie's exact frame count, source hash,
 initial reset command, and RAM-initialization provenance. Movies from
@@ -822,6 +850,10 @@ make mame-capture SMB_ROM="/path/to/smb.zip"
 make -C platform/neogeo verify
 make -C platform/neogeo cart \
   SMB_ROM="/path/to/smb.zip"
+make -C platform/neogeo hardware-cart \
+  SMB_ROM="/path/to/smb.zip"
+make -C platform/neogeo mame-cart \
+  SMB_ROM="/path/to/smb.zip"
 python3 tools/check_reproducible_cart.py \
   --rom "/path/to/smb.zip"
 # Must run without GnGeo debugger mode so its Z80/audio path executes.
@@ -851,10 +883,10 @@ python3 tools/run_neogeo_replay_gate.py \
 The current `verify` result includes a passing native audio bridge regression
 and Z80 map-checker regression. It also links the custom sound driver and
 reports 10,965 bytes of Z80 fixed code, 1,945 bytes of static data, and 100
-bytes of data-to-stack headroom. The cartridge pipeline packages that driver
-as M1, packages the hash-checked generated triangle as V1, and includes M1/V1
-in reproducibility size and hash checks. The M1 image and linker map are
-grouped build outputs;
+bytes of data-to-stack headroom. Both cartridge profiles package that driver
+as M1 and the hash-checked generated triangle as V1; the reproducibility lane
+checks the native regions and both final archives. The M1 image and linker map
+are grouped build outputs;
 changes to the nullsound library or included command helper trigger a relink,
 and the map checker runs on every verification or cartridge invocation.
 
@@ -868,9 +900,9 @@ timing/sample arguments, so the measurements remain tied to the binaries that
 were exercised.
 
 The supplied ZIP contained one 40,976-byte iNES file with the supported
-SHA-1. The generated cartridge loaded all P/M/V/S/C regions in
-ngdevkit-gngeo, initialized the AES BIOS and 68000, and produced stable
-640x448 captures (2x scale) showing:
+SHA-1. The generated canonical hardware cartridge loaded all P/M/V/S/C
+regions in ngdevkit-gngeo, initialized the AES BIOS and 68000, and produced
+stable 640x448 captures (2x scale) showing:
 
 - the large centered title panel and complete one/two-player menu;
 - the centered/cropped 256x224 viewport;

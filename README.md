@@ -15,7 +15,9 @@ progress, but the game is playable from the title screen through the ending.
 **[Launch SMBNeo in your browser](https://sabino.pro/smbneo/)**
 
 Choose your own supported `.nes` file, ZIP, or locally built
-`smbneogeo.zip`. The file stays in your browser and is never uploaded.
+`smbneo.zip`/`puzzledp.zip`. The file stays in your browser and is never
+uploaded. After conversion, the page can download either the canonical
+full-size `smbneo.zip` or the optional fixed-database `puzzledp.zip`.
 
 Use the arrow keys to move, `A` to jump, `S` to run or throw fireballs, `1`
 to start, and `2` to select.
@@ -71,19 +73,58 @@ make run SMB_ROM="/path/to/smb.zip"
 The supported game revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`.
 
-The build creates the Neo Geo cartridge locally under
-`platform/neogeo/build/`. Generated graphics and cartridge files are ignored
-by Git and must not be redistributed.
+`make cart` creates the canonical full-size cartridge:
+
+```text
+platform/neogeo/build/rom/smbneo.zip
+```
+
+It preserves the native 1 MiB P, 128 KiB S/M, 512 KiB V, and two 2 MiB C
+regions used by real hardware. The same build also creates custom GnGeo
+driver data under the shortname `smbneo`; `make run` launches that identity.
+`make hardware-cart` remains an explicit alias for callers that want to
+emphasize the physical-cartridge lane.
+
+For an emulator whose built-in database cannot discover a custom game, build
+the optional compatibility archive:
+
+```bash
+make compat-cart SMB_ROM="/path/to/smb.zip"
+```
+
+That produces `platform/neogeo/build/rom/puzzledp.zip`. The donor name is a
+loader workaround only and is never SMBNeo's public identity. Standalone
+emulators also require a separate compatible `neogeo.zip` BIOS. Generated
+graphics and cartridge files are ignored by Git and must not be
+redistributed.
 
 The versions used for the current build are listed in
 [Tested toolchain](docs/TESTED_TOOLCHAIN.md).
+Exact FBNeo, NEO.emu, MAME, GnGeo, BIOS, and hardware package instructions are
+in [Emulator and cartridge packages](docs/EMULATOR_COMPATIBILITY.md).
 
 ### Hardware-accurate emulator check
 
 MAME exercises Neo Geo sprite-chain behavior that can be missed by lighter
-emulators. The target uses MAME's one-slot MV-1 configuration by default. With
-MAME installed, build the cartridge and collect a scripted set of title and
-gameplay frames with:
+emulators. Because MAME supports custom software lists, the canonical lane
+generates `platform/neogeo/build/mame/hash/neogeo.xml` and launches the full
+`smbneo.zip` as `smbneo` on MAME's one-slot MV-1 configuration.
+
+Build the canonical MAME package with:
+
+```bash
+make mame-cart SMB_ROM="/path/to/smb.zip"
+```
+
+The direct equivalent command is:
+
+```bash
+mame ng_mv1 smbneo \
+  -hashpath "$PWD/platform/neogeo/build/mame/hash" \
+  -rompath "$PWD/platform/neogeo/build/rom"
+```
+
+To collect a scripted set of title and gameplay frames instead:
 
 ```bash
 make mame-capture SMB_ROM="/path/to/smb.zip"
@@ -144,6 +185,7 @@ For contribution guidelines and deeper technical information, see:
 
 - [Contributing](CONTRIBUTING.md)
 - [Neo Geo port architecture](docs/NEOGEO_PORT.md)
+- [Emulator and cartridge packages](docs/EMULATOR_COMPATIBILITY.md)
 - [Visual fidelity](docs/VISUAL_FIDELITY.md)
 - [Changelog](CHANGELOG.md)
 

@@ -380,7 +380,7 @@ class GdbScriptTests(unittest.TestCase):
             "/usr/bin/ngdevkit-gngeo",
             Path("/work/rom"),
             Path("/work/rom/gngeo_data.zip"),
-            "smbneogeo",
+            "smbneo",
             750,
         )
 
@@ -388,7 +388,7 @@ class GdbScriptTests(unittest.TestCase):
         self.assertIn("--68kclock=750", command)
         self.assertIn("--no-autoframeskip", command)
         self.assertIn("--no-vsync", command)
-        self.assertEqual(command[-1], "smbneogeo")
+        self.assertEqual(command[-1], "smbneo")
 
     def test_gdb_command_ignores_local_initialization(self) -> None:
         command = runner.build_gdb_command(
@@ -1147,7 +1147,7 @@ class TimeoutAndArgumentsTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.rom_set, "smbneogeo")
+        self.assertEqual(args.rom_set, "smbneo")
         self.assertEqual(args.timeout, 90)
         self.assertEqual(args.m68k_overclock, 500)
         self.assertFalse(args.rendered_evidence)
