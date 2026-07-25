@@ -10,12 +10,22 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = ROOT / "platform" / "neogeo" / "Makefile"
+ROOT_MAKEFILE = ROOT / "Makefile"
 
 
 class InteractiveLaunchRecipeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.makefile = MAKEFILE.read_text()
+        cls.root_makefile = ROOT_MAKEFILE.read_text()
+
+    def test_root_forwards_both_public_package_targets(self) -> None:
+        forwarding = self.root_makefile.split(
+            "# Command-line variables",
+            1,
+        )[1]
+        self.assertIn("cart compat-cart hardware-cart", forwarding)
+        self.assertIn("mame-list mame-cart mame-run mame-capture", forwarding)
 
     def test_realtime_flags_enable_pacing_at_stock_clocks(self) -> None:
         match = re.search(
@@ -48,7 +58,16 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         self.assertIn("hardware-cart: native-roms", self.makefile)
         self.assertIn("--output $(COMPAT_CART)", self.makefile)
         self.assertIn("-o $(HARDWARE_CART)", self.makefile)
-        self.assertIn("run: hardware-cart", self.makefile)
+        self.assertIn("GNGEO_COMPAT_GAME := puzzledp", self.makefile)
+        self.assertIn("run: compat-cart", self.makefile)
+
+        run_recipe = self.makefile.split("run: compat-cart", 1)[1].split(
+            "mame-list:",
+            1,
+        )[0]
+        self.assertIn("-d $(GNGEO_SUPPORT_DATA) $(GNGEO_COMPAT_GAME)", run_recipe)
+        self.assertNotIn("$(GNGEO_DATA)", run_recipe)
+        self.assertNotIn("$(GAMEROM)", run_recipe)
 
     def test_both_interactive_recipes_use_realtime_flags(self) -> None:
         for target in ("run", "replay-run"):
@@ -67,6 +86,8 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
 
     def test_mame_capture_is_isolated_and_scripted(self) -> None:
         self.assertIn("mame-list: hardware-cart", self.makefile)
+        self.assertIn("mame-cart: mame-list", self.makefile)
+        self.assertIn("mame-run: mame-cart", self.makefile)
         self.assertIn("MAME_SYSTEM ?= ng_mv1", self.makefile)
         self.assertIn(
             "$(MAME) $(MAME_SYSTEM) $(GAMEROM)",
@@ -81,14 +102,18 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
             "$(WEB_PROM):",
             1,
         )[0]
+        self.assertIn("mame-cart", recipe)
         for option in (
             '-hashpath "$(MAME_HASHDIR)"',
+            '-rompath "$(MAME_ROMPATH)"',
             '-cfg_directory "$(MAME_CFG_DIR)"',
             '-nvram_directory "$(MAME_NVRAM_DIR)"',
             '-snapshot_directory "$(MAME_CAPTURE_DIR)"',
             '-autoboot_script "$(MAME_CAPTURE_SCRIPT)"',
         ):
             self.assertIn(option, recipe)
+        self.assertIn("$(MAME_SYSTEM) $(GAMEROM)", recipe)
+        self.assertNotIn("puzzledp", recipe)
 
     def test_custom_mame_bios_directory_precedes_local_cartridge(self) -> None:
         self.assertIn(

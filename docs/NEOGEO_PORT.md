@@ -497,10 +497,17 @@ reached by changing only the last four bytes of verified padding tails; P1
 remains at offset zero for `load16_word_swap`.
 
 `make hardware-cart` separately packages the full regions as
-`smbneogeo.zip` and generates the GnGeo hash data used by `make run` and the
-custom MAME software list. This keeps the physical-hardware validation
-artifact independent from the fixed-database compatibility identity. Exact
-loader paths and the separate `neogeo.zip` requirement are documented in
+`smbneogeo.zip`. `make mame-cart` pairs that archive with a generated
+`build/mame/hash/neogeo.xml` containing the unique `smbneogeo` software
+entry, full region sizes, generated hashes, and explicit MAME loading
+semantics. MAME therefore never needs to describe the canonical build as
+Puzzle De Pon.
+
+The ordinary `make run` GnGeo path instead loads `puzzledp.zip` through the
+emulator's bundled fixed database. Custom GnGeo hash output remains available
+for purpose-built replay and diagnostic cartridges, but it is not the public
+identity of the canonical MAME package. Exact loader paths and the separate
+`neogeo.zip` requirement are documented in
 [`EMULATOR_COMPATIBILITY.md`](EMULATOR_COMPATIBILITY.md).
 
 A shared V1 target encodes the 64 KiB ADPCM-B loop, pads the image to 512 KiB,
@@ -520,9 +527,10 @@ and identical 105,220-byte cartridge ZIPs with SHA-256
 
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
-sizes, the asset-clean manifest, the exact compatibility archive profile, and
-byte-for-byte equality of every region plus both `puzzledp.zip` and
-`smbneogeo.zip`. It never cleans or writes the normal
+sizes, the asset-clean manifest, the exact compatibility archive profile, the
+full native contents of `smbneogeo.zip`, and the unique canonical MAME
+software-list semantics. It requires byte-for-byte equality of every region,
+both ZIPs, and the generated `neogeo.xml`. It never cleans or writes the normal
 `platform/neogeo/build/` directory.
 
 `tools/rec_tool.py` retains the input movie's exact frame count, source hash,
@@ -837,6 +845,8 @@ make -C platform/neogeo verify
 make -C platform/neogeo cart \
   SMB_ROM="/path/to/smb.zip"
 make -C platform/neogeo hardware-cart \
+  SMB_ROM="/path/to/smb.zip"
+make -C platform/neogeo mame-cart \
   SMB_ROM="/path/to/smb.zip"
 python3 tools/check_reproducible_cart.py \
   --rom "/path/to/smb.zip"

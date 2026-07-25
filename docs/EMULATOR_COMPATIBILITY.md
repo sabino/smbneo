@@ -1,7 +1,15 @@
 # Emulator and cartridge packages
 
-SMBNeo has two deliberately separate cartridge packages. They contain the
-same port, but they serve different loaders.
+SMBNeo has two deliberately separate cartridge identities. They contain the
+same port, but they serve different loaders:
+
+- `puzzledp` is the zero-configuration compatibility identity for frontends
+  whose bundled Neo Geo database cannot discover a new game.
+- `smbneogeo` is the canonical project identity for MAME, custom software
+  lists, and hardware-oriented packaging.
+
+The compatibility identity must not be used to describe SMBNeo in the
+canonical MAME lane.
 
 ## Default compatibility package
 
@@ -15,9 +23,10 @@ This creates:
 platform/neogeo/build/rom/puzzledp.zip
 ```
 
-`puzzledp.zip` is the default emulator release. It uses the Puzzle De Pon
-cartridge identity so emulators with a fixed Neo Geo game database can
-recognize the generated SMBNeo data. It does not contain Puzzle De Pon data.
+`puzzledp.zip` is the default compatibility release for NEO.emu, GnGeo,
+FBNeo, and EmulatorJS. It uses the Puzzle De Pon cartridge identity so
+emulators with a fixed Neo Geo game database can recognize the generated
+SMBNeo data. It does not contain Puzzle De Pon data.
 
 The archive is validated immediately after it is built:
 
@@ -78,33 +87,6 @@ input, the canonical hardware archive, or a generated `puzzledp.zip`.
 Conversion tests compare every generated web entry byte-for-byte with the
 native Python builder.
 
-### MAME
-
-For MAME, use the repository's hardware-validation target:
-
-```bash
-make mame-run SMB_ROM="/path/to/owned/smb.zip"
-make mame-capture SMB_ROM="/path/to/owned/smb.zip"
-```
-
-These commands intentionally use the full native `smbneogeo.zip` through a
-generated local software list on the `ng_mv1` system. This exercises the real
-P/C region sizes and MAME's Neo Geo video implementation instead of relying
-on the compatibility alias. The target uses ngdevkit's open replacement BIOS
-unless `MAME_BIOS_DIR` points to another complete, user-owned MAME BIOS set.
-
-MAME can also resolve the six compatibility members by their standard
-`puzzledp` CRCs:
-
-```bash
-mame puzzledp -rompath "/directory/containing/puzzledp-and-neogeo-zips"
-```
-
-That direct built-in-driver route needs a complete MAME-compatible
-`neogeo.zip`. The smaller ngdevkit replacement is sufficient for the
-repository's custom rendering lane, but it does not satisfy MAME's complete
-stock BIOS audit.
-
 ### ngdevkit GnGeo
 
 Use:
@@ -113,10 +95,75 @@ Use:
 make run SMB_ROM="/path/to/owned/smb.zip"
 ```
 
-GnGeo runs the full native `smbneogeo.zip` with the generated
-`gngeo_data.zip` driver. It does not use `puzzledp.zip`; the custom hash entry
-lets GnGeo load the actual native sizes and CRCs directly. The target also
-places ngdevkit's local open BIOS archives in the ignored build directory.
+The normal GnGeo launch uses `puzzledp.zip`, the installed GnGeo
+`puzzledp` database entry, and the separately copied open ngdevkit BIOS. It
+does not generate or require a custom SMBNeo database entry for ordinary
+play.
+
+### MAME: canonical `smbneogeo` identity
+
+MAME supports local software lists, so its official project path does not use
+the donor identity. Generate the full cartridge and local `neogeo.xml` with:
+
+```bash
+make mame-cart SMB_ROM="/path/to/owned/smb.zip"
+```
+
+This creates:
+
+```text
+platform/neogeo/build/rom/smbneogeo.zip
+platform/neogeo/build/mame/hash/neogeo.xml
+```
+
+Launch the unique `smbneogeo` software entry directly with:
+
+```bash
+mame ng_mv1 smbneogeo \
+  -hashpath "$PWD/platform/neogeo/build/mame/hash" \
+  -rompath "$PWD/platform/neogeo/build/rom"
+```
+
+The repository wrappers generate those same artifacts and options:
+
+```bash
+make mame-run SMB_ROM="/path/to/owned/smb.zip"
+make mame-capture SMB_ROM="/path/to/owned/smb.zip"
+```
+
+These commands intentionally load the full native `smbneogeo.zip` through
+the generated software list on the `ng_mv1` system. The XML names the game
+`smbneogeo`, preserves the 1 MiB P and 2 MiB-per-chip C regions, and records
+their generated CRC32/SHA-1 values and MAME loading semantics.
+
+The target uses ngdevkit's open replacement BIOS unless `MAME_BIOS_DIR`
+points to another complete, user-owned MAME BIOS set. For a separate BIOS
+directory, the equivalent explicit ROM path is:
+
+```bash
+mame ng_mv1 smbneogeo \
+  -hashpath "$PWD/platform/neogeo/build/mame/hash" \
+  -rompath "/path/to/mame/roms;$PWD/platform/neogeo/build/rom"
+```
+
+### Donor compatibility launch
+
+In a fixed-database frontend, scan `puzzledp.zip` and launch the entry shown
+as **Puzzle De Pon**. That is the intended compatibility behavior for
+NEO.emu, GnGeo, FBNeo, and EmulatorJS even though the archive contains
+SMBNeo.
+
+MAME can also resolve the compatibility archive through its built-in donor
+definition:
+
+```bash
+mame puzzledp \
+  -rompath "/directory/containing/rom-zips"
+```
+
+That command is a compatibility fallback, not the canonical MAME identity.
+It needs a complete MAME-compatible `neogeo.zip`. Prefer the generated
+`smbneogeo` software-list command above whenever using MAME.
 
 ## Canonical hardware package
 
@@ -130,10 +177,12 @@ This preserves the full cartridge layout as:
 platform/neogeo/build/rom/smbneogeo.zip
 ```
 
-Use this package for the project's GnGeo and MAME paths and for
-flash-cartridge or physical-hardware work that expects the canonical SMBNeo
-P/C sizes. Do not silently substitute the smaller CRC-identified
-`puzzledp.zip` for a hardware workflow.
+Use this package for the canonical MAME path and for flash-cartridge or
+physical-hardware work that expects the full SMBNeo P/C sizes. Normal GnGeo
+play uses `puzzledp.zip`; internal replay and diagnostic tooling may still
+generate a custom GnGeo hash for purpose-built cartridges. Do not silently
+substitute the smaller CRC-identified `puzzledp.zip` for a hardware workflow,
+and do not present the donor name as SMBNeo's canonical MAME identity.
 
 All generated archives and ROM regions live under the ignored
 `platform/neogeo/build/` directory. Do not commit or redistribute generated

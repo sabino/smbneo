@@ -48,18 +48,30 @@ make cart SMB_ROM="/path/to/smb.zip"
 # platform/neogeo/build/rom/puzzledp.zip
 ```
 
-The full-size hardware/MAME/GnGeo package remains a separate target:
+The full-size hardware package remains a separate target:
 
 ```bash
 make hardware-cart SMB_ROM="/path/to/smb.zip"
 # platform/neogeo/build/rom/smbneogeo.zip
 ```
 
-Standalone FBNeo and NEO.emu need a compatible `neogeo.zip` BIOS alongside
-`puzzledp.zip`; it is not embedded in the game archive. See
+NEO.emu, GnGeo, standalone FBNeo, and EmulatorJS use `puzzledp.zip` as the
+fixed-database compatibility identity. Standalone frontends need a compatible
+`neogeo.zip` BIOS alongside it; the BIOS is not embedded in the game archive.
+See
 [Emulator and cartridge packages](EMULATOR_COMPATIBILITY.md).
 
-The hardware-accurate video lane additionally needs MAME:
+The canonical MAME lane additionally generates a local software list:
+
+```bash
+make mame-cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/smbneogeo.zip
+# platform/neogeo/build/mame/hash/neogeo.xml
+```
+
+MAME launches that pair under `smbneogeo`; its `puzzledp` definition is only
+the optional fixed-database compatibility fallback. The hardware-accurate
+capture lane uses the canonical identity:
 
 ```bash
 make mame-capture SMB_ROM="/path/to/smb.zip"

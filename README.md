@@ -72,22 +72,24 @@ make run SMB_ROM="/path/to/smb.zip"
 The supported game revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`.
 
-`make cart` creates the default emulator package at
-`platform/neogeo/build/rom/puzzledp.zip`. FBNeo and NEO.emu recognize it
-through their Puzzle De Pon cartridge profile. It contains SMBNeo data, not
-Puzzle De Pon data, and needs a separate emulator-compatible `neogeo.zip`
-BIOS file.
+`make cart` creates the default fixed-database emulator package at
+`platform/neogeo/build/rom/puzzledp.zip`. NEO.emu, GnGeo, FBNeo, and
+EmulatorJS recognize it through their Puzzle De Pon cartridge profile. It
+contains SMBNeo data, not Puzzle De Pon data, and needs a separate
+emulator-compatible `neogeo.zip` BIOS file.
 
-`make run` builds and launches the full native cartridge through ngdevkit
-GnGeo. To build that canonical hardware/MAME/GnGeo archive without launching
-the emulator, use:
+`make run` builds that compatibility package and launches it through
+ngdevkit GnGeo's bundled `puzzledp` entry. To build the canonical full-size
+hardware cartridge without launching an emulator, use:
 
 ```bash
 make hardware-cart SMB_ROM="/path/to/smb.zip"
 ```
 
-That archive is `platform/neogeo/build/rom/smbneogeo.zip`. Generated graphics
-and cartridge files are ignored by Git and must not be redistributed.
+That archive is `platform/neogeo/build/rom/smbneogeo.zip`. MAME uses this
+full cartridge under SMBNeo's unique `smbneogeo` identity, not under the
+donor name. Generated graphics and cartridge files are ignored by Git and
+must not be redistributed.
 
 The versions used for the current build are listed in
 [Tested toolchain](docs/TESTED_TOOLCHAIN.md).
@@ -97,9 +99,25 @@ in [Emulator and cartridge packages](docs/EMULATOR_COMPATIBILITY.md).
 ### Hardware-accurate emulator check
 
 MAME exercises Neo Geo sprite-chain behavior that can be missed by lighter
-emulators. The target uses MAME's one-slot MV-1 configuration by default. With
-MAME installed, build the cartridge and collect a scripted set of title and
-gameplay frames with:
+emulators. Because MAME supports custom software lists, the canonical lane
+generates `platform/neogeo/build/mame/hash/neogeo.xml` and launches the full
+`smbneogeo.zip` as `smbneogeo` on MAME's one-slot MV-1 configuration.
+
+Build the canonical MAME package with:
+
+```bash
+make mame-cart SMB_ROM="/path/to/smb.zip"
+```
+
+The direct equivalent command is:
+
+```bash
+mame ng_mv1 smbneogeo \
+  -hashpath "$PWD/platform/neogeo/build/mame/hash" \
+  -rompath "$PWD/platform/neogeo/build/rom"
+```
+
+To collect a scripted set of title and gameplay frames instead:
 
 ```bash
 make mame-capture SMB_ROM="/path/to/smb.zip"

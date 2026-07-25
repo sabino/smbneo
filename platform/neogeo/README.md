@@ -29,6 +29,7 @@ From the repository root:
 make -C platform/neogeo verify
 make -C platform/neogeo cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo hardware-cart SMB_ROM="/path/to/owned/smb.nes"
+make -C platform/neogeo mame-cart SMB_ROM="/path/to/owned/smb.nes"
 make -C platform/neogeo run SMB_ROM="/path/to/owned/smb.zip"
 python3 tools/check_reproducible_cart.py --rom="/path/to/owned/smb.zip"
 python3 tools/probe_neogeo_audio.py
@@ -58,8 +59,11 @@ map in addition to the MC68000 checks. `cart`, `hardware-cart`, and `run`
 accept either a raw iNES file or a ZIP with exactly one `.nes` member.
 `cart` produces the default fixed-database emulator set as
 `build/rom/puzzledp.zip`. `hardware-cart` preserves the full P/C layout as
-`build/rom/smbneogeo.zip` and generates the custom GnGeo hash data. `run`
-uses that full native package rather than the compatibility alias. See
+`build/rom/smbneogeo.zip`. `mame-cart` also generates
+`build/mame/hash/neogeo.xml`, which exposes that full cartridge to MAME under
+the unique `smbneogeo` software-list identity. `run` uses the compatibility
+archive and GnGeo's bundled `puzzledp` entry; it does not present the donor
+identity as SMBNeo's canonical MAME identity. See
 [`docs/EMULATOR_COMPATIBILITY.md`](../../docs/EMULATOR_COMPATIBILITY.md) for
 the exact FBNeo, NEO.emu, MAME, GnGeo, and BIOS paths.
 
@@ -109,7 +113,8 @@ The following repository-local build output is intentionally ignored:
 - `build/smbneogeo-sound.ihx` / `.map` and Z80 assembler intermediates
 - `build/assets/asset-manifest.json`
 - `build/rom/puzzledp.zip` (default emulator compatibility package)
-- `build/rom/smbneogeo.zip` (canonical hardware/MAME/GnGeo package)
+- `build/rom/smbneogeo.zip` (canonical hardware/MAME package)
+- `build/mame/hash/neogeo.xml` (canonical local MAME software list)
 - `build/replay-fast/` and `build/replay-rendered/`
 - emulator BIOS/hash support files
 

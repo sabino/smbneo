@@ -2,7 +2,7 @@
 
 .PHONY: \
 	all ci test web-test verify codegen cart compat-cart hardware-cart run web \
-	mame-list mame-run mame-capture \
+	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean
 
 all: test
@@ -26,6 +26,6 @@ codegen:
 
 # Command-line variables such as SMB_ROM, REPLAY_FM2, and GNGEO are forwarded
 # automatically by recursive Make.
-cart compat-cart hardware-cart run web mame-list mame-run mame-capture \
+cart compat-cart hardware-cart run web mame-list mame-cart mame-run mame-capture \
 replay-cart replay-run replay-rendered-evidence clean:
 	$(MAKE) -C platform/neogeo $@

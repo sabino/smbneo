@@ -120,6 +120,7 @@ GNGEO_PREFIX ?= $(shell \
 	fi)
 GNGEO_SUPPORT_DATA ?= \
 	$(GNGEO_PREFIX)/share/ngdevkit-gngeo/gngeo_data.zip
+GNGEO_COMPAT_GAME := puzzledp
 GNGEO_P1 ?= A=K97,B=K115,C=K113,D=K119,START=K49,UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79
 GNGEO_P2 ?= START=K50
 GNGEO_REALTIME_FLAGS ?= \
@@ -184,7 +185,7 @@ REPLAY_FAST_FLAG := \
 .PHONY: \
 	all elf test verify verify-codegen verify-sound-driver assets \
 	native-roms cart compat-cart hardware-cart run web \
-	mame-list mame-run mame-capture \
+	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
 all: verify
@@ -460,19 +461,30 @@ hardware-cart: native-roms
 	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
 	@echo "Canonical hardware cartridge: $(HARDWARE_CART)"
 
-run: hardware-cart
+run: compat-cart
+	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
+		echo "GnGeo support data is missing: $(GNGEO_SUPPORT_DATA)" >&2; \
+		echo "override GNGEO_SUPPORT_DATA with its installed path" >&2; \
+		exit 2; \
+	}
+	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
+	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
 		$(GNGEO_REALTIME_FLAGS) \
 		--system home --p1control "$(GNGEO_P1)" \
 		--p2control "$(GNGEO_P2)" \
-		-i $(ROMDIR) -d $(GNGEO_DATA) $(GAMEROM)
+		-i $(ROMDIR) -d $(GNGEO_SUPPORT_DATA) $(GNGEO_COMPAT_GAME)
 
 mame-list: hardware-cart | $(MAME_HASHDIR)
 	$(PYTHON) $(MAME_SOFTWARE_GENERATOR) \
 		--rom-dir $(ROMDIR) \
 		--output $(MAME_SOFTWARE_LIST)
 
-mame-run: mame-list | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
+mame-cart: mame-list
+	@echo "Canonical MAME software list: $(MAME_SOFTWARE_LIST)"
+	@echo "Canonical MAME cartridge: $(HARDWARE_CART)"
+
+mame-run: mame-cart | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 	@command -v "$(MAME)" >/dev/null 2>&1 || { \
 		echo "MAME executable not found: $(MAME)" >&2; \
 		exit 2; \
@@ -486,7 +498,7 @@ mame-run: mame-list | $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 		$(MAME_RUN_FLAGS)
 
 mame-capture: \
-		mame-list \
+		mame-cart \
 		| $(MAME_CAPTURE_DIR) $(MAME_CFG_DIR) $(MAME_NVRAM_DIR)
 	@command -v "$(MAME)" >/dev/null 2>&1 || { \
 		echo "MAME executable not found: $(MAME)" >&2; \
