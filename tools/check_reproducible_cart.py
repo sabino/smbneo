@@ -20,6 +20,7 @@ import zipfile
 import gen_mame_neogeo_software as mame_software
 import puzzledp_compat
 import check_gngeo_driver
+import build_neosd
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,8 @@ ARCHIVES = (
 )
 GNGEO_DATA = "gngeo_data.zip"
 GNGEO_DATA_LABEL = "GnGeo custom driver data"
+NEOSD_IMAGE = "smbneo.neo"
+NEOSD_IMAGE_LABEL = "NeoSD image"
 MAME_SOFTWARE_LIST = Path("mame") / "hash" / "neogeo.xml"
 MAME_SOFTWARE_LIST_LABEL = "MAME software list"
 MANIFEST_FILENAME = "asset-manifest.json"
@@ -361,6 +364,23 @@ def _validate_build(build_dir: Path, build_label: str) -> list[str]:
                     f"{build_label} {archive.label} is invalid: {error}"
                 )
 
+    neosd_path = _artifact_path(build_dir, NEOSD_IMAGE)
+    if not neosd_path.is_file():
+        issues.append(
+            f"{build_label} is missing {NEOSD_IMAGE_LABEL}: {neosd_path}"
+        )
+    elif neosd_path.stat().st_size == 0:
+        issues.append(
+            f"{build_label} {NEOSD_IMAGE_LABEL} is empty: {neosd_path}"
+        )
+    else:
+        try:
+            build_neosd.validate_file(neosd_path, build_dir / "rom")
+        except build_neosd.NeoSdError as error:
+            issues.append(
+                f"{build_label} {NEOSD_IMAGE_LABEL} is invalid: {error}"
+            )
+
     gngeo_data_path = _artifact_path(build_dir, GNGEO_DATA)
     if not gngeo_data_path.is_file():
         issues.append(
@@ -501,6 +521,16 @@ def check_reproducible_cart(
                 issues.append(issue)
 
         result, issue = _compare_artifact(
+            NEOSD_IMAGE_LABEL,
+            _artifact_path(first_build, NEOSD_IMAGE),
+            _artifact_path(second_build, NEOSD_IMAGE),
+        )
+        if result is not None:
+            results.append(result)
+        if issue is not None:
+            issues.append(issue)
+
+        result, issue = _compare_artifact(
             GNGEO_DATA_LABEL,
             _artifact_path(first_build, GNGEO_DATA),
             _artifact_path(second_build, GNGEO_DATA),
@@ -550,7 +580,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        "Cartridges, GnGeo driver data, and MAME software list are reproducible; "
+        "Cartridges, NeoSD image, GnGeo driver data, and MAME software list "
+        "are reproducible; "
         "both isolated builds match exactly:"
     )
     for result in results:

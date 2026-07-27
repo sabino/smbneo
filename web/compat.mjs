@@ -36,6 +36,18 @@ const CART_SIZES = Object.freeze({
   c2: 0x200000,
 });
 
+const NEOSD_HEADER_SIZE = 4096;
+const NEOSD_ALIGN_64K = 64 * 1024;
+const NEOSD_ALIGN_CROM = 256 * 1024;
+const NEOSD_DEFAULTS = Object.freeze({
+  name: "Super Mario Bros. Neo",
+  manufacturer: "Community port",
+  year: 2026,
+  genre: 5,
+  screenshot: 0,
+  ngh: 0x534d,
+});
+
 const PUZZLEDP_LAYOUT = Object.freeze([
   ["202-p1.bin", 0x080000, 0x2b61415b, "p", 0xff],
   ["202-s1.bin", 0x020000, 0xcd19264f, "s", 0x00],
@@ -471,6 +483,191 @@ export function buildCanonicalEntries(cartridge) {
     output[name] = asBytes(cartridge[part]).slice();
   }
   return output;
+}
+
+function padToMultiple(input, multiple) {
+  const bytes = asBytes(input);
+  const remainder = bytes.length % multiple;
+  if (remainder === 0) {
+    return bytes;
+  }
+  const output = new Uint8Array(bytes.length + multiple - remainder);
+  output.fill(0xff);
+  output.set(bytes);
+  return output;
+}
+
+function requireUint32(value, label) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new Error(`${label} must be an unsigned 32-bit integer`);
+  }
+  return value;
+}
+
+function writeAsciiField(output, offset, width, value, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be text`);
+  }
+  const limit = width - 1;
+  if (value.length > limit) {
+    throw new Error(
+      `${label} is ${value.length} bytes; the NeoSD limit is ${limit}`
+    );
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0 || code > 0x7f) {
+      throw new Error(`${label} must contain non-NUL ASCII characters only`);
+    }
+    output[offset + index] = code;
+  }
+}
+
+function readAsciiField(bytes, offset, width, label) {
+  let output = "";
+  for (let index = 0; index < width; index += 1) {
+    const value = bytes[offset + index];
+    if (value === 0) {
+      break;
+    }
+    if (value > 0x7f) {
+      throw new Error(`NeoSD ${label} field is not ASCII`);
+    }
+    output += String.fromCharCode(value);
+  }
+  return output;
+}
+
+function interleaveCrom(c1Input, c2Input) {
+  const c1 = asBytes(c1Input);
+  const c2 = asBytes(c2Input);
+  if (c1.length !== c2.length) {
+    throw new Error(
+      `C1 and C2 sizes differ: ${c1.length} and ${c2.length} bytes`
+    );
+  }
+  const output = new Uint8Array(c1.length + c2.length);
+  for (let index = 0; index < c1.length; index += 1) {
+    output[index * 2] = c1[index];
+    output[index * 2 + 1] = c2[index];
+  }
+  return output;
+}
+
+/**
+ * Pack the canonical native cartridge into the version-1 NeoSD container.
+ * The browser uses the native cartridge before applying its FBNeo P-ROM.
+ */
+export function buildNeoSdFile(cartridge, metadata = {}) {
+  validateCartridgeParts(cartridge);
+  const resolved = { ...NEOSD_DEFAULTS, ...metadata };
+
+  const regions = {
+    p: padToMultiple(cartridge.p, NEOSD_ALIGN_64K),
+    s: padToMultiple(cartridge.s, NEOSD_ALIGN_64K),
+    m: padToMultiple(cartridge.m, NEOSD_ALIGN_64K),
+    v1: padToMultiple(cartridge.v, NEOSD_ALIGN_64K),
+    v2: new Uint8Array(),
+    c: padToMultiple(
+      interleaveCrom(cartridge.c1, cartridge.c2),
+      NEOSD_ALIGN_CROM,
+    ),
+  };
+  const ordered = [
+    regions.p,
+    regions.s,
+    regions.m,
+    regions.v1,
+    regions.v2,
+    regions.c,
+  ];
+  const totalSize = ordered.reduce(
+    (total, region) => total + region.length,
+    NEOSD_HEADER_SIZE,
+  );
+  const output = new Uint8Array(totalSize);
+  output.set([0x4e, 0x45, 0x4f, 0x01]);
+  const view = new DataView(output.buffer);
+  ordered.forEach((region, index) => {
+    view.setUint32(0x04 + index * 4, region.length, true);
+  });
+  for (const [index, [label, value]] of [
+    ["year", resolved.year],
+    ["genre", resolved.genre],
+    ["screenshot", resolved.screenshot],
+    ["NGH", resolved.ngh],
+  ].entries()) {
+    view.setUint32(0x1c + index * 4, requireUint32(value, label), true);
+  }
+  writeAsciiField(output, 0x2c, 33, resolved.name, "game name");
+  writeAsciiField(
+    output,
+    0x4d,
+    17,
+    resolved.manufacturer,
+    "manufacturer",
+  );
+
+  let offset = NEOSD_HEADER_SIZE;
+  for (const region of ordered) {
+    output.set(region, offset);
+    offset += region.length;
+  }
+  return output;
+}
+
+export function parseNeoSdHeader(input) {
+  const bytes = asBytes(input);
+  if (bytes.length < NEOSD_HEADER_SIZE) {
+    throw new Error(
+      `NeoSD image is ${bytes.length} bytes; header requires ${NEOSD_HEADER_SIZE}`
+    );
+  }
+  if (
+    bytes[0] !== 0x4e ||
+    bytes[1] !== 0x45 ||
+    bytes[2] !== 0x4f ||
+    bytes[3] !== 0x01
+  ) {
+    throw new Error("NeoSD image does not start with NEO version 1 magic");
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sizes = {};
+  const sectionNames = ["p", "s", "m", "v1", "v2", "c"];
+  sectionNames.forEach((name, index) => {
+    sizes[name] = view.getUint32(0x04 + index * 4, true);
+  });
+  const sections = {};
+  let offset = NEOSD_HEADER_SIZE;
+  for (const name of sectionNames) {
+    sections[name] = Object.freeze({
+      start: offset,
+      end: offset + sizes[name],
+    });
+    offset += sizes[name];
+  }
+  if (offset !== bytes.length) {
+    throw new Error(
+      `NeoSD image has ${bytes.length} bytes; header describes ${offset}`
+    );
+  }
+  for (let index = 0x5e; index < NEOSD_HEADER_SIZE; index += 1) {
+    if (bytes[index] !== 0) {
+      throw new Error("NeoSD reserved header bytes are not zero-filled");
+    }
+  }
+
+  return Object.freeze({
+    sizes: Object.freeze(sizes),
+    sections: Object.freeze(sections),
+    year: view.getUint32(0x1c, true),
+    genre: view.getUint32(0x20, true),
+    screenshot: view.getUint32(0x24, true),
+    ngh: view.getUint32(0x28, true),
+    name: readAsciiField(bytes, 0x2c, 33, "game name"),
+    manufacturer: readAsciiField(bytes, 0x4d, 17, "manufacturer"),
+  });
 }
 
 function getCrcTable() {

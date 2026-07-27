@@ -30,6 +30,7 @@ class FakeBuilder:
         manifest: dict | None = None,
         omit_manifest: bool = False,
         omit_mame_list: bool = False,
+        omit_neosd: bool = False,
     ) -> None:
         self.build_dirs: list[Path] = []
         self.commands: list[list[str]] = []
@@ -42,6 +43,7 @@ class FakeBuilder:
         }
         self.omit_manifest = omit_manifest
         self.omit_mame_list = omit_mame_list
+        self.omit_neosd = omit_neosd
 
     def __call__(self, command: list[str], *, check: bool) -> subprocess.CompletedProcess:
         self.commands.append(command)
@@ -87,6 +89,12 @@ class FakeBuilder:
                             info,
                             (rom_dir / region.filename).read_bytes(),
                         )
+
+        if not self.omit_neosd:
+            neosd_content = b"stable NeoSD image bytes"
+            if build_number == 2 and checker.NEOSD_IMAGE in self.mutate_second:
+                neosd_content = self.mutate_second[checker.NEOSD_IMAGE]
+            (rom_dir / checker.NEOSD_IMAGE).write_bytes(neosd_content)
 
         gngeo_content = b"stable custom GnGeo driver data"
         if build_number == 2 and checker.GNGEO_DATA in self.mutate_second:
@@ -138,6 +146,12 @@ class ReproducibleCartTests(unittest.TestCase):
         )
         self.gngeo_validator = self.gngeo_validator_patch.start()
         self.addCleanup(self.gngeo_validator_patch.stop)
+        self.neosd_validator_patch = mock.patch.object(
+            checker.build_neosd,
+            "validate_file",
+        )
+        self.neosd_validator = self.neosd_validator_patch.start()
+        self.addCleanup(self.neosd_validator_patch.stop)
 
     def make_workspace(self, directory: str) -> tuple[Path, Path, Path]:
         root = Path(directory)
@@ -174,6 +188,7 @@ class ReproducibleCartTests(unittest.TestCase):
                 [result.label for result in results],
                 [region.label for region in TINY_REGIONS]
                 + [archive.label for archive in checker.ARCHIVES]
+                + [checker.NEOSD_IMAGE_LABEL]
                 + [checker.GNGEO_DATA_LABEL]
                 + [checker.MAME_SOFTWARE_LIST_LABEL],
             )
@@ -211,6 +226,7 @@ class ReproducibleCartTests(unittest.TestCase):
                 mutate_second={
                     c1.filename: changed_c1,
                     checker.ARCHIVES[1].filename: b"stable compatibility zip bytes",
+                    checker.NEOSD_IMAGE: b"changed NeoSD image bytes",
                 }
             )
 
@@ -230,6 +246,7 @@ class ReproducibleCartTests(unittest.TestCase):
             self.assertIn("C1 bytes differ at offset 0x1", message)
             self.assertIn("build 1 has 0x21, build 2 has 0x55", message)
             self.assertIn("Compatibility ZIP bytes differ", message)
+            self.assertIn("NeoSD image bytes differ", message)
             self.assertIn("SHA-256 values are", message)
 
     def test_reports_mame_software_list_mismatch(self) -> None:
@@ -367,6 +384,57 @@ class ReproducibleCartTests(unittest.TestCase):
                 "build 2 Canonical ZIP is invalid: cannot read",
                 str(raised.exception),
             )
+
+    def test_invalid_neosd_image_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder()
+            self.neosd_validator.side_effect = checker.build_neosd.NeoSdError(
+                "C payload mismatch"
+            )
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn(
+                "build 1 NeoSD image is invalid: C payload mismatch",
+                message,
+            )
+            self.assertIn(
+                "build 2 NeoSD image is invalid: C payload mismatch",
+                message,
+            )
+
+    def test_missing_neosd_image_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            neogeo_dir, rom, temp_parent = self.make_workspace(directory)
+            fake_builder = FakeBuilder(omit_neosd=True)
+
+            with mock.patch.object(
+                checker.subprocess,
+                "run",
+                side_effect=fake_builder,
+            ):
+                with self.assertRaises(checker.CartCheckError) as raised:
+                    checker.check_reproducible_cart(
+                        rom,
+                        neogeo_dir=neogeo_dir,
+                        temp_parent=temp_parent,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn("build 1 is missing NeoSD image", message)
+            self.assertIn("build 2 is missing NeoSD image", message)
 
     def test_invalid_mame_software_list_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

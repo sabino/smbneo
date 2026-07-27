@@ -25,6 +25,7 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
             1,
         )[1]
         self.assertIn("cart compat-cart hardware-cart", forwarding)
+        self.assertIn("hardware-cart neosd-cart", forwarding)
         self.assertIn("mame-list mame-cart mame-run mame-capture", forwarding)
 
     def test_realtime_flags_enable_pacing_at_stock_clocks(self) -> None:
@@ -57,11 +58,16 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
             "HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip",
             self.makefile,
         )
-        self.assertIn("cart: hardware-cart", self.makefile)
+        self.assertIn(
+            "NEOSD_CART := $(ROMDIR)/$(GAMEROM).neo",
+            self.makefile,
+        )
+        self.assertIn("cart: hardware-cart neosd-cart", self.makefile)
         self.assertIn("compat-cart: native-roms", self.makefile)
         self.assertIn("hardware-cart: native-roms", self.makefile)
         self.assertIn("--output $(COMPAT_CART)", self.makefile)
         self.assertIn("-o $(HARDWARE_CART)", self.makefile)
+        self.assertIn("neosd-cart: native-roms", self.makefile)
         self.assertNotIn("GNGEO_COMPAT_GAME", self.makefile)
         self.assertIn("run: hardware-cart", self.makefile)
 
@@ -79,6 +85,15 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         self.assertIn("-n $(GAMEROM)", hardware_recipe)
         self.assertIn('-l "Super Mario Bros. Neo"', hardware_recipe)
         self.assertIn("$(GNGEO_DRIVER_CHECKER)", hardware_recipe)
+
+        neosd_recipe = self.makefile.split(
+            "neosd-cart: native-roms",
+            1,
+        )[1].split("run: hardware-cart", 1)[0]
+        self.assertIn("$(ROMTOOL) -b cartridge -f neo", neosd_recipe)
+        self.assertIn("neo.genre=Platformer", neosd_recipe)
+        self.assertIn("neo.ngh=534d", neosd_recipe)
+        self.assertIn("--validate $(NEOSD_CART)", neosd_recipe)
 
     def test_both_interactive_recipes_use_realtime_flags(self) -> None:
         for target in ("run", "replay-run"):

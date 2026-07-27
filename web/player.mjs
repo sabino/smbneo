@@ -4,6 +4,7 @@ import {
   adaptCompatibilityCartridgeForNative,
   buildCanonicalEntries,
   buildCartridgeFromNes,
+  buildNeoSdFile,
   buildPuzzledpEntries,
   classifyInput,
   formatBytes,
@@ -23,6 +24,7 @@ const launcher = document.querySelector("#launcher");
 const game = document.querySelector("#game");
 const downloads = document.querySelector("#downloads");
 const canonicalDownload = document.querySelector("#download-canonical");
+const neoSdDownload = document.querySelector("#download-neosd");
 const compatibilityDownload = document.querySelector("#download-compatible");
 
 let downloadArchives = {};
@@ -99,6 +101,7 @@ async function loadConfig() {
     config.product?.title !== "Super Mario Bros. Neo" ||
     config.fbneo_driver !== "puzzledp" ||
     config.downloads?.canonical?.filename !== "smbneo.zip" ||
+    config.downloads?.neosd?.filename !== "smbneo.neo" ||
     config.downloads?.compatibility?.filename !== "puzzledp.zip" ||
     !Number.isInteger(config.title_patch_offsets?.native) ||
     !Number.isInteger(config.title_patch_offsets?.web)
@@ -114,7 +117,7 @@ function downloadArchive(kind) {
     return;
   }
   const url = URL.createObjectURL(
-    new Blob([archive.bytes], { type: "application/zip" })
+    new Blob([archive.bytes], { type: archive.mimeType })
   );
   const link = document.createElement("a");
   link.href = url;
@@ -130,29 +133,50 @@ canonicalDownload.addEventListener(
   "click",
   () => downloadArchive("canonical")
 );
+neoSdDownload.addEventListener(
+  "click",
+  () => downloadArchive("neosd")
+);
 compatibilityDownload.addEventListener(
   "click",
   () => downloadArchive("compatibility")
 );
 
-function enableDownloads(canonicalArchive, compatibilityArchive, config) {
+function enableDownloads(
+  canonicalArchive,
+  neoSdImage,
+  compatibilityArchive,
+  config,
+) {
   downloadArchives = {
     canonical: {
       filename: config.downloads.canonical.filename,
       bytes: canonicalArchive,
+      mimeType: "application/zip",
+    },
+    neosd: {
+      filename: config.downloads.neosd.filename,
+      bytes: neoSdImage,
+      mimeType: "application/octet-stream",
     },
     compatibility: {
       filename: config.downloads.compatibility.filename,
       bytes: compatibilityArchive,
+      mimeType: "application/zip",
     },
   };
   canonicalDownload.disabled = false;
+  neoSdDownload.disabled = false;
   compatibilityDownload.disabled = false;
   downloads.hidden = false;
   playerState.downloads = {
     canonical: {
       filename: config.downloads.canonical.filename,
       bytes: canonicalArchive.length,
+    },
+    neosd: {
+      filename: config.downloads.neosd.filename,
+      bytes: neoSdImage.length,
     },
     compatibility: {
       filename: config.downloads.compatibility.filename,
@@ -302,6 +326,10 @@ async function prepareSelectedFile(file) {
   const canonicalEntries = buildCanonicalEntries(cartridge);
   const canonicalArchive = await zipEntries(canonicalEntries);
 
+  setStatus("Packing the NeoSD image…", "busy");
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const neoSdImage = buildNeoSdFile(cartridge);
+
   setStatus("Adapting the cartridge for the browser player…", "busy");
   const webCartridge = adaptCartridgeForWeb(
     cartridge,
@@ -331,7 +359,7 @@ async function prepareSelectedFile(file) {
 
   setStatus("Compressing the browser cartridge…", "busy");
   const launchArchive = await zipEntries(fbneoEntries);
-  enableDownloads(canonicalArchive, launchArchive, config);
+  enableDownloads(canonicalArchive, neoSdImage, launchArchive, config);
   playerState.archiveBytes = launchArchive.length;
   playerState.phase = "loading-emulator";
   setStatus(

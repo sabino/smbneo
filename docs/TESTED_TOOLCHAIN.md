@@ -46,7 +46,17 @@ The normal cartridge target creates the canonical full native package:
 ```bash
 make cart SMB_ROM="/path/to/smb.zip"
 # platform/neogeo/build/rom/smbneo.zip
+# platform/neogeo/build/rom/smbneo.neo
 # platform/neogeo/build/rom/gngeo_data.zip
+```
+
+The ZIP and `.neo` outputs contain the same full P/S/M/V/C cartridge data.
+The former serves MAME, GnGeo, and six-ROM hardware workflows; the latter is
+the single-file NeoSD/NeoSD Pro image. To build only that image:
+
+```bash
+make neosd-cart SMB_ROM="/path/to/smb.zip"
+# platform/neogeo/build/rom/smbneo.neo
 ```
 
 `make run` launches that archive as `smbneo` using the generated custom GnGeo
@@ -66,7 +76,8 @@ make compat-cart SMB_ROM="/path/to/smb.zip"
 
 Use it only for NEO.emu, FBNeo, EmulatorJS, or another frontend whose fixed
 database cannot discover `smbneo`. Standalone frontends need a compatible
-`neogeo.zip` BIOS alongside the game archive; the BIOS is not embedded.
+`neogeo.zip` BIOS alongside the game archive. A NeoSD `.neo` image likewise
+contains only cartridge data; the BIOS is not embedded in either format.
 See
 [Emulator and cartridge packages](EMULATOR_COMPATIBILITY.md).
 

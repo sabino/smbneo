@@ -16,8 +16,11 @@ progress, but the game is playable from the title screen through the ending.
 
 Choose your own supported `.nes` file, ZIP, or locally built
 `smbneo.zip`/`puzzledp.zip`. The file stays in your browser and is never
-uploaded. After conversion, the page can download either the canonical
-full-size `smbneo.zip` or the optional fixed-database `puzzledp.zip`.
+uploaded. After conversion, the page offers three local downloads:
+
+- `smbneo.zip`, the canonical cartridge archive;
+- `smbneo.neo`, the single-file NeoSD/NeoSD Pro image; and
+- `puzzledp.zip`, the optional package for fixed-database emulators.
 
 Use the arrow keys to move, `A` to jump, `S` to run or throw fireballs, `1`
 to start, and `2` to select.
@@ -73,17 +76,30 @@ make run SMB_ROM="/path/to/smb.zip"
 The supported game revision has SHA-1
 `ea343f4e445a9050d4b4fbac2c77d0693b1d0922`.
 
-`make cart` creates the canonical full-size cartridge:
+`make cart` creates both canonical full-size cartridge packages:
 
 ```text
 platform/neogeo/build/rom/smbneo.zip
+platform/neogeo/build/rom/smbneo.neo
 ```
 
-It preserves the native 1 MiB P, 128 KiB S/M, 512 KiB V, and two 2 MiB C
-regions used by real hardware. The same build also creates custom GnGeo
-driver data under the shortname `smbneo`; `make run` launches that identity.
-`make hardware-cart` remains an explicit alias for callers that want to
-emphasize the physical-cartridge lane.
+Both preserve the native 1 MiB P, 128 KiB S/M, 512 KiB V, and two 2 MiB C
+regions used by real hardware. The ZIP is used by MAME and the project's
+GnGeo path. The `.neo` file is the single-file format used by TerraOnion
+NeoSD and NeoSD Pro flashcarts; it does not contain a BIOS. The same build also creates
+custom GnGeo driver data under the shortname `smbneo`; `make run` launches
+that identity. `make hardware-cart` remains an explicit alias for callers
+that want to emphasize the six-ROM physical-cartridge lane.
+
+To generate only the NeoSD image:
+
+```bash
+make neosd-cart SMB_ROM="/path/to/smb.zip"
+```
+
+The generated format, metadata, and payload have been checked byte for byte
+against ngdevkit and an independent open-source converter. A boot on physical
+NeoSD/NeoSD Pro hardware is still awaiting confirmation from a device owner.
 
 For an emulator whose built-in database cannot discover a custom game, build
 the optional compatibility archive:

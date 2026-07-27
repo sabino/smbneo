@@ -490,8 +490,11 @@ exactly one `.nes` member. It:
 
 The Makefile then builds the one-megabyte native P1, custom Z80 sound-driver
 M1, generated triangle V1, and full C/S regions. `make cart` packages those
-full regions as the authoritative `smbneo.zip`; `make hardware-cart` is an
-explicit alias for that same physical-cartridge layout.
+full regions as the authoritative `smbneo.zip` and the byte-equivalent
+single-file `smbneo.neo`; `make hardware-cart` is an explicit alias for the
+six-ROM physical-cartridge layout. The NeoSD image has a 4 KiB header followed
+by native P/S/M/V data and byte-interleaved C1/C2 data. It is created with
+ngdevkit's packer and checked by an independent project validator.
 
 The canonical build also generates `gngeo_data.zip` with one custom
 `rom/smbneo.drv` entry. A validator checks the title, full region sizes,
@@ -533,11 +536,12 @@ and identical 105,220-byte cartridge ZIPs with SHA-256
 `tools/check_reproducible_cart.py` performs two complete cartridge builds in
 different owned temporary directories. It validates the P/C1/C2/S/M/V region
 sizes, the asset-clean manifest, the exact optional compatibility profile,
-the full native contents of `smbneo.zip`, the generated custom GnGeo driver,
-and the unique canonical MAME software-list semantics. It requires
-byte-for-byte equality of every region, both cartridge ZIPs,
-`gngeo_data.zip`, and the generated `neogeo.xml`. It never cleans or writes
-the normal `platform/neogeo/build/` directory.
+the full native contents of `smbneo.zip`, every header and payload byte in
+`smbneo.neo`, the generated custom GnGeo driver, and the unique canonical
+MAME software-list semantics. It requires byte-for-byte equality of every
+region, both cartridge ZIPs, both NeoSD images, `gngeo_data.zip`, and the
+generated `neogeo.xml`. It never cleans or writes the normal
+`platform/neogeo/build/` directory.
 
 `tools/rec_tool.py` retains the input movie's exact frame count, source hash,
 initial reset command, and RAM-initialization provenance. Movies from

@@ -102,6 +102,7 @@ VROM1 := $(ROMDIR)/$(GAMEROM)-v1.v1
 TRIANGLE_VROM := $(BUILD)/$(GAMEROM)-triangle-v1.v1
 COMPAT_CART := $(ROMDIR)/puzzledp.zip
 HARDWARE_CART := $(ROMDIR)/$(GAMEROM).zip
+NEOSD_CART := $(ROMDIR)/$(GAMEROM).neo
 GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
@@ -172,6 +173,7 @@ SOUND_DRIVER_HELPERS := $(NG_Z80_INCLUDE)/nullsound/helpers.inc
 TRIANGLE_VROM_GENERATOR := $(ROOT)/tools/gen_neogeo_triangle_vrom.py
 WEB_PLAYER_BUILDER := $(ROOT)/tools/build_web_player.py
 PUZZLEDP_COMPAT_BUILDER := $(ROOT)/tools/puzzledp_compat.py
+NEOSD_BUILDER := $(ROOT)/tools/build_neosd.py
 WEB_BIOS ?= $(NG_SHARE)/neogeo.zip
 MAME_SOFTWARE_GENERATOR := $(ROOT)/tools/gen_mame_neogeo_software.py
 GNGEO_DRIVER_CHECKER := $(ROOT)/tools/check_gngeo_driver.py
@@ -187,7 +189,7 @@ REPLAY_FAST_FLAG := \
 
 .PHONY: \
 	all elf test verify verify-codegen verify-sound-driver assets \
-	native-roms cart compat-cart hardware-cart run web \
+	native-roms cart compat-cart hardware-cart neosd-cart run web \
 	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
@@ -441,7 +443,7 @@ native-roms: \
 	TZ=UTC touch -t $(CARTRIDGE_TIMESTAMP) \
 		$(PROM) $(CROM1) $(CROM2) $(SROM1) $(MROM1) $(VROM1)
 
-cart: hardware-cart
+cart: hardware-cart neosd-cart
 
 compat-cart: native-roms $(PUZZLEDP_COMPAT_BUILDER)
 	$(PYTHON) $(PUZZLEDP_COMPAT_BUILDER) \
@@ -473,6 +475,18 @@ hardware-cart: native-roms
 	cp $(NG_SHARE)/aes.zip $(ROMDIR)/
 	cp $(NG_SHARE)/neogeo.zip $(ROMDIR)/
 	@echo "Canonical hardware/MAME/GnGeo cartridge: $(HARDWARE_CART)"
+
+neosd-cart: native-roms $(NEOSD_BUILDER)
+	$(ROMTOOL) -b cartridge -f neo \
+		-p $(PROM) -c $(CROM1) $(CROM2) \
+		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
+		-n $(GAMEROM) -l "Super Mario Bros. Neo" \
+		-y 2026 --publisher "Community port" \
+		-x neo.genre=Platformer neo.ngh=534d \
+		-o $(NEOSD_CART)
+	$(PYTHON) $(NEOSD_BUILDER) \
+		--rom-dir $(ROMDIR) --validate $(NEOSD_CART)
+	@echo "NeoSD/NeoSD Pro image: $(NEOSD_CART)"
 
 run: hardware-cart
 	$(GNGEO) -b soft --screen320 --scale 3 --no-resize --sound \
