@@ -47,6 +47,8 @@ used_insts.txt
 *.V2
 *.s1
 *.S1
+*.neo
+*.NEO
 *.elf
 *.ihx
 *.rel

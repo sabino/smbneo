@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -7,12 +11,14 @@ import {
   adaptCompatibilityCartridgeForNative,
   buildCanonicalEntries,
   buildCartridgeFromNes,
+  buildNeoSdFile,
   buildPuzzledpEntries,
   buildGraphics,
   classifyInput,
   crc32,
   extractChr,
   forceTailCrc32,
+  parseNeoSdHeader,
   patchTemplateProm,
 } from "../web/compat.mjs";
 
@@ -261,6 +267,149 @@ test("NES input becomes an exact canonical full-layout cartridge", () => {
   }
 });
 
+test("canonical cartridge becomes a valid NeoSD v1 image", () => {
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  cartridge.p.fill(0xff);
+  cartridge.p.set([0x4e, 0xf9, 0x00, 0xc0, 0x00, 0x80]);
+  cartridge.c1.set([0x01, 0x02, 0x03, 0x04]);
+  cartridge.c2.set([0x81, 0x82, 0x83, 0x84]);
+
+  const neo = buildNeoSdFile(cartridge);
+  const header = parseNeoSdHeader(neo);
+  assert.equal(neo.length, 0x5c1000);
+  assert.deepEqual(header.sizes, {
+    p: 0x100000,
+    s: 0x020000,
+    m: 0x020000,
+    v1: 0x080000,
+    v2: 0,
+    c: 0x400000,
+  });
+  assert.equal(header.name, "Super Mario Bros. Neo");
+  assert.equal(header.manufacturer, "Community port");
+  assert.equal(header.year, 2026);
+  assert.equal(header.genre, 5);
+  assert.equal(header.screenshot, 0);
+  assert.equal(header.ngh, 0x534d);
+  assert.deepEqual(
+    [...neo.slice(header.sections.p.start, header.sections.p.start + 6)],
+    [0x4e, 0xf9, 0x00, 0xc0, 0x00, 0x80],
+  );
+  assert.deepEqual(
+    [...neo.slice(header.sections.c.start, header.sections.c.start + 8)],
+    [0x01, 0x81, 0x02, 0x82, 0x03, 0x83, 0x04, 0x84],
+  );
+  assert.ok(neo.slice(0x5e, 0x1000).every((value) => value === 0));
+});
+
+test("browser NeoSD output is byte-identical to the native reference packer", async () => {
+  const cartridge = {
+    p: Uint8Array.from(
+      { length: CART_SIZES.p },
+      (_, index) => (index * 13 + 1) & 0xff,
+    ),
+    m: Uint8Array.from(
+      { length: CART_SIZES.m },
+      (_, index) => (index * 17 + 2) & 0xff,
+    ),
+    v: Uint8Array.from(
+      { length: CART_SIZES.v },
+      (_, index) => (index * 19 + 3) & 0xff,
+    ),
+    s: Uint8Array.from(
+      { length: CART_SIZES.s },
+      (_, index) => (index * 23 + 4) & 0xff,
+    ),
+    c1: Uint8Array.from(
+      { length: CART_SIZES.c1 },
+      (_, index) => (index * 29 + 5) & 0xff,
+    ),
+    c2: Uint8Array.from(
+      { length: CART_SIZES.c2 },
+      (_, index) => (index * 31 + 6) & 0xff,
+    ),
+  };
+  const directory = await mkdtemp(join(tmpdir(), "smbneo-neosd-"));
+  try {
+    const names = {
+      p: "smbneo-p1.p1",
+      s: "smbneo-s1.s1",
+      m: "smbneo-m1.m1",
+      v: "smbneo-v1.v1",
+      c1: "smbneo-c1.c1",
+      c2: "smbneo-c2.c2",
+    };
+    for (const [part, name] of Object.entries(names)) {
+      await writeFile(join(directory, name), cartridge[part]);
+    }
+    const nativeOutput = join(directory, "native.neo");
+    const builder = fileURLToPath(
+      new URL("../tools/build_neosd.py", import.meta.url),
+    );
+    const completed = spawnSync(
+      "python3",
+      [builder, "--rom-dir", directory, "--output", nativeOutput],
+      { encoding: "utf8" },
+    );
+    assert.equal(completed.status, 0, completed.stderr);
+    const native = new Uint8Array(await readFile(nativeOutput));
+    assert.deepEqual(buildNeoSdFile(cartridge), native);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("NeoSD metadata and structural damage are rejected", () => {
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  assert.throws(
+    () => buildNeoSdFile(cartridge, { name: "x".repeat(33) }),
+    /limit is 32/,
+  );
+  assert.throws(
+    () => buildNeoSdFile(cartridge, { manufacturer: "Mário" }),
+    /ASCII/,
+  );
+  assert.throws(
+    () => buildNeoSdFile(cartridge, { manufacturer: "x".repeat(17) }),
+    /limit is 16/,
+  );
+
+  const neo = buildNeoSdFile(cartridge);
+  assert.throws(() => parseNeoSdHeader(neo.slice(0, -1)), /header describes/);
+  const reserved = neo.slice();
+  reserved[0x100] = 1;
+  assert.throws(() => parseNeoSdHeader(reserved), /reserved header/);
+
+  const unaligned = new Uint8Array(4096 + 35);
+  unaligned.set(neo.slice(0, 4096));
+  const unalignedView = new DataView(unaligned.buffer);
+  [3, 5, 7, 9, 0, 11].forEach((size, index) => {
+    unalignedView.setUint32(0x04 + index * 4, size, true);
+  });
+  assert.deepEqual(parseNeoSdHeader(unaligned).sizes, {
+    p: 3,
+    s: 5,
+    m: 7,
+    v1: 9,
+    v2: 0,
+    c: 11,
+  });
+});
+
 test("compatibility upload can be restored onto the native P-ROM template", () => {
   const offsets = { native: 0x046a, web: 0x086a };
   const title = Uint8Array.from(
@@ -420,9 +569,19 @@ test("the browser mapping uses arrow keys for movement", async () => {
   assert.match(playerSource, /EJS_dontExtractBIOS = true/);
   assert.match(playerSource, /zipEntries\(fbneoEntries\)/);
   assert.match(playerSource, /buildCanonicalEntries\(cartridge\)/);
+  assert.match(playerSource, /buildNeoSdFile\(cartridge\)/);
   assert.match(playerSource, /config\.downloads\.canonical\.filename/);
+  assert.match(playerSource, /config\.downloads\.neosd\.filename/);
   assert.match(playerSource, /config\.downloads\.compatibility\.filename/);
   assert.match(playerSource, /downloadArchive\("canonical"\)/);
+  assert.match(playerSource, /downloadArchive\("neosd"\)/);
   assert.match(playerSource, /downloadArchive\("compatibility"\)/);
   assert.doesNotMatch(playerSource, /\.\.\.biosEntries/);
+
+  const pageSource = await readFile(
+    new URL("../web/index.html", import.meta.url),
+    "utf8",
+  );
+  assert.match(pageSource, /id="download-neosd"/);
+  assert.match(pageSource, /Download smbneo\.neo/);
 });

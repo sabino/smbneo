@@ -1,6 +1,7 @@
 # Emulator and cartridge packages
 
-SMBNeo has one canonical identity and one optional loader workaround:
+SMBNeo has one canonical identity, available in two native package formats,
+and one optional loader workaround:
 
 - `smbneo` is the project identity. Its visible title is
   **Super Mario Bros. Neo**.
@@ -18,13 +19,15 @@ Build the normal project output with:
 make cart SMB_ROM="/path/to/owned/smb.zip"
 ```
 
-The result is:
+The results are:
 
 ```text
 platform/neogeo/build/rom/smbneo.zip
+platform/neogeo/build/rom/smbneo.neo
 ```
 
-This is the authoritative hardware-native cartridge. It contains:
+These contain the same authoritative hardware-native cartridge data. The ZIP
+keeps the six native regions as separate files:
 
 | File | Size | Purpose |
 | --- | ---: | --- |
@@ -35,13 +38,52 @@ This is the authoritative hardware-native cartridge. It contains:
 | `smbneo-c1.c1` | 2 MiB | even sprite data |
 | `smbneo-c2.c2` | 2 MiB | odd sprite data |
 
-`make hardware-cart` builds the same canonical output. The extra name exists
-for scripts and documentation that want to make physical-hardware intent
-explicit.
+`make hardware-cart` builds the canonical six-ROM ZIP without also packaging
+the NeoSD image. The extra name exists for scripts and documentation that want
+to make the physical-chip/ZIP intent explicit.
 
-Use `smbneo.zip` for flashcarts, physical hardware, the generated MAME
-software list, and the project’s generated GnGeo driver. Do not substitute
-the smaller donor archive in a hardware workflow.
+Use `smbneo.zip` for physical EPROM/flashcart workflows, the generated MAME
+software list, and the project's generated GnGeo driver. Use `smbneo.neo`
+with a TerraOnion NeoSD or NeoSD Pro. Do not substitute the smaller donor
+archive in either hardware workflow.
+
+## NeoSD and NeoSD Pro
+
+Generate only the single-file NeoSD image with:
+
+```bash
+make neosd-cart SMB_ROM="/path/to/owned/smb.zip"
+```
+
+The result is:
+
+```text
+platform/neogeo/build/rom/smbneo.neo
+```
+
+Copy that file to the NeoSD card and select **Super Mario Bros. Neo** from the
+cartridge menu. No Neo Geo BIOS is stored inside the file; the console or
+emulator supplies its own BIOS.
+
+The format, metadata, and complete payload have been checked byte for byte
+against ngdevkit's writer and the pinned open-source `neosdconv` implementation.
+That establishes converter interoperability, but it is not a substitute for a
+physical-device test. Booting this image on an actual NeoSD or NeoSD Pro is
+still awaiting confirmation from a device owner.
+
+The image follows the documented NeoSD v1 layout: a 4 KiB `NEO\x01` header,
+followed by P, S, M, V, and byte-interleaved C data. Its metadata records the
+project title, 2026, the Platformer genre, `Community port`, and the project's
+unofficial NGH value `0x534d`. P data remains in native byte order and the
+full hardware-sized regions are preserved. The final image is 6,033,408
+bytes. A validator checks the header, exact end of file, reserved bytes, and
+canonical title/year/genre/NGH metadata, plus every transformed payload byte
+after generation.
+
+The format itself has no embedded checksum field. TerraOnion's separate
+NeoValidator catalog may report an unknown homebrew file; that is not a
+malformed-image result. The project instead verifies the generated payload
+against its source regions and checks reproducibility byte for byte.
 
 ## GnGeo with the custom identity
 
@@ -178,10 +220,12 @@ Other fixed-database frontends may have different BIOS database requirements.
 
 The browser presents the game only as **Super Mario Bros. Neo**. After the
 user selects their own supported game image, conversion happens entirely in
-the browser and exposes two explicit downloads:
+the browser and exposes three explicit downloads:
 
 - **Download `smbneo.zip`** — the full canonical hardware/MAME/GnGeo
   cartridge.
+- **Download `smbneo.neo`** — the same full native cartridge in the
+  single-file NeoSD/NeoSD Pro format.
 - **Download `puzzledp.zip`** — the optional fixed-database package.
 
 For in-page play, EmulatorJS uses the FBNeo core. FBNeo’s fixed driver
@@ -191,8 +235,20 @@ SMBNeo. The browser keeps a separate FBNeo-specific P-ROM template; the
 canonical download is built from the native P-ROM template and its six
 regions are regression-checked against the native cartridge build.
 
-The online player ships ngdevkit’s open replacement BIOS as a separate web
-asset. It never embeds that BIOS into either downloaded game archive.
+The online player ships ngdevkit's open replacement BIOS as a separate web
+asset. It never embeds that BIOS into any downloaded game package. The `.neo`
+file is assembled in browser memory directly from the canonical regions,
+before the separate FBNeo donor conversion occurs.
+
+## NeoSD format references
+
+- [TerraOnion NeoBuilder guide](https://wiki.terraonion.com/index.php/Neobuilder_Guide)
+  documents the header, payload order, and region transformations.
+- [ngdevkit](https://github.com/dciabrin/ngdevkit) supplies the native
+  command-line packer used by `make neosd-cart`.
+- [neosdconv](https://github.com/city41/neosdconv) is the independent,
+  open-source converter used for the manual byte-for-byte cross-check. It is
+  not a project build dependency.
 
 ## BIOS and redistribution
 
@@ -201,6 +257,6 @@ Use a BIOS set that is legal for you to use and compatible with the chosen
 emulator. This repository does not include a proprietary BIOS or original
 game ROM data.
 
-All generated ROM regions, archives, XML, and GnGeo data live under the
+All generated ROM regions, archives, `.neo` images, XML, and GnGeo data live under the
 ignored `platform/neogeo/build/` directory. Do not commit or redistribute
 generated game data unless you have the necessary rights.

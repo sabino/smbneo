@@ -20,7 +20,10 @@
   GnGeo output, with the visible title **Super Mario Bros. Neo**.
 - Kept `puzzledp.zip` as an optional fixed-database compatibility package and
   as the internal FBNeo/EmulatorJS launch identity only.
-- Added local browser downloads for both generated cartridge layouts without
-  uploading or committing user-supplied game data.
+- Added local browser downloads for the canonical ZIP, NeoSD/NeoSD Pro image,
+  and optional fixed-database package without uploading or committing
+  user-supplied game data.
+- Added reproducible `smbneo.neo` generation and independent validation for
+  command-line and browser workflows.
 - Focused the active fork branch on Neo Geo and removed the upstream desktop,
   original WebAssembly, and 3DS frontends.

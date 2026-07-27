@@ -153,6 +153,14 @@ class WebPlayerBuilderTests(unittest.TestCase):
                 "smbneo.zip",
             )
             self.assertEqual(
+                manifest["downloads"]["neosd"]["filename"],
+                "smbneo.neo",
+            )
+            self.assertEqual(
+                manifest["downloads"]["neosd"]["shortname"],
+                "smbneo",
+            )
+            self.assertEqual(
                 manifest["downloads"]["compatibility"]["filename"],
                 "puzzledp.zip",
             )

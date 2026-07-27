@@ -26,5 +26,7 @@
 *.v1 binary
 *.v2 binary
 *.s1 binary
+*.neo binary
+*.NEO binary
 *.sav binary
 *.state binary

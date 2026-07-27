@@ -46,6 +46,7 @@ jobs:
 
       - name: Build the ROM-free browser player
         run: |
+          python3 -m unittest tools.test_build_neosd
           make web
           jq -e '
             .project == "SMBNeo" and
@@ -55,6 +56,8 @@ jobs:
             .fbneo_driver == "puzzledp" and
             .downloads.canonical.filename == "smbneo.zip" and
             .downloads.canonical.shortname == "smbneo" and
+            .downloads.neosd.filename == "smbneo.neo" and
+            .downloads.neosd.shortname == "smbneo" and
             .downloads.compatibility.filename == "puzzledp.zip" and
             .downloads.compatibility.shortname == "puzzledp" and
             .privacy.game_image_included == false and

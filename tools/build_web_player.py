@@ -429,6 +429,11 @@ def build(args: argparse.Namespace) -> None:
                 "shortname": "smbneo",
                 "layout": "full hardware-native P/S/M/V/C",
             },
+            "neosd": {
+                "filename": "smbneo.neo",
+                "shortname": "smbneo",
+                "layout": "NeoSD v1 single-file native cartridge",
+            },
             "compatibility": {
                 "filename": "puzzledp.zip",
                 "shortname": "puzzledp",
