@@ -166,12 +166,13 @@ The complete game is playable in the emulator, including enemy-heavy stages
 and the final ending. Performance, sound balance, input, scrolling, title
 screen rendering, and crowded scenes have all received target-specific work.
 
-An initial MV1C flash-cartridge test exposed BIOS-handoff and background-chain
-rendering errors that lighter emulation had hidden. Both failures were then
-reproduced under MAME and corrected; the corrected cartridge still needs a
-physical-hardware retest. Sound is adapted to the Neo Geo hardware rather than
-reproduced waveform-for-waveform, and further performance and fidelity
-improvements are welcome.
+MV1C flash-cartridge tests exposed BIOS-handoff, background-chain, and
+animated-sprite orientation errors that lighter emulation had hidden. The
+renderer now uses full-height native sprite chains and pre-oriented graphics
+banks instead of runtime flip bits for 8x8 objects. The latest orientation fix
+still needs a physical-hardware retest. Sound is adapted to the Neo Geo
+hardware rather than reproduced waveform-for-waveform, and further performance
+and fidelity improvements are welcome.
 
 ## Development
 

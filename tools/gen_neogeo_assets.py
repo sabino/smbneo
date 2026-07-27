@@ -26,6 +26,11 @@ CROM_TILE_BYTES_PER_CHIP = 64
 CROM_RESERVED_TILES = 256
 CROM_BLANK_TILE = 256
 CROM_NES_TILE_BASE = 257
+CROM_NES_TILE_BANK_SIZE = NES_CHR_TILES
+CROM_NES_TILE_BANKS = 4
+CROM_NES_HFLIP_TILE_BASE = CROM_NES_TILE_BASE + CROM_NES_TILE_BANK_SIZE
+CROM_NES_VFLIP_TILE_BASE = CROM_NES_HFLIP_TILE_BASE + CROM_NES_TILE_BANK_SIZE
+CROM_NES_HVFLIP_TILE_BASE = CROM_NES_VFLIP_TILE_BASE + CROM_NES_TILE_BANK_SIZE
 CROM_CHIP_SIZE = 2 * 1024 * 1024
 
 SROM_TILE_BYTES = 32
@@ -133,6 +138,25 @@ def expand_2x(tile8: bytes) -> bytes:
     return bytes(tile16)
 
 
+def orient_tile(tile8: bytes, orientation: int) -> bytes:
+    """Mirror an 8x8 tile for source OAM H/V flip bits 6 and 7."""
+
+    if len(tile8) != 64:
+        raise AssetError(f"expected 64 pixels, found {len(tile8)}")
+    if not 0 <= orientation < CROM_NES_TILE_BANKS:
+        raise AssetError(f"tile orientation out of range: {orientation}")
+
+    horizontal = (orientation & 1) != 0
+    vertical = (orientation & 2) != 0
+    output = bytearray(64)
+    for y in range(8):
+        source_y = 7 - y if vertical else y
+        for x in range(8):
+            source_x = 7 - x if horizontal else x
+            output[y * 8 + x] = tile8[source_y * 8 + source_x]
+    return bytes(output)
+
+
 def encode_crom_tile(tile: bytes) -> tuple[bytes, bytes]:
     """Encode one 16x16 4bpp tile into complementary C1/C2 bitplanes."""
 
@@ -233,11 +257,26 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, object]:
     # Keep it transparent, then place the 512 source tiles at indices 1..512.
     srom = bytearray(SROM_NES_TILE_BASE * SROM_TILE_BYTES)
 
-    for tile_index in range(NES_CHR_TILES):
-        tile8 = decode_nes_tile(chr_data, tile_index)
-        tile_c1, tile_c2 = encode_crom_tile(expand_2x(tile8))
-        crom1.extend(tile_c1)
-        crom2.extend(tile_c2)
+    tiles = [
+        decode_nes_tile(chr_data, tile_index)
+        for tile_index in range(NES_CHR_TILES)
+    ]
+
+    #
+    # Bake all four OAM orientations into unused C-ROM space. Real hardware
+    # reports showed that combining LSPC horizontal flip with the 16-to-8
+    # shrink map could expose swapped, unmirrored halves of composite sprites.
+    # Selecting a pre-oriented bank makes the output deterministic while
+    # leaving the hardware flip bits clear and costs no frame time or work RAM.
+    #
+    for orientation in range(CROM_NES_TILE_BANKS):
+        for tile8 in tiles:
+            oriented = orient_tile(tile8, orientation)
+            tile_c1, tile_c2 = encode_crom_tile(expand_2x(oriented))
+            crom1.extend(tile_c1)
+            crom2.extend(tile_c2)
+
+    for tile8 in tiles:
         srom.extend(encode_srom_tile(tile8))
 
     # FIX tile 513 is transparent; tile 514 is an opaque border mask.
@@ -264,7 +303,16 @@ def build_assets(chr_data: bytes, output_dir: Path) -> dict[str, object]:
         ],
         "crom_blank_tile": CROM_BLANK_TILE,
         "crom_nes_tile_base": CROM_NES_TILE_BASE,
-        "crom_tiles_generated": CROM_NES_TILE_BASE + NES_CHR_TILES,
+        "crom_nes_tile_bases": {
+            "normal": CROM_NES_TILE_BASE,
+            "horizontal": CROM_NES_HFLIP_TILE_BASE,
+            "vertical": CROM_NES_VFLIP_TILE_BASE,
+            "horizontal_vertical": CROM_NES_HVFLIP_TILE_BASE,
+        },
+        "crom_tiles_generated": (
+            CROM_NES_TILE_BASE +
+            CROM_NES_TILE_BANKS * CROM_NES_TILE_BANK_SIZE
+        ),
         "srom_nes_tile_base": SROM_NES_TILE_BASE,
         "srom_blank_tile": SROM_BLANK_TILE,
         "srom_solid_tile": SROM_SOLID_TILE,

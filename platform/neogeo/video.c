@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "external.h"
 #include "input_policy.h"
+#include "oam_tiles.h"
 #include "oam_visibility.h"
 #include "ppu.h"
 #include "ppu_render_state.h"
@@ -23,10 +24,6 @@
 #define FIX_SOLID_TILE 514u
 #define FIX_BORDER_PALETTE 15u
 
-/* C-ROM tiles 0..255 are reserved for the BIOS/ngdevkit eyecatcher. */
-#define CROM_BLANK_TILE 256u
-#define CROM_NES_TILE_BASE 257u
-
 /*
  * GnGeo's full-frame DDA emits nine rows for vertical zoom 0x7f on a
  * one-tile object, duplicating the first source row. The 0x7e and 0x7f L0
@@ -37,7 +34,6 @@
 #define NEO_ZOOM_OAM_8X8 0x077eu
 #define NEO_ZOOM_BACKGROUND_8X8 0x077fu
 #define NEO_BG_PALETTE_BASE 16u
-#define NEO_SPRITE_PALETTE_BASE 20u
 
 #define OAM_SPRITES 64u
 #define BACKGROUND_STRIPS 33u
@@ -66,8 +62,6 @@
 #error Neo Geo renderer exceeds the 381 displayable sprite slots
 #endif
 
-#define NEO_ATTR_HORIZONTAL_FLIP 0x0001u
-#define NEO_ATTR_VERTICAL_FLIP 0x0002u
 #define NEO_SCB3_STICKY 0x0040u
 #define BACKGROUND_MAX_DRIVERS 2u
 #define BACKGROUND_LIVE_ROW_LIMIT 64u
@@ -376,7 +370,7 @@ static void build_palette_state(void) {
             desired_palettes[i][color] = background_color;
             desired_palettes[NEO_BG_PALETTE_BASE + i][color] =
                 background_color;
-            desired_palettes[NEO_SPRITE_PALETTE_BASE + i][color] =
+            desired_palettes[NEO_OAM_PALETTE_BASE + i][color] =
                 sprite_color;
         }
     }
@@ -870,20 +864,13 @@ static void build_oam_sprites(uint8_t set) {
         relative_sprite =
             (uint16_t)(priority_offset + (OAM_SPRITES - 1u - oam_index));
         sprite = oam_hardware_sprite(set, relative_sprite);
-        neogeo_tile = (uint16_t)(
-            CROM_NES_TILE_BASE + pattern_base + oam[offset + 1u]
+        neogeo_tile = neogeo_oam_tile_number(
+            pattern_base,
+            oam[offset + 1u],
+            attributes
         );
         x_word = sprite_x_word((uint16_t)(NES_CONTENT_X + source_x));
-        neogeo_attributes = (uint16_t)(
-            (NEO_SPRITE_PALETTE_BASE + (attributes & 3u)) << 8
-        );
-
-        if ((attributes & 0x40u) != 0u) {
-            neogeo_attributes |= NEO_ATTR_HORIZONTAL_FLIP;
-        }
-        if ((attributes & 0x80u) != 0u) {
-            neogeo_attributes |= NEO_ATTR_VERTICAL_FLIP;
-        }
+        neogeo_attributes = neogeo_oam_tile_attributes(attributes);
 
         write_single_tile_sprite_data(
             sprite,

@@ -38,6 +38,50 @@ function encodeNesTile(pixels) {
   return output;
 }
 
+function decodeCromTile(crom1, crom2, tileIndex) {
+  const tile = new Uint8Array(256);
+  let position = tileIndex * 64;
+  for (const quadrantOffset of [8, 136, 0, 128]) {
+    let offset = quadrantOffset;
+    for (let y = 0; y < 8; y += 1) {
+      const planes = [
+        crom1[position],
+        crom1[position + 1],
+        crom2[position],
+        crom2[position + 1],
+      ];
+      position += 2;
+      for (let x = 0; x < 8; x += 1) {
+        tile[offset] = planes.reduce(
+          (color, plane, index) =>
+            color | (((plane >>> x) & 1) << index),
+          0,
+        );
+        offset += 1;
+      }
+      offset += 8;
+    }
+  }
+  return tile;
+}
+
+function expandAndOrient(tile8, orientation) {
+  const output = new Uint8Array(256);
+  for (let y = 0; y < 8; y += 1) {
+    const sourceY = (orientation & 2) !== 0 ? 7 - y : y;
+    for (let x = 0; x < 8; x += 1) {
+      const sourceX = (orientation & 1) !== 0 ? 7 - x : x;
+      const color = tile8[sourceY * 8 + sourceX];
+      const outputOffset = y * 2 * 16 + x * 2;
+      output[outputOffset] = color;
+      output[outputOffset + 1] = color;
+      output[outputOffset + 16] = color;
+      output[outputOffset + 17] = color;
+    }
+  }
+  return output;
+}
+
 function syntheticRom() {
   const rom = new Uint8Array(16 + 32 * 1024 + 8 * 1024);
   rom.set([0x4e, 0x45, 0x53, 0x1a, 2, 1, 1, 0], 0);
@@ -88,6 +132,21 @@ test("raw iNES input is recognized and its CHR bank is converted", () => {
       .slice(514 * 32, 515 * 32)
       .some((value) => value !== 0),
   );
+
+  const tile8 = new Uint8Array(64);
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      tile8[y * 8 + x] = (x + y * 3) & 3;
+    }
+  }
+  const orientationBases = [257, 769, 1281, 1793];
+  for (const [orientation, tileBase] of orientationBases.entries()) {
+    assert.deepEqual(
+      decodeCromTile(graphics.c1, graphics.c2, tileBase),
+      expandAndOrient(tile8, orientation),
+      `orientation ${orientation}`,
+    );
+  }
 });
 
 test("title payload is placed in the word-swapped P-ROM", () => {

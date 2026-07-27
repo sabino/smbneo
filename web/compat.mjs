@@ -8,6 +8,8 @@ const TITLE_SCREEN_CHR_SIZE = 0x013a;
 
 const CROM_TILE_BYTES_PER_CHIP = 64;
 const CROM_NES_TILE_BASE = 257;
+const CROM_NES_TILE_BANK_SIZE = NES_CHR_TILES;
+const CROM_NES_TILE_BANKS = 4;
 const CROM_CHIP_SIZE = 2 * 1024 * 1024;
 const SROM_TILE_BYTES = 32;
 const SROM_NES_TILE_BASE = 1;
@@ -236,6 +238,20 @@ function expand2x(tile8) {
   return tile16;
 }
 
+function orientTile(tile8, orientation) {
+  const output = new Uint8Array(64);
+  const horizontal = (orientation & 1) !== 0;
+  const vertical = (orientation & 2) !== 0;
+  for (let y = 0; y < 8; y += 1) {
+    const sourceY = vertical ? 7 - y : y;
+    for (let x = 0; x < 8; x += 1) {
+      const sourceX = horizontal ? 7 - x : x;
+      output[y * 8 + x] = tile8[sourceY * 8 + sourceX];
+    }
+  }
+  return output;
+}
+
 function encodeCromTile(tile, crom1, crom2, outputOffset) {
   let position = outputOffset;
   for (const quadrantOffset of [8, 136, 0, 128]) {
@@ -280,12 +296,34 @@ export function buildGraphics(chrInput) {
   const c1 = new Uint8Array(CROM_CHIP_SIZE);
   const c2 = new Uint8Array(CROM_CHIP_SIZE);
   const s = new Uint8Array(SROM_SIZE);
+  const tiles = Array.from(
+    { length: NES_CHR_TILES },
+    (_, tileIndex) => decodeNesTile(chr, tileIndex),
+  );
+
+  for (
+    let orientation = 0;
+    orientation < CROM_NES_TILE_BANKS;
+    orientation += 1
+  ) {
+    for (let tileIndex = 0; tileIndex < NES_CHR_TILES; tileIndex += 1) {
+      const tile8 = tiles[tileIndex];
+      const cromOffset = (
+        CROM_NES_TILE_BASE +
+        orientation * CROM_NES_TILE_BANK_SIZE +
+        tileIndex
+      ) * CROM_TILE_BYTES_PER_CHIP;
+      encodeCromTile(
+        expand2x(orientTile(tile8, orientation)),
+        c1,
+        c2,
+        cromOffset,
+      );
+    }
+  }
 
   for (let tileIndex = 0; tileIndex < NES_CHR_TILES; tileIndex += 1) {
-    const tile8 = decodeNesTile(chr, tileIndex);
-    const cromOffset =
-      (CROM_NES_TILE_BASE + tileIndex) * CROM_TILE_BYTES_PER_CHIP;
-    encodeCromTile(expand2x(tile8), c1, c2, cromOffset);
+    const tile8 = tiles[tileIndex];
     encodeSromTile(
       tile8,
       s,
