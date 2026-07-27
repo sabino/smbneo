@@ -81,6 +81,22 @@ class AssetConversionTests(unittest.TestCase):
         self.assertEqual(len(crom2), 64)
         self.assertEqual(decode_crom_tile(crom1, crom2), expanded)
 
+    def test_all_oam_orientations_are_exact_source_pixel_mirrors(self) -> None:
+        for orientation in range(4):
+            oriented = assets.orient_tile(self.tile, orientation)
+            expected = bytes(
+                self.tile[
+                    (7 - y if orientation & 2 else y) * 8
+                    + (7 - x if orientation & 1 else x)
+                ]
+                for y in range(8)
+                for x in range(8)
+            )
+            self.assertEqual(oriented, expected)
+
+        with self.assertRaisesRegex(assets.AssetError, "orientation out of range"):
+            assets.orient_tile(self.tile, 4)
+
     def test_hardware_shrink_recovers_every_source_pixel(self) -> None:
         video_source = NEOGEO_VIDEO.read_text(encoding="utf-8")
         self.assertRegex(
@@ -158,14 +174,23 @@ class AssetConversionTests(unittest.TestCase):
                 bytes(assets.CROM_NES_TILE_BASE * 64),
             )
 
-            offset = assets.CROM_NES_TILE_BASE * 64
-            self.assertEqual(
-                decode_crom_tile(
-                    crom1[offset : offset + 64],
-                    crom2[offset : offset + 64],
-                ),
-                assets.expand_2x(self.tile),
+            orientation_bases = (
+                assets.CROM_NES_TILE_BASE,
+                assets.CROM_NES_HFLIP_TILE_BASE,
+                assets.CROM_NES_VFLIP_TILE_BASE,
+                assets.CROM_NES_HVFLIP_TILE_BASE,
             )
+            for orientation, tile_base in enumerate(orientation_bases):
+                offset = tile_base * 64
+                self.assertEqual(
+                    decode_crom_tile(
+                        crom1[offset : offset + 64],
+                        crom2[offset : offset + 64],
+                    ),
+                    assets.expand_2x(
+                        assets.orient_tile(self.tile, orientation)
+                    ),
+                )
             self.assertEqual(
                 decode_srom_tile(srom[:32]),
                 bytes(64),
@@ -188,6 +213,16 @@ class AssetConversionTests(unittest.TestCase):
                 bytes([1]) * 64,
             )
             self.assertEqual(info["crom_nes_tile_base"], 257)
+            self.assertEqual(
+                info["crom_nes_tile_bases"],
+                {
+                    "normal": 257,
+                    "horizontal": 769,
+                    "vertical": 1281,
+                    "horizontal_vertical": 1793,
+                },
+            )
+            self.assertEqual(info["crom_tiles_generated"], 2305)
             self.assertEqual(info["srom_nes_tile_base"], 1)
             self.assertEqual(
                 info["title_screen_chr_bytes"],

@@ -28,6 +28,7 @@ APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
 AUDIO_PACKET_TEST := $(BUILD)/test_neogeo_audio_packet
 AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
+OAM_TILES_TEST := $(BUILD)/test_neogeo_oam_tiles
 GAMEROM := smbneo
 
 CC := m68k-neogeo-elf-gcc
@@ -368,13 +369,19 @@ $(OAM_VISIBILITY_TEST): \
 		-I. \
 		$(ROOT)/tools/test_neogeo_oam_visibility.c -o $@
 
+$(OAM_TILES_TEST): \
+		$(ROOT)/tools/test_neogeo_oam_tiles.c oam_tiles.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_oam_tiles.c -o $@
+
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(AUDIO_PACKET_TEST) \
-		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST)
+		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
@@ -388,6 +395,7 @@ test: \
 	$(AUDIO_PACKET_TEST)
 	$(AUDIO_CADENCE_TEST)
 	$(OAM_VISIBILITY_TEST)
+	$(OAM_TILES_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \

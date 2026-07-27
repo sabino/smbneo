@@ -925,8 +925,18 @@ not tracked. MAME reproduced the two failures visible in the initial MV1C
 footage: a tiled FIX screen during BIOS handoff and truncated background strips
 that left the ground missing and extended black columns below solid tiles.
 Reserving transparent FIX tile zero and using the LSPC 32-tile full-height
-chain removed both failures in the same MAME lane. The corrected cartridge
-still requires an MV1C retest.
+chain removed both failures in the same MAME lane.
+
+A [follow-up MV1C run](https://streamable.com/2r8pyl) then exposed an
+alternating Goomba pose with swapped but unmirrored 8x8 halves. The source
+animation deliberately swaps each half and requests horizontal mirroring, so
+the recorded shape identifies the LSPC flip phase. The cartridge now stores
+normal, horizontal, vertical, and combined orientations in separate C-ROM
+banks; OAM tile selection uses those banks and leaves hardware flip bits
+clear. A clean canonical package booted through the generated MAME software
+list, and 201 consecutive gameplay captures covered both Goomba walk poses
+without malformed halves. Pixel-level host tests verify every pre-oriented
+bank. The result still requires confirmation on the reporting MV1C setup.
 
 The normal-mode audio probe establishes non-silent emulator PCM from active
 gameplay in addition to the sound-state, linkage, and packaging gates. It does
@@ -937,9 +947,9 @@ physical hardware.
 
 1. Reach one tick per stock-clock VBlank in every enemy-heavy regression
    window while rendering every in-range OAM entry.
-2. Retest the corrected cartridge on the MV1C, then broaden audio/video testing
-   to other AES/MVS-compatible hardware, confirm the ADPCM-B V1 bus mapping,
-   and tune output level plus visible-area offsets.
+2. Retest the pre-oriented sprite build on the reporting MV1C, then broaden
+   audio/video testing to other AES/MVS-compatible hardware, confirm the
+   ADPCM-B V1 bus mapping, and tune output level plus visible-area offsets.
 3. Evaluate pulse-duty and short-noise approximations without consuming the
    remaining Z80 stack margin.
 4. Tighten the remaining fine-scroll left-edge masking cases.

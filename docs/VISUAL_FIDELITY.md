@@ -31,6 +31,23 @@ exactly eight rows. Multi-tile background strips retain `0x7f`; their shrink
 table diverges after the first tile. This removes the observed extra hat row
 without changing Mario's CHR data or OAM priority.
 
+## Animated sprite orientation
+
+The source game animates some composite objects by swapping their left and
+right 8x8 tiles and setting the horizontal-flip bit on both. A follow-up
+[MV1C recording](https://streamable.com/2r8pyl) showed the swapped Goomba
+halves without the requested mirroring during alternating walk poses. That
+isolated the fault to the combination of runtime LSPC flipping and the
+16-to-8 shrink path rather than to the Goomba artwork or game animation.
+
+The asset converter now writes four complete C-ROM banks: normal,
+horizontally mirrored, vertically mirrored, and mirrored on both axes. The OAM
+renderer selects a bank from source attribute bits 6 and 7 and leaves LSPC
+SCB1 flip bits 0 and 1 clear. This preserves every source orientation without
+additional frame-time work or work RAM. ROM-free conversion tests decode all
+four banks back to pixels, and a host renderer test locks the tile selection
+and verifies that flip attributes never reach SCB1.
+
 ## Full-height background strips
 
 Vertical shrink is applied across an entire Neo Geo sprite chain. It does not
@@ -92,6 +109,6 @@ while source OAM priority is preserved. Crowded scenes can therefore show
 pixels that would flicker or disappear on the source hardware.
 
 Physical display scaling, CRT decoder behavior, composite artifacts, and
-AES/MVS analog output are outside a square-pixel screenshot comparison. An
-initial MV1C run has been reviewed, but the corrected build still requires a
-physical retest.
+AES/MVS analog output are outside a square-pixel screenshot comparison. Two
+MV1C runs have informed the renderer fixes, but the latest pre-oriented sprite
+build still requires a physical retest.

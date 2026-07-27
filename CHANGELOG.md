@@ -11,6 +11,8 @@
   reproducibility gates.
 - Added a MAME validation lane and corrected real-LSPC full-height background
   chains plus BIOS-safe transparent FIX tile zero.
+- Replaced runtime LSPC flipping of shrunken OAM tiles with pre-oriented C-ROM
+  banks after an MV1C test exposed corrupt alternating composite-sprite poses.
 - Added ROM-free host CI.
 - Added a ROM-free browser player with local game conversion, arrow-key
   controls, and GitHub Pages deployment.
