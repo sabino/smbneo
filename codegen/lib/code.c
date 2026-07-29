@@ -12656,6 +12656,9 @@ void GetMTileAttrib(void) {
 }
 
 void EnemyToBGCollisionDet(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemy_to_bg_collision_det()) { return; }
+  #endif
   lda_zpx(Enemy_State); // check enemy state for d6 set
   and_imm(0b00100000);
   if (!zero_flag) { goto EnemyToBGCollisionDetExit; } // if set, branch to leave

@@ -32,6 +32,7 @@ MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
 SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
 CORE_FAST_PATHS_TEST := $(BUILD)/test_neogeo_core_fast_paths
 SPR_OBJECT_OFFSCREEN_FAST_TEST := $(BUILD)/test_spr_object_offscreen_fast
+ENEMY_BG_COLLISION_FAST_TEST := $(BUILD)/test_enemy_bg_collision_fast
 READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
 OFFSCREEN_BITS_TEST := $(BUILD)/test_offscreen_bits
 TOP_SCORE_CHECK_TEST := $(BUILD)/test_top_score_check
@@ -601,6 +602,29 @@ $(SPR_OBJECT_OFFSCREEN_FAST_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(ENEMY_BG_COLLISION_FAST_TEST): \
+		$(ROOT)/tools/test_enemy_bg_collision_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_enemy_bg_collision_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(READ_PORT_BITS_TEST): \
 		$(ROOT)/tools/test_read_port_bits.c \
 		$(ROOT)/codegen/lib/code.c \
@@ -745,6 +769,7 @@ test: \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
 		$(SPRITE_SHUFFLER_TEST) $(CORE_FAST_PATHS_TEST) \
 		$(SPR_OBJECT_OFFSCREEN_FAST_TEST) \
+		$(ENEMY_BG_COLLISION_FAST_TEST) \
 		$(READ_PORT_BITS_TEST) $(OFFSCREEN_BITS_TEST) \
 		$(TOP_SCORE_CHECK_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
@@ -768,6 +793,7 @@ test: \
 	$(SPRITE_SHUFFLER_TEST)
 	$(CORE_FAST_PATHS_TEST)
 	$(SPR_OBJECT_OFFSCREEN_FAST_TEST)
+	$(ENEMY_BG_COLLISION_FAST_TEST)
 	$(READ_PORT_BITS_TEST)
 	$(OFFSCREEN_BITS_TEST)
 	$(TOP_SCORE_CHECK_TEST)

@@ -75,6 +75,21 @@ static void fast_erase_enemy_object(uint8_t slot) {
     ram[EnemyFrameTimer + slot] = 0u;
 }
 
+typedef enum {
+    FAST_ENEMY_BG_NONE = 0,
+    FAST_ENEMY_BG_EARLY_EXIT,
+} FastEnemyBgPolicy;
+
+/*
+ * State-zero Piranha Plants and Lakitu always leave the translated routine
+ * after its vertical-range test and ID checks. A zero policy deliberately
+ * sends every other ID through the complete translated collision logic.
+ */
+static const uint8_t fast_enemy_bg_policy[Lakitu + 1u] = {
+    [PiranhaPlant] = FAST_ENEMY_BG_EARLY_EXIT,
+    [Lakitu] = FAST_ENEMY_BG_EARLY_EXIT,
+};
+
 static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
 }
@@ -429,5 +444,43 @@ bool smb_core_fast_offscreen_bounds_check(void) {
     /* The final failed CPY #JumpspringObject leaves carry clear. */
     carry_flag = false;
     fast_erase_enemy_object(slot);
+    return true;
+}
+
+bool smb_core_fast_enemy_to_bg_collision_det(void) {
+    const uint8_t initial_x = x;
+    uint8_t enemy_id;
+    uint8_t adjusted_y;
+
+    /* Do not alter any emulated state until the policy is fully accepted. */
+    if (ram[(uint8_t)(Enemy_State + initial_x)] != 0u) {
+        return false;
+    }
+    enemy_id = ram[(uint8_t)(Enemy_ID + initial_x)];
+    if (
+        enemy_id > Lakitu ||
+        fast_enemy_bg_policy[enemy_id] != FAST_ENEMY_BG_EARLY_EXIT
+    ) {
+        return false;
+    }
+
+    /* Exact folded SubtEnemyYPos semantics, including both CMP outcomes. */
+    adjusted_y = (uint8_t)(
+        ram[(uint8_t)(Enemy_Y_Position + initial_x)] + 0x3eu
+    );
+    a = adjusted_y;
+    nz_value = (uint8_t)(adjusted_y - 0x44u);
+    if (adjusted_y < 0x44u) {
+        carry_flag = false;
+        return true;
+    }
+
+    /*
+     * Both selected IDs bypass the Spiny path, then return at CPY #$07.
+     * That final comparison is the source routine's observable flag state.
+     */
+    y = enemy_id;
+    carry_flag = true;
+    nz_value = (uint8_t)(enemy_id - 0x07u);
     return true;
 }

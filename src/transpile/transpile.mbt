@@ -679,6 +679,25 @@ fn is_reviewed_spr_object_offscr_chk(
 }
 
 ///|
+fn is_reviewed_enemy_to_bg_collision_det(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemyToBGCollisionDet" {
+    return false
+  }
+
+  // The guarded direct helper implements only the two reviewed state-zero
+  // early-return policies. Keep the complete translated collision routine as
+  // fallback unless its entire executable lowering is byte-for-byte stable.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    53,
+    2210,
+    "e76dff395348d7a40a928826c673bcf4974722ff28d377022712acc99f40159c",
+  )
+}
+
+///|
 fn is_reviewed_offscreen_bounds_check(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -695,6 +714,35 @@ fn is_reviewed_offscreen_bounds_check(
     2124,
     "43d6a841106e9f64fa858df9f60c3eaaecf7b8417a2714e5ef90009f0e579c24",
   )
+}
+
+///|
+fn is_reviewed_subt_enemy_y_pos(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "SubtEnemyYPos" {
+    return false
+  }
+
+  // The fast policy folds this leaf and therefore depends on every load,
+  // arithmetic operation, comparison, operand, and branch flag remaining
+  // exactly as reviewed.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    4,
+    172,
+    "2666ec0c211c034685c9adc7f5bf61a909d6854b57b0171ad51b09fe42c3c9a0",
+  )
+}
+
+///|
+fn has_reviewed_subt_enemy_y_pos(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_subt_enemy_y_pos(subroutine) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -2721,6 +2769,15 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
     has_reviewed_erase_enemy_object(low) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_offscreen_bounds_check()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_enemy_to_bg_collision_det(subroutine) &&
+    has_reviewed_subt_enemy_y_pos(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit(
+      "if (smb_core_fast_enemy_to_bg_collision_det()) { return; }",
+    )
     self.emit("#endif")
   }
 
