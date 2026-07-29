@@ -143,6 +143,24 @@ class NghIdentityTests(unittest.TestCase):
             checker.validate_ngh_id({"rom_NGH_ID": 0x2025})
 
 
+class TitleDataAlignmentTests(unittest.TestCase):
+    def test_accepts_word_aligned_title_data(self) -> None:
+        self.assertEqual(
+            checker.validate_title_data_alignment(
+                {"neogeo_title_screen_data": 0x04C2}
+            ),
+            0x04C2,
+        )
+
+    def test_rejects_missing_or_odd_title_data(self) -> None:
+        with self.assertRaisesRegex(checker.ElfCheckError, "symbol missing"):
+            checker.validate_title_data_alignment({})
+        with self.assertRaisesRegex(checker.ElfCheckError, "odd P-ROM"):
+            checker.validate_title_data_alignment(
+                {"neogeo_title_screen_data": 0x04C1}
+            )
+
+
 class LspcStoreTests(unittest.TestCase):
     def test_accepts_absolute_long_vram_writes(self) -> None:
         disassembly = """\

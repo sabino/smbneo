@@ -234,6 +234,7 @@ class AssetConversionTests(unittest.TestCase):
             )
             self.assertEqual(emitted_title, expected_title)
             self.assertIn('#include "title_data.h"', title_source)
+            self.assertIn("TITLE_SCREEN_DATA_ALIGNMENT", title_source)
 
     def test_title_screen_data_requires_complete_chr(self) -> None:
         with self.assertRaisesRegex(assets.AssetError, "expected 8192 CHR bytes"):

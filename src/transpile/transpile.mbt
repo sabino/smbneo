@@ -463,10 +463,2970 @@ fn Emitter::emit_item(self: Emitter, item: @lower.AsmItem, low: @lower.AsmLoweri
     }
 }
 
+fn addressing_mode_structure(mode : @lower.AsmAddressingMode) -> String {
+  match mode {
+    Accumulator => "acc"
+    Implied => "imp"
+    Immediate(expr) => "imm:\{show_expr(expr)}"
+    Relative(expr) => "rel:\{show_expr(expr)}"
+    ZeroPage(expr) => "zp:\{show_expr(expr)}"
+    ZeroPageX(expr) => "zpx:\{show_expr(expr)}"
+    ZeroPageY(expr) => "zpy:\{show_expr(expr)}"
+    Absolute(expr) => "abs:\{show_expr(expr)}"
+    AbsoluteX(expr) => "absx:\{show_expr(expr)}"
+    AbsoluteY(expr) => "absy:\{show_expr(expr)}"
+    Indirect(expr) => "ind:\{show_expr(expr)}"
+    IndexedIndirect(expr) => "indx:\{show_expr(expr)}"
+    IndirectIndexed(expr) => "indy:\{show_expr(expr)}"
+  }
+}
+
+///|
+fn append_flat_items_structure(
+  structure : StringBuilder,
+  items : Array[@lower.AsmItem],
+) -> Unit {
+  for item in items {
+    match item {
+      Label(name) => structure.write_string("L:\{name}\n")
+      Inst(op~, mode~, ..) =>
+        structure.write_string(
+          "I:\{op.to_string()}:\{addressing_mode_structure(mode)}\n",
+        )
+      JumpEngine(..) => structure.write_string("JUMP_ENGINE\n")
+      If(cond~, then~, otherwise~, comment=_) => {
+        structure.write_string("IF:\{cond.to_string()}\n")
+        append_flat_items_structure(structure, then)
+        match otherwise {
+          Some(otherwise) => {
+            structure.write_string("ELSE\n")
+            append_flat_items_structure(structure, otherwise)
+          }
+          None => ()
+        }
+        structure.write_string("END_IF\n")
+      }
+      Comment(_) => ()
+    }
+  }
+}
+
+fn flat_subroutine_structure(items : Array[@lower.AsmItem]) -> String {
+  let structure = StringBuilder::new()
+
+  append_flat_items_structure(structure, items)
+  structure.to_string()
+}
+
+///|
+fn reviewed_typed_expr_structure(expr : @lower.TypedExpr) -> String {
+  match expr {
+    Const(base~, value~, size~, ty~) =>
+      "const|\{Show::to_string(base)}|\{value}|\{Show::to_string(size)}|\{Show::to_string(ty)}"
+    Ident(name~, ty~) =>
+      "ident|\{name.length()}|\{name}|\{Show::to_string(ty)}"
+    Unary(op~, expr~, ty~) =>
+      "unary|\{Show::to_string(op)}|\{Show::to_string(ty)}(|\{reviewed_typed_expr_structure(expr)})"
+    Binary(op~, lhs~, rhs~, ty~) =>
+      "binary|\{Show::to_string(op)}|\{Show::to_string(ty)}(|\{reviewed_typed_expr_structure(lhs)})(|\{reviewed_typed_expr_structure(rhs)})"
+  }
+}
+
+///|
+fn reviewed_addressing_mode_structure(
+  mode : @lower.AsmAddressingMode,
+) -> String {
+  match mode {
+    Accumulator => "acc"
+    Implied => "imp"
+    Immediate(expr) => "imm|\{reviewed_typed_expr_structure(expr)}"
+    Relative(expr) => "rel|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPage(expr) => "zp|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPageX(expr) => "zpx|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPageY(expr) => "zpy|\{reviewed_typed_expr_structure(expr)}"
+    Absolute(expr) => "abs|\{reviewed_typed_expr_structure(expr)}"
+    AbsoluteX(expr) => "absx|\{reviewed_typed_expr_structure(expr)}"
+    AbsoluteY(expr) => "absy|\{reviewed_typed_expr_structure(expr)}"
+    Indirect(expr) => "ind|\{reviewed_typed_expr_structure(expr)}"
+    IndexedIndirect(expr) =>
+      "indx|\{reviewed_typed_expr_structure(expr)}"
+    IndirectIndexed(expr) =>
+      "indy|\{reviewed_typed_expr_structure(expr)}"
+  }
+}
+
+///|
+fn append_reviewed_flat_items_structure(
+  structure : StringBuilder,
+  items : Array[@lower.AsmItem],
+) -> Int {
+  let mut count = 0
+
+  for item in items {
+    match item {
+      Label(name) => {
+        structure.write_string("label|\{name.length()}|\{name}\n")
+        count += 1
+      }
+      Inst(op~, mode~, comment=_) => {
+        structure.write_string(
+          "inst|\{Show::to_string(op)}|\{reviewed_addressing_mode_structure(mode)}\n",
+        )
+        count += 1
+      }
+      JumpEngine(jump_table~) => {
+        structure.write_string("jump-engine|\{jump_table.length()}\n")
+        for target in jump_table {
+          structure.write_string(
+            "target|\{target.length()}|\{target}\n",
+          )
+        }
+        count += 1
+      }
+      If(cond~, then~, otherwise~, comment=_) => {
+        structure.write_string("if|\{Show::to_string(cond)}\n")
+        count += 1
+        count += append_reviewed_flat_items_structure(structure, then)
+        match otherwise {
+          Some(otherwise) => {
+            structure.write_string("else\n")
+            count += append_reviewed_flat_items_structure(structure, otherwise)
+          }
+          None => structure.write_string("no-else\n")
+        }
+        structure.write_string("end-if\n")
+      }
+      Comment(_) => ()
+    }
+  }
+  count
+}
+
+///|
+fn reviewed_flat_subroutine_fingerprint(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> (Int, Int, String) {
+  let structure = StringBuilder::new()
+  let count = append_reviewed_flat_items_structure(
+    structure,
+    subroutine.items,
+  )
+  let structure = structure.to_string()
+  let digest = @crypto.bytes_to_hex_string(
+    @crypto.sha256(@encoding.encode(UTF8, structure)),
+  )
+
+  (count, structure.length(), digest)
+}
+
+///|
+fn is_reviewed_write_buffer_to_screen(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "WriteBufferToScreen__sub" {
+    return false
+  }
+
+  // The specialized emitter changes control flow around the PPU_DATA loop.
+  // Admit it only for the exact reviewed instruction, operand, nested branch,
+  // label, and jump-target structure. Comments are intentionally irrelevant.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    42,
+    1451,
+    "1ab865f9531d4ba356bfc72ef79e637dd6b77096ae79e02628f364c5ac9eaffc",
+  )
+}
+
+///|
+fn is_reviewed_render_area_graphics(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RenderAreaGraphics" {
+    return false
+  }
+
+  // The direct helper folds all thirteen metatile rows and the final name
+  // table/CPU state. Keep the byte-ordered translated body as fallback unless
+  // every executable item, branch, operand, and label has the reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    96,
+    4282,
+    "08b5eacf08fd9a086b2544ed9b86601dce325ce1411bfd12e41d3c6c02b2393d",
+  )
+}
+
+///|
+fn is_reviewed_enemy_gfx_handler(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemyGfxHandler" {
+    return false
+  }
+
+  // The helper directly implements several paths through a much larger
+  // routine. Its hook is safe only while every executable lowered item,
+  // nested branch, operand type, label, and jump target has the reviewed
+  // shape. Comments are deliberately excluded from the semantic fingerprint.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    390,
+    19475,
+    "ea456aa396291511a0d552ad86dd35f507fbdce7cdb136792cef75142d29acce",
+  )
+}
+
+///|
+fn is_reviewed_move_normal_enemy(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveNormalEnemy" {
+    return false
+  }
+
+  // The direct helper implements only an explicitly guarded subset of this
+  // state machine. Keep the translated body as the fallback unless every
+  // executable item, nested branch, operand type, label, and jump target has
+  // exactly the reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    66,
+    2406,
+    "793acbe5404009d34891d7ac022eefe7e6e86fdc784a8a953d62fc2bb20bbc37",
+  )
+}
+
+///|
+fn is_reviewed_spr_object_offscr_chk(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "SprObjectOffscrChk" {
+    return false
+  }
+
+  // The fast helper folds the complete low-mask path, including every
+  // stack/register side effect around the two column-helper calls. Keep the
+  // generic instruction emitter unless the entire executable shape matches.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    44,
+    1355,
+    "fc404481ad9ba1b704bf95bfc97b68607219c7fd61534a0a9fea709efe07ffa4",
+  )
+}
+
+///|
+fn is_reviewed_enemy_to_bg_collision_det(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemyToBGCollisionDet" {
+    return false
+  }
+
+  // The guarded direct helper implements only the two reviewed state-zero
+  // early-return policies. Keep the complete translated collision routine as
+  // fallback unless its entire executable lowering is byte-for-byte stable.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    53,
+    2210,
+    "e76dff395348d7a40a928826c673bcf4974722ff28d377022712acc99f40159c",
+  )
+}
+
+///|
+fn is_reviewed_offscreen_bounds_check(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "OffscreenBoundsCheck" {
+    return false
+  }
+
+  // This helper reproduces the complete flag chain for an allowlisted subset
+  // of enemy IDs and states. Any executable source-shape change must retain
+  // the generated instruction body as the only implementation.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    47,
+    2124,
+    "43d6a841106e9f64fa858df9f60c3eaaecf7b8417a2714e5ef90009f0e579c24",
+  )
+}
+
+///|
+fn is_reviewed_draw_large_platform(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "DrawLargePlatform" {
+    return false
+  }
+
+  // The direct helper folds every OAM write, flag transition, five temporary
+  // stack writes, and the final all-hide branch. Any executable source change
+  // must retain the ordinary translated body as the only implementation.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    81,
+    3274,
+    "a6cee1a7c99d9894f322fe7cf12b6a008387fd960dbd57c73e1737766a30c688",
+  )
+}
+
+///|
+fn is_reviewed_large_platform_draw_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  let expected = match subroutine.name {
+    "SixSpriteStacker" =>
+      (
+        12,
+        331,
+        "145a001162a4e864f49548bfad2a7b8e7cff0950ad23fa10386294743610527e",
+      )
+    "MoveSixSpritesOffscreen" =>
+      (
+        2,
+        95,
+        "0db34e6d8b9e5ea87703e42d38d9c476fb0a292c82e94b5e421d49c15f92d170",
+      )
+    "DumpSixSpr" =>
+      (
+        3,
+        270,
+        "c11b7e41aca5fc496efbe4c2a93750ee9b79c22df9c1b9d8d597efb6e1c4ba32",
+      )
+    "DumpFourSpr" =>
+      (
+        2,
+        157,
+        "adf79f43f70729f6968981fecff4198811bfc7724a9753f1c1bd448d862fbb36",
+      )
+    "DumpThreeSpr" =>
+      (
+        2,
+        154,
+        "86fc3691f14a1473837f11288aa4c1587a3b4e1f28df3df4a1e00ddbae95754e",
+      )
+    "DumpTwoSpr" =>
+      (
+        2,
+        162,
+        "43d5bd22124cdd28fae8a1c6561817bac9fcdffb07f2dc33a40a1a2299be45e3",
+      )
+    "GetXOffscreenBits" =>
+      (
+        25,
+        1161,
+        "036387c1bbe23218adc7118f6976358d46af54c8078ce01e8e34e4d6eaf87823",
+      )
+    "DividePDiff" =>
+      (
+        12,
+        404,
+        "11ce08547ce94defbe9e23f7392c7591364fc78c66fb7bef25ac222baae2f28f",
+      )
+    _ => (-1, -1, "")
+  }
+  reviewed_flat_subroutine_fingerprint(subroutine) == expected
+}
+
+///|
+fn has_reviewed_large_platform_draw_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut dependency_count = 0
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_large_platform_draw_dependency(subroutine) {
+      dependency_count += 1
+    }
+  }
+  dependency_count == 8 && has_reviewed_offscreen_tables(low)
+}
+
+///|
+fn is_reviewed_subt_enemy_y_pos(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "SubtEnemyYPos" {
+    return false
+  }
+
+  // The fast policy folds this leaf and therefore depends on every load,
+  // arithmetic operation, comparison, operand, and branch flag remaining
+  // exactly as reviewed.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    4,
+    172,
+    "2666ec0c211c034685c9adc7f5bf61a909d6854b57b0171ad51b09fe42c3c9a0",
+  )
+}
+
+///|
+fn has_reviewed_subt_enemy_y_pos(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_subt_enemy_y_pos(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn is_reviewed_goomba_bg_collision_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "ChkUnderEnemy" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        156,
+        "888f64bc941830ab801f963a5cf7a091fc279a1b85c5ed9ebfc03a74308a04ae",
+      )
+    "BlockBufferChk_Enemy" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        7,
+        154,
+        "3e228109841ed43cb76c3c82398e7f64a908f86891e77bdf22f46948db63a8db",
+      )
+    "BBChk_E" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        151,
+        "de27535c535d8b44b0b1abf271539ec0e54681009e30e25e96af140a3a598215",
+      )
+    "BlockBufferCollision" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        37,
+        1425,
+        "035f74da3dfd3e14dfa2b4351f481586b27b94ca77cad693e7b1d6f457506876",
+      )
+    "GetBlockBufferAddr" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        13,
+        424,
+        "e60681deea0a9db19321cc2abddcf5a8683b1f0e81e47d68b46440f044feb865",
+      )
+    "ChkForNonSolids" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        10,
+        440,
+        "2254054f60506fecaee94cbba8daf6d819a0d73c72638314c6f1fc2528903b1d",
+      )
+    "LandEnemyProperly__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        71,
+        2922,
+        "735e18602f717697d1b11788ba010539fec088487982e1441cc865ff621a85b4",
+      )
+    "ChkForRedKoopa" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        18,
+        642,
+        "6231c43c7a8a4c87f5eeeaccb9d6c379308a51c390422f73d2fb5f9869b362bf",
+      )
+    "DoEnemySideCheck" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        21,
+        845,
+        "bac217bb5f0237959dcef9fea01c2c9e43cfdf8fcd9c8ada011acbb2747a1135",
+      )
+    _ => false
+  }
+}
+
+fn has_reviewed_goomba_bg_collision_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut under = false
+  let mut wrapper = false
+  let mut bb_check = false
+  let mut block = false
+  let mut address = false
+  let mut non_solid = false
+  let mut land = false
+  let mut red_koopa = false
+  let mut side = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_goomba_bg_collision_dependency(subroutine) {
+      match subroutine.name {
+        "ChkUnderEnemy" => under = true
+        "BlockBufferChk_Enemy" => wrapper = true
+        "BBChk_E" => bb_check = true
+        "BlockBufferCollision" => block = true
+        "GetBlockBufferAddr" => address = true
+        "ChkForNonSolids" => non_solid = true
+        "LandEnemyProperly__sub" => land = true
+        "ChkForRedKoopa" => red_koopa = true
+        "DoEnemySideCheck" => side = true
+        _ => ()
+      }
+    }
+  }
+  under && wrapper && bb_check && block && address && non_solid && land &&
+  red_koopa && side && has_reviewed_block_buffer_addr_table(low)
+}
+
+///|
+fn is_relative_enemy_position(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RelativeEnemyPosition" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0x1
+    #|I:LDY:imm:0x1
+    #|I:JSR:abs:VariableObjOfsRelPos
+    #|
+  )
+}
+
+///|
+fn is_relative_enemy_position_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "VariableObjOfsRelPos" =>
+      flat_subroutine_structure(subroutine.items) == (
+        #|I:STX:zp:0x0
+        #|I:CLC:imp
+        #|I:ADC:zp:0x0
+        #|I:TAX:imp
+        #|I:JSR:abs:GetObjRelativePosition
+        #|I:LDX:zp:ObjectOffset
+        #|
+      )
+    "GetObjRelativePosition" =>
+      flat_subroutine_structure(subroutine.items) == (
+        #|I:LDA:zpx:SprObject_Y_Position
+        #|I:STA:absy:SprObject_Rel_YPos
+        #|I:LDA:zpx:SprObject_X_Position
+        #|I:SEC:imp
+        #|I:SBC:abs:ScreenLeft_X_Pos
+        #|I:STA:absy:SprObject_Rel_XPos
+        #|
+      )
+    _ => false
+  }
+}
+
+///|
+fn is_reviewed_spr_object_offscr_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "MoveESprColOffscreen" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        5,
+        244,
+        "8f7b4c78c0a0bc1dd6e2d8bea1deb5819a6e326ad42a6437fd71ca26e929d7db",
+      )
+    "MoveColOffscreen" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        228,
+        "792779870267b8082c288ce145374a6a3b4541ad80de74f5c9843a73618e16df",
+      )
+    _ => false
+  }
+}
+
+fn has_reviewed_relative_enemy_position_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut variable = false
+  let mut relative = false
+
+  for subroutine in low.flat_subroutines {
+    if is_relative_enemy_position_dependency(subroutine) {
+      if subroutine.name == "VariableObjOfsRelPos" {
+        variable = true
+      } else if subroutine.name == "GetObjRelativePosition" {
+        relative = true
+      }
+    }
+  }
+  variable && relative
+}
+
+///|
+fn has_reviewed_spr_object_offscr_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut column = false
+  let mut move_column = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_spr_object_offscr_dependency(subroutine) {
+      if subroutine.name == "MoveESprColOffscreen" {
+        column = true
+      } else if subroutine.name == "MoveColOffscreen" {
+        move_column = true
+      }
+    }
+  }
+  column && move_column
+}
+
+///|
+fn is_reviewed_erase_enemy_object(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EraseEnemyObject" {
+    return false
+  }
+
+  // OffscreenBoundsCheck folds this leaf into its direct helper, including
+  // every store and the final observable register/flag state.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    9,
+    464,
+    "ba9a7785c5e66cf654038a209fe0122077eb5653225d965be6c159d35a708cef",
+  )
+}
+
+fn has_reviewed_erase_enemy_object(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_erase_enemy_object(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn is_reviewed_enemies_collision(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemiesCollision" {
+    return false
+  }
+
+  // The direct helper folds the complete no-overlap path through the pair
+  // loop. Keep the translated body unless every executable parent item and
+  // branch target still has the exact reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    19,
+    802,
+    "115f4bbe901738cef2465b58e2fae2edca25664c0f4b6cb24f7e99652cf78608",
+  )
+}
+
+///|
+fn is_reviewed_enemies_collision_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "ECLoop__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        50,
+        1951,
+        "bf17f7430a07b3868342a23f3012b2cb4d08f15533dea3ef8dec6e1240961d4d",
+      )
+    "ExitECRoutine__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        1,
+        48,
+        "21c18c720803c362e169821aa4bf892756a9a83ea9d90cc3452ee72f6ad07b66",
+      )
+    "GetEnemyBoundBoxOfs" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        2,
+        101,
+        "d125603a5f78556dfc01f924f9ea0ffc6394bd624d78f002df4b3dfc327db2e3",
+      )
+    "SprObjectCollisionCore" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        50,
+        2193,
+        "47604e934f85083753b365240adf36bc6883afb325fb214b794a9126f45ebf02",
+      )
+    _ => false
+  }
+}
+
+///|
+fn has_reviewed_enemies_collision_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut pair_loop = false
+  let mut exit = false
+  let mut box_offset = false
+  let mut collision_core = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_enemies_collision_dependency(subroutine) {
+      match subroutine.name {
+        "ECLoop__sub" => pair_loop = true
+        "ExitECRoutine__sub" => exit = true
+        "GetEnemyBoundBoxOfs" => box_offset = true
+        "SprObjectCollisionCore" => collision_core = true
+        _ => ()
+      }
+    }
+  }
+  pair_loop && exit && box_offset && collision_core
+}
+
+///|
+fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "SprObjectCollisionCore" {
+    return false
+  }
+
+  // This is an allowlist, not a name-only replacement. Comments may change,
+  // but every executable instruction, addressing mode, and internal label
+  // must still match the reviewed leaf routine. A source change therefore
+  // falls back to the ordinary instruction-by-instruction emitter.
+  flat_subroutine_structure(subroutine.items) ==
+  (
+    #|L:SprObjectCollisionCore
+    #|I:STY:zp:0x6
+    #|I:LDA:imm:0x1
+    #|I:STA:zp:0x7
+    #|L:CollisionCoreLoop
+    #|I:LDA:absy:BoundingBox_UL_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:FirstBoxGreater
+    #|I:CMP:absx:BoundingBox_LR_Corner
+    #|I:BCC:rel:SecondBoxVerticalChk
+    #|I:BEQ:rel:CollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absy:BoundingBox_UL_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:SecondBoxVerticalChk
+    #|I:LDA:absx:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:FirstBoxGreater
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BEQ:rel:CollisionFound
+    #|I:CMP:absx:BoundingBox_LR_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:BEQ:rel:CollisionFound
+    #|I:CMP:absy:BoundingBox_LR_Corner
+    #|I:BCC:rel:NoCollisionFound
+    #|I:BEQ:rel:NoCollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|L:NoCollisionFound
+    #|I:CLC:imp
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:CollisionFound
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:DEC:zp:0x7
+    #|I:BPL:rel:CollisionCoreLoop
+    #|I:SEC:imp
+    #|I:LDY:zp:0x6
+    #|
+  )
+}
+
+///|
+fn is_get_block_buffer_addr(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetBlockBufferAddr" {
+    return false
+  }
+
+  // BlockBufferCollision inlines this leaf. Keep the complete executable
+  // shape in the allowlist so either routine falls back when the dependency
+  // no longer matches the reviewed address calculation.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:PHA:imp
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:TAY:imp
+    #|I:LDA:absy:BlockBufferAddr + 2
+    #|I:STA:zp:0x7
+    #|I:PLA:imp
+    #|I:AND:imm:0b00001111
+    #|I:CLC:imp
+    #|I:ADC:absy:BlockBufferAddr
+    #|I:STA:zp:0x6
+    #|
+  )
+}
+
+fn has_reviewed_get_block_buffer_addr(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_get_block_buffer_addr(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+fn has_reviewed_block_buffer_addr_table(low : @lower.AsmLowering) -> Bool {
+  match low.defines.get("Block_Buffer_1") {
+    Some(value) =>
+      if show_expr(value) != "0x500" {
+        return false
+      }
+    None => return false
+  }
+  match low.defines.get("Block_Buffer_2") {
+    Some(value) =>
+      if show_expr(value) != "0x5d0" {
+        return false
+      }
+    None => return false
+  }
+
+  match low.tables_by_label.get("BlockBufferAddr") {
+    None => false
+    Some(table) => {
+      if table.name != "BlockBufferAddr" || table.size != 4 ||
+        table.storage_size != 4 {
+        return false
+      }
+
+      let entries : Array[String] = []
+      for line in table.lines {
+        match line {
+          Data(data~, comment=_) =>
+            for entry in data {
+              entries.push(show_expr(entry))
+            }
+          RomFallthrough(..) => return false
+          Comment(_) => ()
+        }
+      }
+      entries.join("|") == (
+        "LOW_BYTE(Block_Buffer_1)|LOW_BYTE(Block_Buffer_2)|" +
+        "HIGH_BYTE(Block_Buffer_1)|HIGH_BYTE(Block_Buffer_2)"
+      )
+    }
+  }
+}
+
+fn is_block_buffer_collision(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "BlockBufferCollision" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:PHA:imp
+    #|I:STY:zp:0x4
+    #|I:LDA:absy:BlockBuffer_X_Adder
+    #|I:CLC:imp
+    #|I:ADC:zpx:SprObject_X_Position
+    #|I:STA:zp:0x5
+    #|I:LDA:zpx:SprObject_PageLoc
+    #|I:ADC:imm:0x0
+    #|I:AND:imm:0x1
+    #|I:LSR:acc
+    #|I:ORA:zp:0x5
+    #|I:ROR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:JSR:abs:GetBlockBufferAddr
+    #|I:LDY:zp:0x4
+    #|I:LDA:zpx:SprObject_Y_Position
+    #|I:CLC:imp
+    #|I:ADC:absy:BlockBuffer_Y_Adder
+    #|I:AND:imm:0b11110000
+    #|I:SEC:imp
+    #|I:SBC:imm:0x20
+    #|I:STA:zp:0x2
+    #|I:TAY:imp
+    #|I:LDA:indy:0x6
+    #|I:STA:zp:0x3
+    #|I:LDY:zp:0x4
+    #|I:PLA:imp
+    #|IF:BEQ
+    #|I:LDA:zpx:SprObject_Y_Position
+    #|I:JMP:abs:RetYC
+    #|END_IF
+    #|I:LDA:zpx:SprObject_X_Position
+    #|L:RetYC
+    #|I:AND:imm:0b00001111
+    #|I:STA:zp:0x4
+    #|I:LDA:zp:0x3
+    #|
+  )
+}
+
+///|
+fn is_bounding_box_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "BoundingBoxCore" {
+    return false
+  }
+
+  // This is a complete lowered-structure allowlist. BoundingBoxCore has
+  // observable scratch, stack, register, and flag effects, so even a small
+  // source change must use the generic instruction emitter until reviewed.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x0
+    #|I:LDA:absy:SprObject_Rel_YPos
+    #|I:STA:zp:0x2
+    #|I:LDA:absy:SprObject_Rel_XPos
+    #|I:STA:zp:0x1
+    #|I:TXA:imp
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:PHA:imp
+    #|I:TAY:imp
+    #|I:LDA:absx:SprObj_BoundBoxCtrl
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:TAX:imp
+    #|I:LDA:zp:0x1
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData
+    #|I:STA:absy:BoundingBox_UL_Corner
+    #|I:LDA:zp:0x1
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData + 2
+    #|I:STA:absy:BoundingBox_LR_Corner
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData
+    #|I:STA:absy:BoundingBox_UL_Corner
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData + 2
+    #|I:STA:absy:BoundingBox_LR_Corner
+    #|I:PLA:imp
+    #|I:TAY:imp
+    #|I:LDX:zp:0x0
+    #|
+  )
+}
+
+///|
+fn is_reviewed_get_enemy_bound_box(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "GetEnemyBoundBox" {
+    return false
+  }
+
+  // The direct path folds both fixed masks and the completely-offscreen leaf.
+  // Keep the source-emitted implementation unless its complete executable
+  // shape, including the two mask constants, remains reviewed.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    4,
+    207,
+    "335d9f8f67b7757417e929a8488484b2362b0c8902f315e18f8e59b761c6e392",
+  )
+}
+
+///|
+fn is_reviewed_enemy_bound_box_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "GetMaskedOffScrBits" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        17,
+        689,
+        "0105b1108022612d66e6e8aba4b3f44c7ee03cfcfd564445fd62e71c9f233f63",
+      )
+    "MoveBoundBoxOffscreen__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        9,
+        534,
+        "1ef53cbfdf10020f1bcbf8b6dfe0daee8a25672ea8f8074de763c84394a98013",
+      )
+    "SetupEOffsetFBBox" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        7,
+        240,
+        "d859442de1e36d4cf5c862c94334b27fcefd328623825c8967bd209ef0869157",
+      )
+    "CheckRightScreenBBox" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        31,
+        1399,
+        "c2afa622f15ba87ca0705b8bbdf530c2113ab05c980ff8ec7308c58c39eb513c",
+      )
+    _ => false
+  }
+}
+
+///|
+fn has_reviewed_enemy_bound_box_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut masked = false
+  let mut move_offscreen = false
+  let mut setup = false
+  let mut check_right = false
+  let mut geometry = false
+
+  for subroutine in low.flat_subroutines {
+    if is_bounding_box_core(subroutine) {
+      geometry = true
+    } else if is_reviewed_enemy_bound_box_dependency(subroutine) {
+      match subroutine.name {
+        "GetMaskedOffScrBits" => masked = true
+        "MoveBoundBoxOffscreen__sub" => move_offscreen = true
+        "SetupEOffsetFBBox" => setup = true
+        "CheckRightScreenBBox" => check_right = true
+        _ => ()
+      }
+    }
+  }
+  masked && move_offscreen && setup && check_right && geometry
+}
+
+///|
+fn is_move_object_horizontally(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveObjectHorizontally" {
+    return false
+  }
+
+  // Complete allowlist for the motion integrator. Scratch bytes, zero-page
+  // wrapping, stack traffic, and final flags are observable, including for
+  // unsupported X values where addresses can alias the scratch bytes.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:zpx:SprObject_X_Speed
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:STA:zp:0x1
+    #|I:LDA:zpx:SprObject_X_Speed
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:CMP:imm:0x8
+    #|IF:BCS
+    #|I:ORA:imm:0b11110000
+    #|END_IF
+    #|I:STA:zp:0x0
+    #|I:LDY:imm:0x0
+    #|I:CMP:imm:0x0
+    #|IF:BMI
+    #|I:DEY:imp
+    #|END_IF
+    #|I:STY:zp:0x2
+    #|I:LDA:absx:SprObject_X_MoveForce
+    #|I:CLC:imp
+    #|I:ADC:zp:0x1
+    #|I:STA:absx:SprObject_X_MoveForce
+    #|I:LDA:imm:0x0
+    #|I:ROL:acc
+    #|I:PHA:imp
+    #|I:ROR:acc
+    #|I:LDA:zpx:SprObject_X_Position
+    #|I:ADC:zp:0x0
+    #|I:STA:zpx:SprObject_X_Position
+    #|I:LDA:zpx:SprObject_PageLoc
+    #|I:ADC:zp:0x2
+    #|I:STA:zpx:SprObject_PageLoc
+    #|I:PLA:imp
+    #|I:CLC:imp
+    #|I:ADC:zp:0x0
+    #|
+  )
+}
+
+///|
+fn is_draw_sprite_object(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "DrawSpriteObject" {
+    return false
+  }
+
+  // Preserve the instruction-by-instruction emitter unless the complete
+  // reviewed sprite-row leaf is still byte-for-byte equivalent in lowered
+  // structure. This includes every flag-producing instruction and label.
+  flat_subroutine_structure(subroutine.items) ==
+  (
+    #|L:DrawSpriteObject
+    #|I:LDA:zp:0x3
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LDA:zp:0x0
+    #|I:BCC:rel:NoHFlip
+    #|I:STA:absy:Sprite_Tilenumber + 4
+    #|I:LDA:zp:0x1
+    #|I:STA:absy:Sprite_Tilenumber
+    #|I:LDA:imm:0x40
+    #|I:BNE:rel:SetHFAt
+    #|L:NoHFlip
+    #|I:STA:absy:Sprite_Tilenumber
+    #|I:LDA:zp:0x1
+    #|I:STA:absy:Sprite_Tilenumber + 4
+    #|I:LDA:imm:0x0
+    #|L:SetHFAt
+    #|I:ORA:zp:0x4
+    #|I:STA:absy:Sprite_Attributes
+    #|I:STA:absy:Sprite_Attributes + 4
+    #|I:LDA:zp:0x2
+    #|I:STA:absy:Sprite_Y_Position
+    #|I:STA:absy:Sprite_Y_Position + 4
+    #|I:LDA:zp:0x5
+    #|I:STA:absy:Sprite_X_Position
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absy:Sprite_X_Position + 4
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:zp:0x2
+    #|I:TYA:imp
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:TAY:imp
+    #|I:INX:imp
+    #|I:INX:imp
+    #|
+  )
+}
+
+fn is_move_sprites_offscreen_skip(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveSpritesOffscreenSkip" {
+    return false
+  }
+
+  // The source callers enter with Y=$00 or Y=$04. Keep the modulo-256 loop
+  // itself exact so any other multiple-of-four entry retains its boundaries.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0xf8
+    #|L:SprInitLoop
+    #|I:STA:absy:Sprite_Y_Position
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:BNE:rel:SprInitLoop
+    #|
+  )
+}
+
+fn is_sprite_shuffler(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "SpriteShuffler" {
+    return false
+  }
+
+  // The shuffler is a fixed transformation over fifteen sprite offsets and
+  // three derived misc-object groups. Keep the ordinary emitter as a fallback
+  // unless every executable instruction and internal label still matches the
+  // reviewed source routine.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:abs:AreaType
+    #|I:LDA:imm:0x28
+    #|I:STA:zp:0x0
+    #|I:LDX:imm:0xe
+    #|L:ShuffleLoop
+    #|I:LDA:absx:SprDataOffset
+    #|I:CMP:zp:0x0
+    #|IF:BCS
+    #|I:LDY:abs:SprShuffleAmtOffset
+    #|I:CLC:imp
+    #|I:ADC:absy:SprShuffleAmt
+    #|IF:BCS
+    #|I:CLC:imp
+    #|I:ADC:zp:0x0
+    #|END_IF
+    #|I:STA:absx:SprDataOffset
+    #|END_IF
+    #|I:DEX:imp
+    #|I:BPL:rel:ShuffleLoop
+    #|I:LDX:abs:SprShuffleAmtOffset
+    #|I:INX:imp
+    #|I:CPX:imm:0x3
+    #|IF:BEQ
+    #|I:LDX:imm:0x0
+    #|END_IF
+    #|I:STX:abs:SprShuffleAmtOffset
+    #|I:LDX:imm:0x8
+    #|I:LDY:imm:0x2
+    #|L:SetMiscOffset
+    #|I:LDA:absy:SprDataOffset + 5
+    #|I:STA:absx:Misc_SprDataOffset - 2
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absx:Misc_SprDataOffset - 1
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absx:Misc_SprDataOffset
+    #|I:DEX:imp
+    #|I:DEX:imp
+    #|I:DEX:imp
+    #|I:DEY:imp
+    #|I:BPL:rel:SetMiscOffset
+    #|
+  )
+}
+
+fn is_read_port_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "ReadPortBits" {
+    return false
+  }
+
+  // This fingerprints the serial reads, scratch/stack effects, controller
+  // debounce branch, and early return as one reviewed unit. Structured
+  // control flow is expanded recursively by flat_subroutine_structure.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:imm:0x8
+    #|L:PortLoop
+    #|I:PHA:imp
+    #|I:LDA:absx:JOYPAD_PORT
+    #|I:STA:zp:0x0
+    #|I:LSR:acc
+    #|I:ORA:zp:0x0
+    #|I:LSR:acc
+    #|I:PLA:imp
+    #|I:ROL:acc
+    #|I:DEY:imp
+    #|I:BNE:rel:PortLoop
+    #|I:STA:absx:SavedJoypadBits
+    #|I:PHA:imp
+    #|I:AND:imm:0b00110000
+    #|I:AND:absx:JoypadBitMask
+    #|IF:BNE
+    #|I:PLA:imp
+    #|I:AND:imm:0b11001111
+    #|I:STA:absx:SavedJoypadBits
+    #|I:RTS:imp
+    #|END_IF
+    #|I:PLA:imp
+    #|I:STA:absx:JoypadBitMask
+    #|
+  )
+}
+
+fn is_read_joypads(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "ReadJoypads" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0x1
+    #|I:STA:abs:JOYPAD_PORT
+    #|I:LSR:acc
+    #|I:TAX:imp
+    #|I:STA:abs:JOYPAD_PORT
+    #|I:JSR:abs:ReadPortBits
+    #|I:INX:imp
+    #|I:JSR:abs:ReadPortBits
+    #|
+  )
+}
+
+fn is_get_x_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetXOffscreenBits" {
+    return false
+  }
+
+  // The direct implementation below folds the complete two-edge routine,
+  // including its call to DividePDiff. Keep every executable item in this
+  // allowlist so an assembly-side control-flow change uses generic emission.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x4
+    #|I:LDY:imm:0x1
+    #|L:XOfsLoop
+    #|I:LDA:absy:ScreenEdge_X_Pos
+    #|I:SEC:imp
+    #|I:SBC:zpx:SprObject_X_Position
+    #|I:STA:zp:0x7
+    #|I:LDA:absy:ScreenEdge_PageLoc
+    #|I:SBC:zpx:SprObject_PageLoc
+    #|I:LDX:absy:DefaultXOnscreenOfs
+    #|I:CMP:imm:0x0
+    #|IF:BPL
+    #|I:LDX:absy:DefaultXOnscreenOfs + 1
+    #|I:CMP:imm:0x1
+    #|IF:BMI
+    #|I:LDA:imm:0x38
+    #|I:STA:zp:0x6
+    #|I:LDA:imm:0x8
+    #|I:JSR:abs:DividePDiff
+    #|END_IF
+    #|END_IF
+    #|I:LDA:absx:XOffscreenBitsData
+    #|I:LDX:zp:0x4
+    #|I:CMP:imm:0x0
+    #|IF:BEQ
+    #|I:DEY:imp
+    #|I:BPL:rel:XOfsLoop
+    #|END_IF
+    #|
+  )
+}
+
+///|
+fn is_top_score_check(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "TopScoreCheck" {
+    return false
+  }
+
+  // TopScoreCheck runs twice on every unpaused frame. Fingerprint its complete
+  // lowered control flow so the semantic implementation cannot silently outlive
+  // a source change to the subtract/borrow chain or the conditional copy.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:imm:0x5
+    #|I:SEC:imp
+    #|L:GetScoreDiff
+    #|I:LDA:absx:PlayerScoreDisplay
+    #|I:SBC:absy:TopScoreDisplay
+    #|I:DEX:imp
+    #|I:DEY:imp
+    #|I:BPL:rel:GetScoreDiff
+    #|IF:BCS
+    #|I:INX:imp
+    #|I:INY:imp
+    #|L:CopyScore
+    #|I:LDA:absx:PlayerScoreDisplay
+    #|I:STA:absy:TopScoreDisplay
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:CPY:imm:0x6
+    #|I:BCC:rel:CopyScore
+    #|END_IF
+    #|
+  )
+}
+
+fn is_get_y_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetYOffscreenBits" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x4
+    #|I:LDY:imm:0x1
+    #|L:YOfsLoop
+    #|I:LDA:absy:HighPosUnitData
+    #|I:SEC:imp
+    #|I:SBC:zpx:SprObject_Y_Position
+    #|I:STA:zp:0x7
+    #|I:LDA:imm:0x1
+    #|I:SBC:zpx:SprObject_Y_HighPos
+    #|I:LDX:absy:DefaultYOnscreenOfs
+    #|I:CMP:imm:0x0
+    #|IF:BPL
+    #|I:LDX:absy:DefaultYOnscreenOfs + 1
+    #|I:CMP:imm:0x1
+    #|IF:BMI
+    #|I:LDA:imm:0x20
+    #|I:STA:zp:0x6
+    #|I:LDA:imm:0x4
+    #|I:JSR:abs:DividePDiff
+    #|END_IF
+    #|END_IF
+    #|I:LDA:absx:YOffscreenBitsData
+    #|I:LDX:zp:0x4
+    #|I:CMP:imm:0x0
+    #|IF:BEQ
+    #|I:DEY:imp
+    #|I:BPL:rel:YOfsLoop
+    #|END_IF
+    #|
+  )
+}
+
+fn is_divide_pdiff(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "DividePDiff" {
+    return false
+  }
+
+  // GetX/YOffscreenBits inline this helper's exact accumulator, carry, X,
+  // Y, and scratch-RAM behavior. Guard the helper as strictly as the callers.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STA:zp:0x5
+    #|I:LDA:zp:0x7
+    #|I:CMP:zp:0x6
+    #|IF:BCC
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:AND:imm:0x7
+    #|I:CPY:imm:0x1
+    #|IF:BCC
+    #|I:ADC:zp:0x5
+    #|END_IF
+    #|I:TAX:imp
+    #|END_IF
+    #|
+  )
+}
+
+fn is_get_off_screen_bits_set(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "GetOffScreenBitsSet" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:TYA:imp
+    #|I:PHA:imp
+    #|I:JSR:abs:RunOffscrBitsSubs
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ORA:zp:0x0
+    #|I:STA:zp:0x0
+    #|I:PLA:imp
+    #|I:TAY:imp
+    #|I:LDA:zp:0x0
+    #|I:STA:absy:SprObject_OffscrBits
+    #|I:LDX:zp:ObjectOffset
+    #|
+  )
+}
+
+fn is_run_offscr_bits_subs(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RunOffscrBitsSubs" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:JSR:abs:GetXOffscreenBits
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:STA:zp:0x0
+    #|I:JSR:abs:GetYOffscreenBits
+    #|
+  )
+}
+
+fn has_reviewed_byte_table(
+  low : @lower.AsmLowering,
+  name : String,
+  size : Int,
+  expected : String,
+) -> Bool {
+  match low.tables_by_label.get(name) {
+    None => false
+    Some(table) => {
+      if table.name != name || table.size != size ||
+        table.storage_size != size {
+        return false
+      }
+
+      let entries : Array[String] = []
+      for line in table.lines {
+        match line {
+          Data(data~, comment=_) =>
+            for entry in data {
+              entries.push(show_expr(entry))
+            }
+          RomFallthrough(..) => return false
+          Comment(_) => ()
+        }
+      }
+      entries.join("|") == expected
+    }
+  }
+}
+
+fn has_reviewed_render_area_graphics_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  // The direct helper reads metatile pixels straight from immutable cartridge
+  // data rather than through the generic CPU-bus dispatcher. Keep that
+  // specialization disabled unless both pointer tables still select exactly
+  // the four reviewed ROM-resident palette tables.
+  has_reviewed_byte_table(
+    low,
+    "MetatileGraphics_Low",
+    4,
+    "LOW_BYTE(Palette0_MTiles)|LOW_BYTE(Palette1_MTiles)|" +
+    "LOW_BYTE(Palette2_MTiles)|LOW_BYTE(Palette3_MTiles)",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "MetatileGraphics_High",
+    4,
+    "HIGH_BYTE(Palette0_MTiles)|HIGH_BYTE(Palette1_MTiles)|" +
+    "HIGH_BYTE(Palette2_MTiles)|HIGH_BYTE(Palette3_MTiles)",
+  )
+}
+
+fn has_reviewed_offscreen_tables(low : @lower.AsmLowering) -> Bool {
+  has_reviewed_byte_table(
+    low,
+    "XOffscreenBitsData",
+    16,
+    "0x7f|0x3f|0x1f|0xf|0x7|0x3|0x1|0x0|" +
+    "0x80|0xc0|0xe0|0xf0|0xf8|0xfc|0xfe|0xff",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "DefaultXOnscreenOfs",
+    3,
+    "0x7|0xf|0x7",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "YOffscreenBitsData",
+    9,
+    "0x0|0x8|0xc|0xe|0xf|0x7|0x3|0x1|0x0",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "DefaultYOnscreenOfs",
+    3,
+    "0x4|0x0|0x4",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "HighPosUnitData",
+    2,
+    "0xff|0x0",
+  )
+}
+
+fn has_reviewed_offscreen_mask_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut has_run = false
+  let mut has_x = false
+  let mut has_y = false
+  let mut has_divide = false
+
+  for subroutine in low.flat_subroutines {
+    if is_run_offscr_bits_subs(subroutine) {
+      has_run = true
+    } else if is_get_x_offscreen_bits(subroutine) {
+      has_x = true
+    } else if is_get_y_offscreen_bits(subroutine) {
+      has_y = true
+    } else if is_divide_pdiff(subroutine) {
+      has_divide = true
+    }
+  }
+  has_run && has_x && has_y && has_divide &&
+  has_reviewed_offscreen_tables(low)
+}
+
+fn has_reviewed_divide_pdiff(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_divide_pdiff(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+fn has_reviewed_read_port_bits(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_read_port_bits(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn Emitter::emit_bounding_box_core(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void BoundingBoxCore(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed bounding-box specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("const uint8_t object_index = y;")
+  self.emit("const uint8_t relative_y = ram[SprObject_Rel_YPos + object_index];")
+  self.emit("const uint8_t relative_x = ram[SprObject_Rel_XPos + object_index];")
+  self.emit("const uint8_t box_offset = (uint8_t)(object_offset << 2);")
+  self.emit("const uint8_t control = ram[SprObj_BoundBoxCtrl + object_offset];")
+  self.emit("const uint8_t control_offset = (uint8_t)(control << 2);")
+  self.emit("const uint8_t *const bounds = &data[BoundBoxCtrlData - 0x8000u + control_offset];")
+  self.emit("uint8_t *const box = &ram[BoundingBox_UL_Corner + box_offset];")
+  self.emit("uint16_t sum;")
+  self.emit("ram[0x0] = object_offset;")
+  self.emit("ram[0x2] = relative_y;")
+  self.emit("ram[0x1] = relative_x;")
+  self.emit("ram[0x100u + sp] = box_offset;")
+  self.emit("sum = (uint16_t)relative_x + bounds[0];")
+  self.emit("box[0] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_x + bounds[2];")
+  self.emit("box[2] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_y + bounds[1];")
+  self.emit("box[1] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_y + bounds[3];")
+  self.emit("box[3] = (uint8_t)sum;")
+  self.emit("a = box_offset;")
+  self.emit("y = box_offset;")
+  self.emit("x = object_offset;")
+  self.emit("carry_flag = sum > 0xffu;")
+  self.emit("nz_value = object_offset;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_get_enemy_bound_box(
+  self : Emitter,
+  subroutine : @lower.AsmFlatSubroutine,
+  low : @lower.AsmLowering,
+) -> Unit {
+  // Preserve the ordinary translated routine as the exact aliasing fallback.
+  // Unsupported X values can make zero-page indexed operands overlap scratch
+  // bytes, so they must retain literal source ordering.
+  self.indentation = 0
+  self.emit("static __attribute__((noinline, cold)) void GetEnemyBoundBoxAliasExact(void) {")
+  self.indentation = 1
+  for item in subroutine.items {
+    self.emit_item(item, low)
+  }
+  self.indentation = 0
+  self.emit("}\n")
+
+  self.emit("__attribute__((noinline)) void GetEnemyBoundBox(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed enemy bounding-box specialization; guarded by exact caller and folded-helper shapes.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("uint8_t enemy_x;")
+  self.emit("uint8_t screen_x;")
+  self.emit("uint8_t pixel_difference;")
+  self.emit("uint8_t enemy_page;")
+  self.emit("uint8_t screen_page;")
+  self.emit("uint16_t page_difference;")
+  self.emit("if (object_offset > 5u) {")
+  self.indentation += 1
+  self.emit("GetEnemyBoundBoxAliasExact();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = 0x48u;")
+  self.emit("y = 0x44u;")
+  self.emit("nz_value = y;")
+  self.emit("enemy_x = ram[Enemy_X_Position + object_offset];")
+  self.emit("a = enemy_x;")
+  self.emit("nz_value = a;")
+  self.emit("screen_x = ram[ScreenLeft_X_Pos];")
+  self.emit("carry_flag = enemy_x >= screen_x;")
+  self.emit("pixel_difference = (uint8_t)(enemy_x - screen_x);")
+  self.emit("a = pixel_difference;")
+  self.emit("nz_value = a;")
+  self.emit("ram[0x1] = pixel_difference;")
+  self.emit("enemy_page = ram[Enemy_PageLoc + object_offset];")
+  self.emit("a = enemy_page;")
+  self.emit("nz_value = a;")
+  self.emit("screen_page = ram[ScreenLeft_PageLoc];")
+  self.emit(
+    "page_difference = (uint16_t)((uint16_t)enemy_page - (uint16_t)screen_page - (carry_flag ? 0u : 1u));",
+  )
+  self.emit("carry_flag = page_difference <= 0xffu;")
+  self.emit("a = (uint8_t)page_difference;")
+  self.emit("nz_value = a;")
+  self.emit("if ((a & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("a = (uint8_t)(a | ram[0x1]);")
+  self.emit("nz_value = a;")
+  self.emit("if (a != 0u) {")
+  self.indentation += 1
+  self.emit("y = ram[0x0];")
+  self.emit("nz_value = y;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = y;")
+  self.emit("nz_value = a;")
+  self.emit("a = (uint8_t)(a & ram[Enemy_OffscreenBits]);")
+  self.emit("nz_value = a;")
+  self.emit("ram[EnemyOffscrBitsMasked + object_offset] = a;")
+  self.emit("if (a == 0u) {")
+  self.indentation += 1
+  self.emit("SetupEOffsetFBBox();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("const uint8_t box_offset = (uint8_t)(object_offset << 2);")
+  self.emit("y = box_offset;")
+  self.emit("carry_flag = (object_offset & 0x40u) != 0u;")
+  self.emit("a = 0xffu;")
+  self.emit("nz_value = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 1u + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 2u + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 3u + box_offset] = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_move_object_horizontally(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("static __attribute__((noinline, cold)) void MoveObjectHorizontallyAliasExact(void) {")
+  self.indentation = 1
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("const uint8_t speed_address = (uint8_t)(SprObject_X_Speed + object_offset);")
+  self.emit("const uint8_t position_address = (uint8_t)(SprObject_X_Position + object_offset);")
+  self.emit("const uint8_t page_address = (uint8_t)(SprObject_PageLoc + object_offset);")
+  self.emit("uint8_t speed = ram[speed_address];")
+  self.emit("uint8_t high_nibble;")
+  self.emit("uint8_t pixel_delta;")
+  self.emit("uint8_t page_delta;")
+  self.emit("uint8_t force_carry;")
+  self.emit("uint16_t sum;")
+  self.emit("ram[0x1] = (uint8_t)(speed << 4);")
+  self.emit("speed = ram[speed_address];")
+  self.emit("high_nibble = (uint8_t)(speed >> 4);")
+  self.emit("pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);")
+  self.emit("ram[0x0] = pixel_delta;")
+  self.emit("page_delta = (uint8_t)-(pixel_delta >> 7);")
+  self.emit("y = page_delta;")
+  self.emit("ram[0x2] = page_delta;")
+  self.emit("sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + ram[0x1];")
+  self.emit("ram[SprObject_X_MoveForce + object_offset] = (uint8_t)sum;")
+  self.emit("force_carry = sum > 0xffu ? 1u : 0u;")
+  self.emit("ram[0x100u + sp] = force_carry;")
+  self.emit("sum = (uint16_t)ram[position_address] + ram[0x0] + force_carry;")
+  self.emit("ram[position_address] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)ram[page_address] + ram[0x2] + (sum > 0xffu ? 1u : 0u);")
+  self.emit("ram[page_address] = (uint8_t)sum;")
+  self.emit("const uint8_t stacked_carry = ram[0x100u + sp];")
+  self.emit("const uint8_t final_delta = ram[0x0];")
+  self.emit("a = (uint8_t)(stacked_carry + final_delta);")
+  self.emit("carry_flag = stacked_carry != 0u && final_delta == 0xffu;")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+
+  self.emit("void MoveObjectHorizontally(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed horizontal-motion specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("if (object_offset > 6u) {")
+  self.indentation += 1
+  self.emit("MoveObjectHorizontallyAliasExact();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("const uint8_t speed = ram[SprObject_X_Speed + object_offset];")
+  self.emit("const uint8_t fraction = (uint8_t)(speed << 4);")
+  self.emit("const uint8_t high_nibble = (uint8_t)(speed >> 4);")
+  self.emit("const uint8_t pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);")
+  self.emit("const uint8_t page_delta = (uint8_t)-(pixel_delta >> 7);")
+  self.emit("uint16_t force_sum;")
+  self.emit("uint16_t position_sum;")
+  self.emit("uint16_t page_sum;")
+  self.emit("uint8_t force_carry;")
+  self.emit("ram[0x1] = fraction;")
+  self.emit("ram[0x0] = pixel_delta;")
+  self.emit("y = page_delta;")
+  self.emit("ram[0x2] = page_delta;")
+  self.emit("force_sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + fraction;")
+  self.emit("ram[SprObject_X_MoveForce + object_offset] = (uint8_t)force_sum;")
+  self.emit("force_carry = force_sum > 0xffu ? 1u : 0u;")
+  self.emit("ram[0x100u + sp] = force_carry;")
+  self.emit("position_sum = (uint16_t)ram[SprObject_X_Position + object_offset] + pixel_delta + force_carry;")
+  self.emit("ram[SprObject_X_Position + object_offset] = (uint8_t)position_sum;")
+  self.emit("page_sum = (uint16_t)ram[SprObject_PageLoc + object_offset] + page_delta + (position_sum > 0xffu ? 1u : 0u);")
+  self.emit("ram[SprObject_PageLoc + object_offset] = (uint8_t)page_sum;")
+  self.emit("const uint8_t stacked_carry = ram[0x100u + sp];")
+  self.emit("a = (uint8_t)(stacked_carry + pixel_delta);")
+  self.emit("carry_flag = stacked_carry != 0u && pixel_delta == 0xffu;")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_spr_object_collision_core(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void SprObjectCollisionCore(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed leaf specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("uint8_t local_a = 0x1u;")
+  self.emit("uint8_t local_x = x;")
+  self.emit("uint8_t local_y = y;")
+  self.emit("const uint8_t saved_y = local_y;")
+  self.emit("uint8_t local_operand;")
+  self.emit("bool local_carry;")
+  self.emit("ram[0x6] = saved_y;")
+  self.emit("ram[0x7] = local_a;")
+  self.indentation = 0
+  self.emit("SprCollisionCoreLoop:")
+  self.indentation = 1
+  self.emit("local_a = ram[BoundingBox_UL_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFirstBoxGreater; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionSecondBoxVerticalChk; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_y];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionSecondBoxVerticalChk:")
+  self.indentation = 1
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionFirstBoxGreater:")
+  self.indentation = 1
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionNoCollision; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionNoCollision; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.indentation = 0
+  self.emit("SprCollisionNoCollision:")
+  self.indentation = 1
+  self.emit("local_carry = false;")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionFound:")
+  self.indentation = 1
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("local_y = (uint8_t)(local_y + 1u);")
+  self.emit("ram[0x7] = (uint8_t)(ram[0x7] - 1u);")
+  self.emit("if ((ram[0x7] & 0x80u) == 0u) { goto SprCollisionCoreLoop; }")
+  self.emit("local_carry = true;")
+  self.indentation = 0
+  self.emit("SprCollisionReturn:")
+  self.indentation = 1
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = saved_y;")
+  self.emit("carry_flag = local_carry;")
+  self.emit("nz_value = y;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_block_buffer_collision(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void BlockBufferCollision(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed block-buffer specialization; guarded with its address leaf.",
+  )
+  self.emit(
+    "// Exact BlockBufferAddr table is extracted into direct RAM addressing.",
+  )
+  self.emit("const uint8_t local_x = x;")
+  self.emit("const uint8_t local_y = y;")
+  self.emit("uint16_t coordinate_sum;")
+  self.emit("uint16_t block_address;")
+  self.emit("uint8_t adjusted_x;")
+  self.emit("uint8_t adjusted_y;")
+  self.emit("uint8_t block_column;")
+  self.emit("uint8_t block_bank;")
+  self.emit("uint8_t restored_y;")
+  self.emit("uint8_t return_coordinate;")
+  self.emit("ram[0x100u + sp] = a;")
+  self.emit("sp = (uint8_t)(sp - 1u);")
+  self.emit("ram[0x4] = local_y;")
+  self.emit(
+    "coordinate_sum = (uint16_t)data[BlockBuffer_X_Adder - 0x8000u + local_y] +",
+  )
+  self.indentation += 1
+  self.emit("ram[(uint8_t)(SprObject_X_Position + local_x)];")
+  self.indentation -= 1
+  self.emit("adjusted_x = (uint8_t)coordinate_sum;")
+  self.emit("ram[0x5] = adjusted_x;")
+  self.emit(
+    "coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_PageLoc + local_x)] +",
+  )
+  self.indentation += 1
+  self.emit("(coordinate_sum > 0xffu ? 1u : 0u);")
+  self.indentation -= 1
+  self.emit(
+    "block_column = (uint8_t)((((uint8_t)coordinate_sum & 1u) << 4) |",
+  )
+  self.indentation += 1
+  self.emit("(adjusted_x >> 4));")
+  self.indentation -= 1
+  self.emit("ram[0x100u + sp] = block_column;")
+  self.emit("sp = (uint8_t)(sp - 1u);")
+  self.emit("block_bank = (uint8_t)(block_column >> 4);")
+  self.emit(
+    "block_address = block_bank == 0u ? Block_Buffer_1 : Block_Buffer_2;",
+  )
+  self.emit("ram[0x7] = (uint8_t)(block_address >> 8);")
+  self.emit("sp = (uint8_t)(sp + 1u);")
+  self.emit("block_column = ram[0x100u + sp];")
+  self.emit(
+    "block_address = (uint16_t)(block_address + (block_column & 0x0fu));",
+  )
+  self.emit("ram[0x6] = (uint8_t)block_address;")
+  self.emit("restored_y = ram[0x4];")
+  self.emit(
+    "coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_Y_Position + local_x)] +",
+  )
+  self.indentation += 1
+  self.emit("data[BlockBuffer_Y_Adder - 0x8000u + restored_y];")
+  self.indentation -= 1
+  self.emit("adjusted_y = (uint8_t)((coordinate_sum & 0xf0u) - 0x20u);")
+  self.emit("ram[0x2] = adjusted_y;")
+  self.emit(
+    "ram[0x3] = ram[(block_address + adjusted_y) & (RAM_SIZE - 1u)];",
+  )
+  self.emit("y = restored_y;")
+  self.emit("sp = (uint8_t)(sp + 1u);")
+  self.emit("a = ram[0x100u + sp];")
+  self.emit(
+    "return_coordinate = a == 0u",
+  )
+  self.indentation += 1
+  self.emit("? ram[(uint8_t)(SprObject_Y_Position + local_x)]")
+  self.emit(": ram[(uint8_t)(SprObject_X_Position + local_x)];")
+  self.indentation -= 1
+  self.emit("ram[0x4] = (uint8_t)(return_coordinate & 0x0fu);")
+  self.emit("a = ram[0x3];")
+  self.emit("carry_flag = (coordinate_sum & 0xf0u) >= 0x20u;")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_draw_sprite_object(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void DrawSpriteObject(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed sprite-row specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t local_x = x;")
+  self.emit("const uint8_t local_y = y;")
+  self.emit("const uint16_t right_sprite = (uint16_t)local_y + 4u;")
+  self.emit("const bool horizontal_flip = (ram[0x3] & 0x02u) != 0u;")
+  self.emit("const uint8_t left_tile = horizontal_flip ? ram[0x1] : ram[0x0];")
+  self.emit("const uint8_t right_tile = horizontal_flip ? ram[0x0] : ram[0x1];")
+  self.emit(
+    "const uint8_t attributes = (uint8_t)(ram[0x4] | (horizontal_flip ? 0x40u : 0x00u));",
+  )
+  self.emit("const uint8_t row_y = ram[0x2];")
+  self.emit("const uint8_t row_x = ram[0x5];")
+  self.emit("const uint16_t next_y = (uint16_t)local_y + 8u;")
+  self.emit("ram[Sprite_Tilenumber + local_y] = left_tile;")
+  self.emit("ram[Sprite_Tilenumber + right_sprite] = right_tile;")
+  self.emit("ram[Sprite_Attributes + local_y] = attributes;")
+  self.emit("ram[Sprite_Attributes + right_sprite] = attributes;")
+  self.emit("ram[Sprite_Y_Position + local_y] = row_y;")
+  self.emit("ram[Sprite_Y_Position + right_sprite] = row_y;")
+  self.emit("ram[Sprite_X_Position + local_y] = row_x;")
+  self.emit("ram[Sprite_X_Position + right_sprite] = (uint8_t)(row_x + 8u);")
+  self.emit("ram[0x2] = (uint8_t)(row_y + 8u);")
+  self.emit("a = (uint8_t)next_y;")
+  self.emit("y = a;")
+  self.emit("carry_flag = next_y > 0xffu;")
+  self.emit("x = (uint8_t)(local_x + 2u);")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_move_sprites_offscreen_skip(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void MoveSpritesOffscreenSkip(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed OAM-clear specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("uint8_t local_y = y;")
+  self.emit("uint8_t *const sprite_y = &ram[Sprite_Y_Position];")
+  self.emit("a = 0xf8u;")
+  self.emit("if (local_y == 0x04u) {")
+  self.indentation += 1
+  // The per-frame caller always enters at $04. Emit its 63 sparse OAM stores
+  // as constants so the target compiler can remove address conversion and
+  // loop branches while the generic exact loop remains available below.
+  let mut sprite_offset = 4
+  while sprite_offset != 0 {
+    self.emit(
+      "sprite_y[\{sprite_offset}u] = 0xf8u;",
+    )
+    sprite_offset = (sprite_offset + 4) & 0xff
+  }
+  self.emit("local_y = 0u;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("sprite_y[local_y] = 0xf8u;")
+  self.emit("local_y = (uint8_t)(local_y + 4u);")
+  self.indentation -= 1
+  self.emit("} while (local_y != 0u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("y = local_y;")
+  self.emit("nz_value = local_y;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_sprite_shuffler(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void SpriteShuffler(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed fixed-table specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t shuffle_index = ram[SprShuffleAmtOffset];")
+  self.emit("uint8_t sprite_index;")
+  self.emit("ram[0x0] = 0x28u;")
+  self.emit("for (sprite_index = 15u; sprite_index-- != 0u;) {")
+  self.indentation += 1
+  self.emit("uint8_t value = ram[SprDataOffset + sprite_index];")
+  self.emit("if (value >= 0x28u) {")
+  self.indentation += 1
+  // Reload the selected byte for exactness even for out-of-contract indices
+  // that alias the sprite-offset array. Runtime indices 0..2 select the three
+  // intended table entries and cannot alias these writes.
+  self.emit("const uint8_t shuffle_amount = ram[SprShuffleAmt + shuffle_index];")
+  self.emit("const uint16_t first_sum = (uint16_t)value + shuffle_amount;")
+  self.emit("value = (uint8_t)first_sum;")
+  self.emit("if (first_sum > 0xffu) {")
+  self.indentation += 1
+  self.emit("value = (uint8_t)(value + 0x28u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[SprDataOffset + sprite_index] = value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("sprite_index = (uint8_t)(shuffle_index + 1u);")
+  self.emit("if (sprite_index == 3u) {")
+  self.indentation += 1
+  self.emit("sprite_index = 0u;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[SprShuffleAmtOffset] = sprite_index;")
+  self.emit("for (sprite_index = 0u; sprite_index < 3u; sprite_index++) {")
+  self.indentation += 1
+  self.emit("const uint8_t base = ram[SprDataOffset + 5u + sprite_index];")
+  self.emit("const uint16_t misc_offset = (uint16_t)Misc_SprDataOffset + (uint16_t)sprite_index * 3u;")
+  self.emit("ram[misc_offset] = base;")
+  self.emit("ram[misc_offset + 1u] = (uint8_t)(base + 8u);")
+  self.emit("ram[misc_offset + 2u] = (uint8_t)(base + 16u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = (uint8_t)(ram[SprDataOffset + 5u] + 16u);")
+  self.emit(
+    "carry_flag = ram[SprDataOffset + 5u] >= 0xf0u && ram[SprDataOffset + 5u] < 0xf8u;",
+  )
+  self.emit("x = 0xffu;")
+  self.emit("y = 0xffu;")
+  self.emit("nz_value = 0xffu;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_read_port_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void ReadPortBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed serial-input specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t initial_a = a;")
+  self.emit("uint8_t serial_value = 0u;")
+  self.emit("uint8_t last_port_bit = 0u;")
+  self.emit("if (x == 0u) {")
+  self.indentation += 1
+  self.emit("const uint8_t port_index = controller1_btn_index;")
+  self.emit("if (port_index > 7u) {")
+  self.indentation += 1
+  self.emit("serial_value = 0xffu;")
+  self.emit("last_port_bit = 1u;")
+  self.indentation -= 1
+  self.emit("} else if (controller1_strobe) {")
+  self.indentation += 1
+  self.emit(
+    "last_port_bit = (uint8_t)((controller1_state >> port_index) & 1u);",
+  )
+  self.emit("serial_value = last_port_bit != 0u ? 0xffu : 0u;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit(
+    "uint8_t reversed = (uint8_t)(controller1_state >> port_index);",
+  )
+  self.emit("reversed = (uint8_t)((reversed >> 4) | (reversed << 4));")
+  self.emit(
+    "reversed = (uint8_t)(((reversed & 0xccu) >> 2) | ((reversed & 0x33u) << 2));",
+  )
+  self.emit(
+    "reversed = (uint8_t)(((reversed & 0xaau) >> 1) | ((reversed & 0x55u) << 1));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(reversed | ((1u << port_index) - 1u));",
+  )
+  self.emit(
+    "last_port_bit = port_index == 0u ? (uint8_t)(controller1_state >> 7) : 1u;",
+  )
+  self.emit("controller1_btn_index = 8u;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = last_port_bit;")
+  self.emit("ram[0x100u + sp] = serial_value;")
+  self.emit("y = 0u;")
+  self.emit("carry_flag = (initial_a & 1u) != 0u;")
+  self.emit("ram[SavedJoypadBits + x] = serial_value;")
+  self.emit(
+    "if ((serial_value & 0x30u & ram[JoypadBitMask + x]) != 0u) {",
+  )
+  self.indentation += 1
+  self.emit("a = (uint8_t)(serial_value & 0xcfu);")
+  self.emit("ram[SavedJoypadBits + x] = a;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("a = serial_value;")
+  self.emit("ram[JoypadBitMask + x] = serial_value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_read_joypads(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void ReadJoypads(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed whole-read specialization; requires the exact ReadPortBits shape.",
+  )
+  self.emit("uint8_t serial_value = controller1_state;")
+  self.emit(
+    "serial_value = (uint8_t)((serial_value >> 4) | (serial_value << 4));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(((serial_value & 0xccu) >> 2) | ((serial_value & 0x33u) << 2));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(((serial_value & 0xaau) >> 1) | ((serial_value & 0x55u) << 1));",
+  )
+  self.emit("controller1_strobe = false;")
+  self.emit("controller1_btn_index = 8u;")
+  self.emit("ram[SavedJoypadBits] = serial_value;")
+  self.emit(
+    "if ((serial_value & 0x30u & ram[JoypadBitMask]) != 0u) {",
+  )
+  self.indentation += 1
+  self.emit("serial_value = (uint8_t)(serial_value & 0xcfu);")
+  self.emit("ram[SavedJoypadBits] = serial_value;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("ram[JoypadBitMask] = serial_value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = 0u;")
+  self.emit("ram[0x100u + sp] = 0u;")
+  self.emit("ram[SavedJoypadBits + 1u] = 0u;")
+  self.emit("ram[JoypadBitMask + 1u] = 0u;")
+  self.emit("a = 0u;")
+  self.emit("x = 1u;")
+  self.emit("y = 0u;")
+  self.emit("carry_flag = (serial_value & 1u) != 0u;")
+  self.emit("nz_value = 0u;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_get_off_screen_bits_set(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetOffScreenBitsSet(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed fused offscreen-mask specialization; guarded by exact helper and table shapes.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit("const uint8_t output_offset = y;")
+  self.emit(
+    "const uint8_t x_pixel_address = (uint8_t)(SprObject_X_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t x_page_address = (uint8_t)(SprObject_PageLoc + object_index);",
+  )
+  self.emit(
+    "const uint8_t y_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t y_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const x_defaults = &data[DefaultXOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const x_bit_table = &data[XOffscreenBitsData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_edges = &data[HighPosUnitData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_defaults = &data[DefaultYOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_bit_table = &data[YOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t x_bits;")
+  self.emit("uint8_t y_bits;")
+  self.emit("ram[0x100u + sp] = output_offset;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];")
+  self.emit("const uint8_t object_pixel = ram[x_pixel_address];")
+  self.emit("const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_page;")
+  self.emit("uint8_t page_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_page = ram[x_page_address];")
+  self.emit(
+    "page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = x_defaults[side];")
+  self.emit("if ((page_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = x_defaults[side + 1u];")
+  self.emit("if (page_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x38u;")
+  self.emit("ram[0x5] = 0x08u;")
+  self.emit("if (pixel_diff < 0x38u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("x_bits = x_bit_table[table_index];")
+  self.emit("if (x_bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = (uint8_t)(x_bits >> 4);")
+  self.emit("side = 1u;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = y_edges[side];")
+  self.emit("const uint8_t object_pixel = ram[y_pixel_address];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_high;")
+  self.emit("uint8_t high_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_high = ram[y_high_address];")
+  self.emit(
+    "high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = y_defaults[side];")
+  self.emit("if ((high_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = y_defaults[side + 1u];")
+  self.emit("if (high_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x20u;")
+  self.emit("ram[0x5] = 0x04u;")
+  self.emit("if (pixel_diff < 0x20u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("y_bits = y_bit_table[table_index];")
+  self.emit("if (y_bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = (uint8_t)((y_bits << 4) | ram[0x0]);")
+  self.emit("y = ram[0x100u + sp];")
+  self.emit("a = ram[0x0];")
+  self.emit("ram[SprObject_OffscrBits + y] = a;")
+  self.emit("x = ram[ObjectOffset];")
+  self.emit("carry_flag = (y_bits & 0x10u) != 0u;")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_get_x_offscreen_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetXOffscreenBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed table-driven horizontal offscreen specialization; guarded by exact lowered structures.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit(
+    "const uint8_t object_pixel_address = (uint8_t)(SprObject_X_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t object_page_address = (uint8_t)(SprObject_PageLoc + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const defaults = &data[DefaultXOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const bit_table = &data[XOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t bits;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];")
+  self.emit("const uint8_t object_pixel = ram[object_pixel_address];")
+  self.emit("const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_page;")
+  self.emit("uint8_t page_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_page = ram[object_page_address];")
+  self.emit(
+    "page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = defaults[side];")
+  self.emit("if ((page_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = defaults[side + 1u];")
+  self.emit("if (page_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x38u;")
+  self.emit("ram[0x5] = 0x08u;")
+  self.emit("if (pixel_diff < 0x38u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("bits = bit_table[table_index];")
+  self.emit("if (bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = bits;")
+  self.emit("x = object_index;")
+  self.emit("y = side;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = bits != 0u ? bits : side;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_get_y_offscreen_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetYOffscreenBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed table-driven vertical offscreen specialization; guarded by exact lowered structures.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit(
+    "const uint8_t object_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t object_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const edge_pixels = &data[HighPosUnitData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const defaults = &data[DefaultYOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const bit_table = &data[YOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t bits;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = edge_pixels[side];")
+  self.emit("const uint8_t object_pixel = ram[object_pixel_address];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_high;")
+  self.emit("uint8_t high_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_high = ram[object_high_address];")
+  self.emit(
+    "high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = defaults[side];")
+  self.emit("if ((high_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = defaults[side + 1u];")
+  self.emit("if (high_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x20u;")
+  self.emit("ram[0x5] = 0x04u;")
+  self.emit("if (pixel_diff < 0x20u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("bits = bit_table[table_index];")
+  self.emit("if (bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = bits;")
+  self.emit("x = object_index;")
+  self.emit("y = side;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = bits != 0u ? bits : side;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_top_score_check(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void TopScoreCheck(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed score-chain specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t initial_x = x;")
+  self.emit("if (initial_x == 5u || initial_x == 11u) {")
+  self.indentation += 1
+  self.emit(
+    "const uint8_t *const player_score = &ram[PlayerScoreDisplay + initial_x - 5u];",
+  )
+  self.emit("const uint8_t *const top_score = &ram[TopScoreDisplay];")
+  self.emit("bool lower_digits_equal = false;")
+  self.emit("bool lower_digits_borrow;")
+  self.emit("if (player_score[1] != top_score[1]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[1] < top_score[1];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[2] != top_score[2]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[2] < top_score[2];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[3] != top_score[3]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[3] < top_score[3];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[4] != top_score[4]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[4] < top_score[4];")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("lower_digits_equal = player_score[5] == top_score[5];")
+  self.emit("lower_digits_borrow = player_score[5] < top_score[5];")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit(
+    "const uint16_t high_difference = (uint16_t)player_score[0] - (uint16_t)top_score[0] - (lower_digits_borrow ? 1u : 0u);",
+  )
+  self.emit("const bool score_carry = high_difference <= 0xffu;")
+  self.emit("if (!score_carry) {")
+  self.indentation += 1
+  self.emit("a = (uint8_t)high_difference;")
+  self.emit("x = (uint8_t)(initial_x - 6u);")
+  self.emit("y = 0xffu;")
+  self.emit("carry_flag = false;")
+  self.emit("nz_value = 0xffu;")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit(
+    "if (!(lower_digits_equal && player_score[0] == top_score[0])) {",
+  )
+  self.indentation += 1
+  self.emit("ram[TopScoreDisplay] = player_score[0];")
+  self.emit("ram[TopScoreDisplay + 1u] = player_score[1];")
+  self.emit("ram[TopScoreDisplay + 2u] = player_score[2];")
+  self.emit("ram[TopScoreDisplay + 3u] = player_score[3];")
+  self.emit("ram[TopScoreDisplay + 4u] = player_score[4];")
+  self.emit("ram[TopScoreDisplay + 5u] = player_score[5];")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = player_score[5];")
+  self.emit("x = (uint8_t)(initial_x + 1u);")
+  self.emit("y = 6u;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = 0u;")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("uint8_t local_x = initial_x;")
+  self.emit("uint8_t local_a = 0u;")
+  self.emit("bool local_carry = true;")
+  self.emit("uint8_t digit = 6u;")
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("const uint8_t player_digit = read_byte((uint16_t)(PlayerScoreDisplay + local_x));")
+  self.emit("const uint8_t top_digit = ram[TopScoreDisplay + digit - 1u];")
+  self.emit(
+    "const uint16_t difference = (uint16_t)player_digit - (uint16_t)top_digit - (local_carry ? 0u : 1u);",
+  )
+  self.emit("local_a = (uint8_t)difference;")
+  self.emit("local_carry = difference <= 0xffu;")
+  self.emit("local_x = (uint8_t)(local_x - 1u);")
+  self.emit("digit = (uint8_t)(digit - 1u);")
+  self.indentation -= 1
+  self.emit("} while (digit != 0u);")
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = 0xffu;")
+  self.emit("carry_flag = local_carry;")
+  self.emit("nz_value = 0xffu;")
+  self.emit("if (!local_carry) {")
+  self.indentation += 1
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("digit = 0u;")
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("local_a = read_byte((uint16_t)(PlayerScoreDisplay + local_x));")
+  self.emit("ram[TopScoreDisplay + digit] = local_a;")
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("digit = (uint8_t)(digit + 1u);")
+  self.indentation -= 1
+  self.emit("} while (digit != 6u);")
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = 6u;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = 0u;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_relative_enemy_position(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void RelativeEnemyPosition(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed enemy-relative-position specialization; guarded by exact folded helper shapes.",
+  )
+  self.emit("const uint8_t initial_x = x;")
+  self.emit("const uint8_t object_index = (uint8_t)(initial_x + 1u);")
+  self.emit("uint8_t object_x;")
+  self.emit("uint8_t screen_x;")
+  self.emit("ram[0x0] = initial_x;")
+  self.emit(
+    "a = ram[(uint8_t)(SprObject_Y_Position + object_index)];",
+  )
+  self.emit("ram[SprObject_Rel_YPos + 1u] = a;")
+  self.emit(
+    "object_x = ram[(uint8_t)(SprObject_X_Position + object_index)];",
+  )
+  self.emit("screen_x = ram[ScreenLeft_X_Pos];")
+  self.emit("carry_flag = object_x >= screen_x;")
+  self.emit("a = (uint8_t)(object_x - screen_x);")
+  self.emit("ram[SprObject_Rel_XPos + 1u] = a;")
+  self.emit("y = 1u;")
+  self.emit("x = ram[ObjectOffset];")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_write_buffer_to_screen(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void WriteBufferToScreen(void) {")
+  self.indentation = 1
+  self.emit("ppu_write_address(a); // store high byte of vram address")
+  self.emit("iny();")
+  self.emit("lda_indy(0x0); // load next byte (second)")
+  self.emit("ppu_write_address(a); // store low byte of vram address")
+  self.emit("iny();")
+  self.emit("lda_indy(0x0); // load next byte (third)")
+  self.emit("asl_acc(); // shift to left and save in stack")
+  self.emit("pha();")
+  self.emit("lda_abs(Mirror_PPU_CTRL_REG1); // load mirror of $2000,")
+  self.emit("ora_imm(0b00000100); // set ppu to increment by 32 by default")
+  self.emit("// if d7 of third byte was clear, ppu will")
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("and_imm(0b11111011); // only increment by 1")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// SetupWrites:")
+  self.emit("WritePPUReg1(); // write to register")
+  self.emit("pla(); // pull from stack and shift to left again")
+  self.emit("asl_acc();")
+  self.emit("// if d6 of third byte was clear, do not repeat byte")
+  self.emit("if (carry_flag) {")
+  self.indentation += 1
+  self.emit("ora_imm(0b00000010); // otherwise set d1 and increment Y")
+  self.emit("iny();")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// GetLength:")
+  self.emit("lsr_acc(); // shift back to the right to get proper length")
+  self.emit("lsr_acc(); // note that d1 will now be in carry")
+  self.emit("tax();")
+  self.emit(
+    "#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)",
+  )
+  self.emit("// Reviewed VRAM-buffer batch hook; rejected runs use the original loop.")
+  self.emit("{")
+  self.indentation += 1
+  self.emit("const uint8_t run_length = x;")
+  self.emit(
+    "const uint16_t source_pointer = (uint16_t)((uint16_t)ram[0x0] | ((uint16_t)ram[0x1] << 8));",
+  )
+  self.emit(
+    "if (ppu_write_buffer_run(source_pointer, run_length, carry_flag ? 1u : 0u)) {",
+  )
+  self.indentation += 1
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("y = (uint8_t)(y + run_length);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("x = 0u;")
+  self.emit("nz_value = 0u;")
+  self.emit("goto OutputToVRAMComplete;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("#endif")
+  self.indentation = 0
+  self.emit("OutputToVRAM:")
+  self.indentation = 1
+  self.emit("// if carry set, repeat loading the same byte")
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("iny(); // otherwise increment Y to load next byte")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// RepeatByte:")
+  self.emit("lda_indy(0x0); // load more data from buffer and write to vram")
+  self.emit("ppu_write_data(a);")
+  self.emit("dex(); // done writing?")
+  self.emit("if (!zero_flag) { goto OutputToVRAM; }")
+  self.indentation = 0
+  self.emit(
+    "#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)",
+  )
+  self.emit("OutputToVRAMComplete:")
+  self.emit("#endif")
+  self.indentation = 1
+  self.emit("carry_flag = true;")
+  self.emit("tya();")
+  self.emit("adc_zp(0x0); // add end length plus one to the indirect at $00")
+  self.emit("ram[0x0] = a; // to allow this routine to read another set of updates")
+  self.emit("lda_imm(0x0);")
+  self.emit("adc_zp(0x1);")
+  self.emit("ram[0x1] = a;")
+  self.emit("lda_imm(0x3f); // sets vram address to $3f00")
+  self.emit("ppu_write_address(a);")
+  self.emit("lda_imm(0x0);")
+  self.emit("ppu_write_address(a);")
+  self.emit("ppu_write_address(a); // then reinitializes it for some reason")
+  self.emit("ppu_write_address(a);")
+  self.emit("UpdateScreen(); // <fallthrough>")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
+  if is_reviewed_write_buffer_to_screen(subroutine) {
+    self.emit_write_buffer_to_screen()
+    return
+  }
+
+  if is_reviewed_get_enemy_bound_box(subroutine) &&
+    has_reviewed_enemy_bound_box_dependencies(low) {
+    self.emit_get_enemy_bound_box(subroutine, low)
+    return
+  }
+
+  if is_bounding_box_core(subroutine) {
+    self.emit_bounding_box_core()
+    return
+  }
+
+  if is_move_object_horizontally(subroutine) {
+    self.emit_move_object_horizontally()
+    return
+  }
+
+  if is_spr_object_collision_core(subroutine) {
+    self.emit_spr_object_collision_core()
+    return
+  }
+
+  if is_block_buffer_collision(subroutine) &&
+    has_reviewed_get_block_buffer_addr(low) &&
+    has_reviewed_block_buffer_addr_table(low) {
+    self.emit_block_buffer_collision()
+    return
+  }
+
+  if is_draw_sprite_object(subroutine) {
+    self.emit_draw_sprite_object()
+    return
+  }
+
+  if is_move_sprites_offscreen_skip(subroutine) {
+    self.emit_move_sprites_offscreen_skip()
+    return
+  }
+
+  if is_sprite_shuffler(subroutine) {
+    self.emit_sprite_shuffler()
+    return
+  }
+
+  if is_read_joypads(subroutine) && has_reviewed_read_port_bits(low) {
+    self.emit_read_joypads()
+    return
+  }
+
+  if is_read_port_bits(subroutine) {
+    self.emit_read_port_bits()
+    return
+  }
+
+  if is_get_off_screen_bits_set(subroutine) &&
+    has_reviewed_offscreen_mask_dependencies(low) {
+    self.emit_get_off_screen_bits_set()
+    return
+  }
+
+  if is_get_x_offscreen_bits(subroutine) &&
+    has_reviewed_divide_pdiff(low) &&
+    has_reviewed_offscreen_tables(low) {
+    self.emit_get_x_offscreen_bits()
+    return
+  }
+
+  if is_get_y_offscreen_bits(subroutine) &&
+    has_reviewed_divide_pdiff(low) &&
+    has_reviewed_offscreen_tables(low) {
+    self.emit_get_y_offscreen_bits()
+    return
+  }
+
+  if is_top_score_check(subroutine) {
+    self.emit_top_score_check()
+    return
+  }
+
+  if is_relative_enemy_position(subroutine) &&
+    has_reviewed_relative_enemy_position_dependencies(low) {
+    self.emit_relative_enemy_position()
+    return
+  }
+
   self.indentation = 0
   self.emit("void \{rename_label(subroutine.name)}(void) {")
   self.indentation = 1
+
+  if is_reviewed_draw_large_platform(subroutine) &&
+    has_reviewed_large_platform_draw_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_draw_large_platform()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_render_area_graphics(subroutine) &&
+    has_reviewed_render_area_graphics_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_render_area_graphics()) { return; }")
+    self.emit("#endif")
+  }
+
+  // The direct enemy renderer now folds the reviewed low-row portion of
+  // SprObjectOffscrChk at its tail. If that routine or either column helper
+  // changes, retain the complete translated EnemyGfxHandler as well.
+  if is_reviewed_enemy_gfx_handler(subroutine) &&
+    has_reviewed_spr_object_offscr_dependencies(low) &&
+    low.flat_subroutines.any(is_reviewed_spr_object_offscr_chk) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_enemy_gfx_handler()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_move_normal_enemy(subroutine) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_move_normal_enemy()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_spr_object_offscr_chk(subroutine) &&
+    has_reviewed_spr_object_offscr_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_spr_object_offscr_chk()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_offscreen_bounds_check(subroutine) &&
+    has_reviewed_erase_enemy_object(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_offscreen_bounds_check()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_enemy_to_bg_collision_det(subroutine) &&
+    has_reviewed_subt_enemy_y_pos(low) &&
+    has_reviewed_goomba_bg_collision_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit(
+      "if (smb_core_fast_enemy_to_bg_collision_det()) { return; }",
+    )
+    self.emit("#endif")
+  }
+
+  if is_reviewed_enemies_collision(subroutine) &&
+    has_reviewed_enemies_collision_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_enemies_collision()) { return; }")
+    self.emit("#endif")
+  }
 
   for item in subroutine.items {
     self.emit_item(item, low)
@@ -478,6 +3438,9 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
 fn Emitter::emit_code_c(self: Emitter, low: @lower.AsmLowering) -> Unit {
   self.emit("#include \"code.h\"")
+  self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+  self.emit("#include \"core_fast_paths.h\"")
+  self.emit("#endif")
   self.emit("")
 
   for sub in low.flat_subroutines {

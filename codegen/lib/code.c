@@ -1,4 +1,7 @@
 #include "code.h"
+#if defined(SMB_NEOGEO_FAST_CORE)
+#include "core_fast_paths.h"
+#endif
 
 void Start(void) {
   sei(); // pretty standard 6502 type init here
@@ -236,57 +239,39 @@ SetPause:
 }
 
 void SpriteShuffler(void) {
-  ldy_abs(AreaType); // load level type, likely residual code
-  lda_imm(0x28); // load preset value which will put it at
-  ram[0x0] = a; // sprite #10
-  ldx_imm(0xe); // start at the end of OAM data offsets
-  
-ShuffleLoop:
-  lda_absx(SprDataOffset); // check for offset value against
-  cmp_zp(0x0); // the preset value
-  // if less, skip this part
-  if (carry_flag) {
-    ldy_abs(SprShuffleAmtOffset); // get current offset to preset value we want to add
-    carry_flag = false;
-    adc_absy(SprShuffleAmt); // get shuffle amount, add to current sprite offset
-    // if not exceeded $ff, skip second add
-    if (carry_flag) {
-      carry_flag = false;
-      adc_zp(0x0); // otherwise add preset value $28 to offset
+  // Reviewed fixed-table specialization; guarded by the exact lowered structure.
+  const uint8_t shuffle_index = ram[SprShuffleAmtOffset];
+  uint8_t sprite_index;
+  ram[0x0] = 0x28u;
+  for (sprite_index = 15u; sprite_index-- != 0u;) {
+    uint8_t value = ram[SprDataOffset + sprite_index];
+    if (value >= 0x28u) {
+      const uint8_t shuffle_amount = ram[SprShuffleAmt + shuffle_index];
+      const uint16_t first_sum = (uint16_t)value + shuffle_amount;
+      value = (uint8_t)first_sum;
+      if (first_sum > 0xffu) {
+        value = (uint8_t)(value + 0x28u);
+      }
+      ram[SprDataOffset + sprite_index] = value;
     }
-    // StrSprOffset:
-    ram[SprDataOffset + x] = a; // store new offset here or old one if branched to here
   }
-  // NextSprOffset:
-  dex(); // move backwards to next one
-  if (!neg_flag) { goto ShuffleLoop; }
-  ldx_abs(SprShuffleAmtOffset); // load offset
-  inx();
-  cpx_imm(0x3); // check if offset + 1 goes to 3
-  // if offset + 1 not 3, store
-  if (zero_flag) {
-    ldx_imm(0x0); // otherwise, init to 0
+  sprite_index = (uint8_t)(shuffle_index + 1u);
+  if (sprite_index == 3u) {
+    sprite_index = 0u;
   }
-  // SetAmtOffset:
-  ram[SprShuffleAmtOffset] = x;
-  ldx_imm(0x8); // load offsets for values and storage
-  ldy_imm(0x2);
-  
-SetMiscOffset:
-  lda_absy(SprDataOffset + 5); // load one of three OAM data offsets
-  ram[Misc_SprDataOffset - 2 + x] = a; // store first one unmodified, but
-  carry_flag = false; // add eight to the second and eight
-  adc_imm(0x8); // more to the third one
-  ram[Misc_SprDataOffset - 1 + x] = a; // note that due to the way X is set up,
-  carry_flag = false; // this code loads into the misc sprite offsets
-  adc_imm(0x8);
-  ram[Misc_SprDataOffset + x] = a;
-  dex();
-  dex();
-  dex();
-  dey();
-  if (!neg_flag) { goto SetMiscOffset; } // do this until all misc spr offsets are loaded
-  // -------------------------------------------------------------------------------------
+  ram[SprShuffleAmtOffset] = sprite_index;
+  for (sprite_index = 0u; sprite_index < 3u; sprite_index++) {
+    const uint8_t base = ram[SprDataOffset + 5u + sprite_index];
+    const uint16_t misc_offset = (uint16_t)Misc_SprDataOffset + (uint16_t)sprite_index * 3u;
+    ram[misc_offset] = base;
+    ram[misc_offset + 1u] = (uint8_t)(base + 8u);
+    ram[misc_offset + 2u] = (uint8_t)(base + 16u);
+  }
+  a = (uint8_t)(ram[SprDataOffset + 5u] + 16u);
+  carry_flag = ram[SprDataOffset + 5u] >= 0xf0u && ram[SprDataOffset + 5u] < 0xf8u;
+  x = 0xffu;
+  y = 0xffu;
+  nz_value = 0xffu;
 }
 
 void OperModeExecutionTree(void) {
@@ -1236,16 +1221,83 @@ void MoveSpritesOffscreen(void) {
 }
 
 void MoveSpritesOffscreenSkip(void) {
-  lda_imm(0xf8); // off the screen
-  
-SprInitLoop:
-  ram[Sprite_Y_Position + y] = a; // write 248 into OAM data's Y coordinate
-  iny(); // which will move it off the screen
-  iny();
-  iny();
-  iny();
-  if (!zero_flag) { goto SprInitLoop; }
-  // -------------------------------------------------------------------------------------
+  // Reviewed OAM-clear specialization; guarded by the exact lowered structure.
+  uint8_t local_y = y;
+  uint8_t *const sprite_y = &ram[Sprite_Y_Position];
+  a = 0xf8u;
+  if (local_y == 0x04u) {
+    sprite_y[4u] = 0xf8u;
+    sprite_y[8u] = 0xf8u;
+    sprite_y[12u] = 0xf8u;
+    sprite_y[16u] = 0xf8u;
+    sprite_y[20u] = 0xf8u;
+    sprite_y[24u] = 0xf8u;
+    sprite_y[28u] = 0xf8u;
+    sprite_y[32u] = 0xf8u;
+    sprite_y[36u] = 0xf8u;
+    sprite_y[40u] = 0xf8u;
+    sprite_y[44u] = 0xf8u;
+    sprite_y[48u] = 0xf8u;
+    sprite_y[52u] = 0xf8u;
+    sprite_y[56u] = 0xf8u;
+    sprite_y[60u] = 0xf8u;
+    sprite_y[64u] = 0xf8u;
+    sprite_y[68u] = 0xf8u;
+    sprite_y[72u] = 0xf8u;
+    sprite_y[76u] = 0xf8u;
+    sprite_y[80u] = 0xf8u;
+    sprite_y[84u] = 0xf8u;
+    sprite_y[88u] = 0xf8u;
+    sprite_y[92u] = 0xf8u;
+    sprite_y[96u] = 0xf8u;
+    sprite_y[100u] = 0xf8u;
+    sprite_y[104u] = 0xf8u;
+    sprite_y[108u] = 0xf8u;
+    sprite_y[112u] = 0xf8u;
+    sprite_y[116u] = 0xf8u;
+    sprite_y[120u] = 0xf8u;
+    sprite_y[124u] = 0xf8u;
+    sprite_y[128u] = 0xf8u;
+    sprite_y[132u] = 0xf8u;
+    sprite_y[136u] = 0xf8u;
+    sprite_y[140u] = 0xf8u;
+    sprite_y[144u] = 0xf8u;
+    sprite_y[148u] = 0xf8u;
+    sprite_y[152u] = 0xf8u;
+    sprite_y[156u] = 0xf8u;
+    sprite_y[160u] = 0xf8u;
+    sprite_y[164u] = 0xf8u;
+    sprite_y[168u] = 0xf8u;
+    sprite_y[172u] = 0xf8u;
+    sprite_y[176u] = 0xf8u;
+    sprite_y[180u] = 0xf8u;
+    sprite_y[184u] = 0xf8u;
+    sprite_y[188u] = 0xf8u;
+    sprite_y[192u] = 0xf8u;
+    sprite_y[196u] = 0xf8u;
+    sprite_y[200u] = 0xf8u;
+    sprite_y[204u] = 0xf8u;
+    sprite_y[208u] = 0xf8u;
+    sprite_y[212u] = 0xf8u;
+    sprite_y[216u] = 0xf8u;
+    sprite_y[220u] = 0xf8u;
+    sprite_y[224u] = 0xf8u;
+    sprite_y[228u] = 0xf8u;
+    sprite_y[232u] = 0xf8u;
+    sprite_y[236u] = 0xf8u;
+    sprite_y[240u] = 0xf8u;
+    sprite_y[244u] = 0xf8u;
+    sprite_y[248u] = 0xf8u;
+    sprite_y[252u] = 0xf8u;
+    local_y = 0u;
+  } else {
+    do {
+      sprite_y[local_y] = 0xf8u;
+      local_y = (uint8_t)(local_y + 4u);
+    } while (local_y != 0u);
+  }
+  y = local_y;
+  nz_value = local_y;
 }
 
 void GoContinue(void) {
@@ -1761,6 +1813,9 @@ void ResetScreenTimer(void) {
 }
 
 void RenderAreaGraphics(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_render_area_graphics()) { return; }
+  #endif
   lda_abs(CurrentColumnPos); // store LSB of where we're at
   and_imm(0x1);
   ram[0x5] = a;
@@ -2151,47 +2206,67 @@ InitATLoop:
 }
 
 void ReadJoypads(void) {
-  lda_imm(0x1); // reset and clear strobe of joypad ports
-  write_joypad1(a);
-  lsr_acc();
-  tax(); // start with joypad 1's port
-  write_joypad1(a);
-  ReadPortBits();
-  inx(); // increment for joypad 2's port
-  ReadPortBits();
+  // Reviewed whole-read specialization; requires the exact ReadPortBits shape.
+  uint8_t serial_value = controller1_state;
+  serial_value = (uint8_t)((serial_value >> 4) | (serial_value << 4));
+  serial_value = (uint8_t)(((serial_value & 0xccu) >> 2) | ((serial_value & 0x33u) << 2));
+  serial_value = (uint8_t)(((serial_value & 0xaau) >> 1) | ((serial_value & 0x55u) << 1));
+  controller1_strobe = false;
+  controller1_btn_index = 8u;
+  ram[SavedJoypadBits] = serial_value;
+  if ((serial_value & 0x30u & ram[JoypadBitMask]) != 0u) {
+    serial_value = (uint8_t)(serial_value & 0xcfu);
+    ram[SavedJoypadBits] = serial_value;
+  } else {
+    ram[JoypadBitMask] = serial_value;
+  }
+  ram[0x0] = 0u;
+  ram[0x100u + sp] = 0u;
+  ram[SavedJoypadBits + 1u] = 0u;
+  ram[JoypadBitMask + 1u] = 0u;
+  a = 0u;
+  x = 1u;
+  y = 0u;
+  carry_flag = (serial_value & 1u) != 0u;
+  nz_value = 0u;
 }
 
 void ReadPortBits(void) {
-  ldy_imm(0x8);
-  
-PortLoop:
-  pha(); // push previous bit onto stack
-  lda_absx(JOYPAD_PORT); // read current bit on joypad port
-  ram[0x0] = a; // check d1 and d0 of port output
-  lsr_acc(); // this is necessary on the old
-  ora_zp(0x0); // famicom systems in japan
-  lsr_acc();
-  pla(); // read bits from stack
-  rol_acc(); // rotate bit from carry flag
-  dey();
-  if (!zero_flag) { goto PortLoop; } // count down bits left
-  ram[SavedJoypadBits + x] = a; // save controller status here always
-  pha();
-  and_imm(0b00110000); // check for select or start
-  and_absx(JoypadBitMask); // if neither saved state nor current state
-  // have any of these two set, branch
-  if (!zero_flag) {
-    pla();
-    and_imm(0b11001111); // otherwise store without select
-    ram[SavedJoypadBits + x] = a; // or start bits and leave
-    return;
+  // Reviewed serial-input specialization; guarded by the exact lowered structure.
+  const uint8_t initial_a = a;
+  uint8_t serial_value = 0u;
+  uint8_t last_port_bit = 0u;
+  if (x == 0u) {
+    const uint8_t port_index = controller1_btn_index;
+    if (port_index > 7u) {
+      serial_value = 0xffu;
+      last_port_bit = 1u;
+    } else if (controller1_strobe) {
+      last_port_bit = (uint8_t)((controller1_state >> port_index) & 1u);
+      serial_value = last_port_bit != 0u ? 0xffu : 0u;
+    } else {
+      uint8_t reversed = (uint8_t)(controller1_state >> port_index);
+      reversed = (uint8_t)((reversed >> 4) | (reversed << 4));
+      reversed = (uint8_t)(((reversed & 0xccu) >> 2) | ((reversed & 0x33u) << 2));
+      reversed = (uint8_t)(((reversed & 0xaau) >> 1) | ((reversed & 0x55u) << 1));
+      serial_value = (uint8_t)(reversed | ((1u << port_index) - 1u));
+      last_port_bit = port_index == 0u ? (uint8_t)(controller1_state >> 7) : 1u;
+      controller1_btn_index = 8u;
+    }
   }
-  // Save8Bits:
-  pla();
-  ram[JoypadBitMask + x] = a; // save with all bits in another place and leave
-  // -------------------------------------------------------------------------------------
-  // $00 - vram buffer address table low
-  // $01 - vram buffer address table high
+  ram[0x0] = last_port_bit;
+  ram[0x100u + sp] = serial_value;
+  y = 0u;
+  carry_flag = (initial_a & 1u) != 0u;
+  ram[SavedJoypadBits + x] = serial_value;
+  if ((serial_value & 0x30u & ram[JoypadBitMask + x]) != 0u) {
+    a = (uint8_t)(serial_value & 0xcfu);
+    ram[SavedJoypadBits + x] = a;
+  } else {
+    a = serial_value;
+    ram[JoypadBitMask + x] = serial_value;
+  }
+  nz_value = a;
 }
 
 void WriteBufferToScreen(void) {
@@ -2222,7 +2297,21 @@ void WriteBufferToScreen(void) {
   lsr_acc(); // shift back to the right to get proper length
   lsr_acc(); // note that d1 will now be in carry
   tax();
-  
+  #if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+  // Reviewed VRAM-buffer batch hook; rejected runs use the original loop.
+  {
+    const uint8_t run_length = x;
+    const uint16_t source_pointer = (uint16_t)((uint16_t)ram[0x0] | ((uint16_t)ram[0x1] << 8));
+    if (ppu_write_buffer_run(source_pointer, run_length, carry_flag ? 1u : 0u)) {
+      if (!carry_flag) {
+        y = (uint8_t)(y + run_length);
+      }
+      x = 0u;
+      nz_value = 0u;
+      goto OutputToVRAMComplete;
+    }
+  }
+  #endif
 OutputToVRAM:
   // if carry set, repeat loading the same byte
   if (!carry_flag) {
@@ -2233,6 +2322,9 @@ OutputToVRAM:
   ppu_write_data(a);
   dex(); // done writing?
   if (!zero_flag) { goto OutputToVRAM; }
+#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+OutputToVRAMComplete:
+#endif
   carry_flag = true;
   tya();
   adc_zp(0x0); // add end length plus one to the indirect at $00
@@ -2387,28 +2479,84 @@ void UpdateTopScore(void) {
 }
 
 void TopScoreCheck(void) {
-  ldy_imm(0x5); // start with the lowest digit
-  carry_flag = true;
-  
-GetScoreDiff:
-  lda_absx(PlayerScoreDisplay); // subtract each player digit from each high score digit
-  sbc_absy(TopScoreDisplay); // from lowest to highest, if any top score digit exceeds
-  dex(); // any player digit, borrow will be set until a subsequent
-  dey(); // subtraction clears it (player digit is higher than top)
-  if (!neg_flag) { goto GetScoreDiff; }
-  if (carry_flag) {
-    inx(); // increment X and Y once to the start of the score
-    iny();
-    
-CopyScore:
-    lda_absx(PlayerScoreDisplay); // store player's score digits into high score memory area
-    ram[TopScoreDisplay + y] = a;
-    inx();
-    iny();
-    cpy_imm(0x6); // do this until we have stored them all
-    if (!carry_flag) { goto CopyScore; }
-    // -------------------------------------------------------------------------------------
+  // Reviewed score-chain specialization; guarded by the exact lowered structure.
+  const uint8_t initial_x = x;
+  if (initial_x == 5u || initial_x == 11u) {
+    const uint8_t *const player_score = &ram[PlayerScoreDisplay + initial_x - 5u];
+    const uint8_t *const top_score = &ram[TopScoreDisplay];
+    bool lower_digits_equal = false;
+    bool lower_digits_borrow;
+    if (player_score[1] != top_score[1]) {
+      lower_digits_borrow = player_score[1] < top_score[1];
+    } else if (player_score[2] != top_score[2]) {
+      lower_digits_borrow = player_score[2] < top_score[2];
+    } else if (player_score[3] != top_score[3]) {
+      lower_digits_borrow = player_score[3] < top_score[3];
+    } else if (player_score[4] != top_score[4]) {
+      lower_digits_borrow = player_score[4] < top_score[4];
+    } else {
+      lower_digits_equal = player_score[5] == top_score[5];
+      lower_digits_borrow = player_score[5] < top_score[5];
+    }
+    const uint16_t high_difference = (uint16_t)player_score[0] - (uint16_t)top_score[0] - (lower_digits_borrow ? 1u : 0u);
+    const bool score_carry = high_difference <= 0xffu;
+    if (!score_carry) {
+      a = (uint8_t)high_difference;
+      x = (uint8_t)(initial_x - 6u);
+      y = 0xffu;
+      carry_flag = false;
+      nz_value = 0xffu;
+      return;
+    }
+    if (!(lower_digits_equal && player_score[0] == top_score[0])) {
+      ram[TopScoreDisplay] = player_score[0];
+      ram[TopScoreDisplay + 1u] = player_score[1];
+      ram[TopScoreDisplay + 2u] = player_score[2];
+      ram[TopScoreDisplay + 3u] = player_score[3];
+      ram[TopScoreDisplay + 4u] = player_score[4];
+      ram[TopScoreDisplay + 5u] = player_score[5];
+    }
+    a = player_score[5];
+    x = (uint8_t)(initial_x + 1u);
+    y = 6u;
+    carry_flag = true;
+    nz_value = 0u;
+    return;
   }
+  uint8_t local_x = initial_x;
+  uint8_t local_a = 0u;
+  bool local_carry = true;
+  uint8_t digit = 6u;
+  do {
+    const uint8_t player_digit = read_byte((uint16_t)(PlayerScoreDisplay + local_x));
+    const uint8_t top_digit = ram[TopScoreDisplay + digit - 1u];
+    const uint16_t difference = (uint16_t)player_digit - (uint16_t)top_digit - (local_carry ? 0u : 1u);
+    local_a = (uint8_t)difference;
+    local_carry = difference <= 0xffu;
+    local_x = (uint8_t)(local_x - 1u);
+    digit = (uint8_t)(digit - 1u);
+  } while (digit != 0u);
+  a = local_a;
+  x = local_x;
+  y = 0xffu;
+  carry_flag = local_carry;
+  nz_value = 0xffu;
+  if (!local_carry) {
+    return;
+  }
+  local_x = (uint8_t)(local_x + 1u);
+  digit = 0u;
+  do {
+    local_a = read_byte((uint16_t)(PlayerScoreDisplay + local_x));
+    ram[TopScoreDisplay + digit] = local_a;
+    local_x = (uint8_t)(local_x + 1u);
+    digit = (uint8_t)(digit + 1u);
+  } while (digit != 6u);
+  a = local_a;
+  x = local_x;
+  y = 6u;
+  carry_flag = true;
+  nz_value = 0u;
 }
 
 void InitializeMemory(void) {
@@ -5965,6 +6113,9 @@ KillBB:
 }
 
 void EnemyGfxHandler(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemy_gfx_handler()) { return; }
+  #endif
   lda_zpx(Enemy_Y_Position); // get enemy object vertical position
   ram[0x2] = a;
   lda_abs(Enemy_Rel_XPos); // get enemy object horizontal position
@@ -6398,6 +6549,9 @@ CheckToMirrorJSpring:
 }
 
 void SprObjectOffscrChk(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_spr_object_offscr_chk()) { return; }
+  #endif
   ldx_zp(ObjectOffset); // get enemy buffer offset
   lda_abs(Enemy_OffscreenBits); // check offscreen information
   lsr_acc();
@@ -7185,52 +7339,72 @@ void MovePlayerHorizontally(void) {
   }
 }
 
+static __attribute__((noinline, cold)) void MoveObjectHorizontallyAliasExact(void) {
+  const uint8_t object_offset = x;
+  const uint8_t speed_address = (uint8_t)(SprObject_X_Speed + object_offset);
+  const uint8_t position_address = (uint8_t)(SprObject_X_Position + object_offset);
+  const uint8_t page_address = (uint8_t)(SprObject_PageLoc + object_offset);
+  uint8_t speed = ram[speed_address];
+  uint8_t high_nibble;
+  uint8_t pixel_delta;
+  uint8_t page_delta;
+  uint8_t force_carry;
+  uint16_t sum;
+  ram[0x1] = (uint8_t)(speed << 4);
+  speed = ram[speed_address];
+  high_nibble = (uint8_t)(speed >> 4);
+  pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);
+  ram[0x0] = pixel_delta;
+  page_delta = (uint8_t)-(pixel_delta >> 7);
+  y = page_delta;
+  ram[0x2] = page_delta;
+  sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + ram[0x1];
+  ram[SprObject_X_MoveForce + object_offset] = (uint8_t)sum;
+  force_carry = sum > 0xffu ? 1u : 0u;
+  ram[0x100u + sp] = force_carry;
+  sum = (uint16_t)ram[position_address] + ram[0x0] + force_carry;
+  ram[position_address] = (uint8_t)sum;
+  sum = (uint16_t)ram[page_address] + ram[0x2] + (sum > 0xffu ? 1u : 0u);
+  ram[page_address] = (uint8_t)sum;
+  const uint8_t stacked_carry = ram[0x100u + sp];
+  const uint8_t final_delta = ram[0x0];
+  a = (uint8_t)(stacked_carry + final_delta);
+  carry_flag = stacked_carry != 0u && final_delta == 0xffu;
+  nz_value = a;
+}
+
 void MoveObjectHorizontally(void) {
-  lda_zpx(SprObject_X_Speed); // get currently saved value (horizontal
-  asl_acc(); // speed, secondary counter, whatever)
-  asl_acc(); // and move low nybble to high
-  asl_acc();
-  asl_acc();
-  ram[0x1] = a; // store result here
-  lda_zpx(SprObject_X_Speed); // get saved value again
-  lsr_acc(); // move high nybble to low
-  lsr_acc();
-  lsr_acc();
-  lsr_acc();
-  cmp_imm(0x8); // if < 8, branch, do not change
-  if (carry_flag) {
-    ora_imm(0b11110000); // otherwise alter high nybble
+  // Reviewed horizontal-motion specialization; guarded by the exact lowered structure.
+  const uint8_t object_offset = x;
+  if (object_offset > 6u) {
+    MoveObjectHorizontallyAliasExact();
+    return;
   }
-  // SaveXSpd:
-  ram[0x0] = a; // save result here
-  ldy_imm(0x0); // load default Y value here
-  cmp_imm(0x0); // if result positive, leave Y alone
-  if (neg_flag) {
-    dey(); // otherwise decrement Y
-  }
-  // UseAdder:
-  ram[0x2] = y; // save Y here
-  lda_absx(SprObject_X_MoveForce); // get whatever number's here
-  carry_flag = false;
-  adc_zp(0x1); // add low nybble moved to high
-  ram[SprObject_X_MoveForce + x] = a; // store result here
-  lda_imm(0x0); // init A
-  rol_acc(); // rotate carry into d0
-  pha(); // push onto stack
-  ror_acc(); // rotate d0 back onto carry
-  lda_zpx(SprObject_X_Position);
-  adc_zp(0x0); // add carry plus saved value (high nybble moved to low
-  ram[SprObject_X_Position + x] = a; // plus $f0 if necessary) to object's horizontal position
-  lda_zpx(SprObject_PageLoc);
-  adc_zp(0x2); // add carry plus other saved value to the
-  ram[SprObject_PageLoc + x] = a; // object's page location and save
-  pla();
-  carry_flag = false; // pull old carry from stack and add
-  adc_zp(0x0); // to high nybble moved to low
-  // -------------------------------------------------------------------------------------
-  // $00 - used for downward force
-  // $01 - used for upward force
-  // $02 - used for maximum vertical speed
+  const uint8_t speed = ram[SprObject_X_Speed + object_offset];
+  const uint8_t fraction = (uint8_t)(speed << 4);
+  const uint8_t high_nibble = (uint8_t)(speed >> 4);
+  const uint8_t pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);
+  const uint8_t page_delta = (uint8_t)-(pixel_delta >> 7);
+  uint16_t force_sum;
+  uint16_t position_sum;
+  uint16_t page_sum;
+  uint8_t force_carry;
+  ram[0x1] = fraction;
+  ram[0x0] = pixel_delta;
+  y = page_delta;
+  ram[0x2] = page_delta;
+  force_sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + fraction;
+  ram[SprObject_X_MoveForce + object_offset] = (uint8_t)force_sum;
+  force_carry = force_sum > 0xffu ? 1u : 0u;
+  ram[0x100u + sp] = force_carry;
+  position_sum = (uint16_t)ram[SprObject_X_Position + object_offset] + pixel_delta + force_carry;
+  ram[SprObject_X_Position + object_offset] = (uint8_t)position_sum;
+  page_sum = (uint16_t)ram[SprObject_PageLoc + object_offset] + page_delta + (position_sum > 0xffu ? 1u : 0u);
+  ram[SprObject_PageLoc + object_offset] = (uint8_t)page_sum;
+  const uint8_t stacked_carry = ram[0x100u + sp];
+  a = (uint8_t)(stacked_carry + pixel_delta);
+  carry_flag = stacked_carry != 0u && pixel_delta == 0xffu;
+  nz_value = a;
 }
 
 void MovePlayerVertically(void) {
@@ -9273,6 +9447,9 @@ void DelayToAreaEnd(void) {
 }
 
 void OffscreenBoundsCheck(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_offscreen_bounds_check()) { return; }
+  #endif
   lda_zpx(Enemy_ID); // check for cheep-cheep object
   cmp_imm(FlyingCheepCheep); // branch to leave if found
   if (zero_flag) { return; }
@@ -9508,6 +9685,9 @@ void MoveHammerBroXDir(void) {
 }
 
 void MoveNormalEnemy(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_move_normal_enemy()) { return; }
+  #endif
   ldy_imm(0x0); // init Y to leave horizontal movement as-is
   lda_zpx(Enemy_State);
   and_imm(0b01000000); // check enemy state for d6 set, if set skip
@@ -11561,6 +11741,9 @@ void SetupFloateyNumber(void) {
 }
 
 void EnemiesCollision(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemies_collision()) { return; }
+  #endif
   lda_zp(FrameCounter); // check counter for d0 set
   lsr_acc();
   if (!carry_flag) { return; } // if d0 not set, leave
@@ -12496,6 +12679,9 @@ void GetMTileAttrib(void) {
 }
 
 void EnemyToBGCollisionDet(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemy_to_bg_collision_det()) { return; }
+  #endif
   lda_zpx(Enemy_State); // check enemy state for d6 set
   and_imm(0b00100000);
   if (!zero_flag) { goto EnemyToBGCollisionDetExit; } // if set, branch to leave
@@ -13000,11 +13186,72 @@ void FBallB(void) {
   CheckRightScreenBBox(); // jump to handle any offscreen coordinates
 }
 
-void GetEnemyBoundBox(void) {
+static __attribute__((noinline, cold)) void GetEnemyBoundBoxAliasExact(void) {
   ldy_imm(0x48); // store bitmask here for now
   ram[0x0] = y;
   ldy_imm(0x44); // store another bitmask here for now and jump
   GetMaskedOffScrBits();
+}
+
+__attribute__((noinline)) void GetEnemyBoundBox(void) {
+  // Reviewed enemy bounding-box specialization; guarded by exact caller and folded-helper shapes.
+  const uint8_t object_offset = x;
+  uint8_t enemy_x;
+  uint8_t screen_x;
+  uint8_t pixel_difference;
+  uint8_t enemy_page;
+  uint8_t screen_page;
+  uint16_t page_difference;
+  if (object_offset > 5u) {
+    GetEnemyBoundBoxAliasExact();
+    return;
+  }
+  ram[0x0] = 0x48u;
+  y = 0x44u;
+  nz_value = y;
+  enemy_x = ram[Enemy_X_Position + object_offset];
+  a = enemy_x;
+  nz_value = a;
+  screen_x = ram[ScreenLeft_X_Pos];
+  carry_flag = enemy_x >= screen_x;
+  pixel_difference = (uint8_t)(enemy_x - screen_x);
+  a = pixel_difference;
+  nz_value = a;
+  ram[0x1] = pixel_difference;
+  enemy_page = ram[Enemy_PageLoc + object_offset];
+  a = enemy_page;
+  nz_value = a;
+  screen_page = ram[ScreenLeft_PageLoc];
+  page_difference = (uint16_t)((uint16_t)enemy_page - (uint16_t)screen_page - (carry_flag ? 0u : 1u));
+  carry_flag = page_difference <= 0xffu;
+  a = (uint8_t)page_difference;
+  nz_value = a;
+  if ((a & 0x80u) == 0u) {
+    a = (uint8_t)(a | ram[0x1]);
+    nz_value = a;
+    if (a != 0u) {
+      y = ram[0x0];
+      nz_value = y;
+    }
+  }
+  a = y;
+  nz_value = a;
+  a = (uint8_t)(a & ram[Enemy_OffscreenBits]);
+  nz_value = a;
+  ram[EnemyOffscrBitsMasked + object_offset] = a;
+  if (a == 0u) {
+    SetupEOffsetFBBox();
+    return;
+  }
+  const uint8_t box_offset = (uint8_t)(object_offset << 2);
+  y = box_offset;
+  carry_flag = (object_offset & 0x40u) != 0u;
+  a = 0xffu;
+  nz_value = a;
+  ram[EnemyBoundingBoxCoord + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 1u + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 2u + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 3u + box_offset] = a;
 }
 
 void SmallPlatformBoundBox(void) {
@@ -13131,41 +13378,34 @@ void CheckRightScreenBBox(void) {
 }
 
 void BoundingBoxCore(void) {
-  ram[0x0] = x; // save offset here
-  lda_absy(SprObject_Rel_YPos); // store object coordinates relative to screen
-  ram[0x2] = a; // vertically and horizontally, respectively
-  lda_absy(SprObject_Rel_XPos);
-  ram[0x1] = a;
-  txa(); // multiply offset by four and save to stack
-  asl_acc();
-  asl_acc();
-  pha();
-  tay(); // use as offset for Y, X is left alone
-  lda_absx(SprObj_BoundBoxCtrl); // load value here to be used as offset for X
-  asl_acc(); // multiply that by four and use as X
-  asl_acc();
-  tax();
-  lda_zp(0x1); // add the first number in the bounding box data to the
-  carry_flag = false; // relative horizontal coordinate using enemy object offset
-  adc_absx(BoundBoxCtrlData); // and store somewhere using same offset * 4
-  ram[BoundingBox_UL_Corner + y] = a; // store here
-  lda_zp(0x1);
-  carry_flag = false;
-  adc_absx(BoundBoxCtrlData + 2); // add the third number in the bounding box data to the
-  ram[BoundingBox_LR_Corner + y] = a; // relative horizontal coordinate and store
-  inx(); // increment both offsets
-  iny();
-  lda_zp(0x2); // add the second number to the relative vertical coordinate
-  carry_flag = false; // using incremented offset and store using the other
-  adc_absx(BoundBoxCtrlData); // incremented offset
-  ram[BoundingBox_UL_Corner + y] = a;
-  lda_zp(0x2);
-  carry_flag = false;
-  adc_absx(BoundBoxCtrlData + 2); // add the fourth number to the relative vertical coordinate
-  ram[BoundingBox_LR_Corner + y] = a; // and store
-  pla(); // get original offset loaded into $00 * y from stack
-  tay(); // use as Y
-  ldx_zp(0x0); // get original offset and use as X again
+  // Reviewed bounding-box specialization; guarded by the exact lowered structure.
+  const uint8_t object_offset = x;
+  const uint8_t object_index = y;
+  const uint8_t relative_y = ram[SprObject_Rel_YPos + object_index];
+  const uint8_t relative_x = ram[SprObject_Rel_XPos + object_index];
+  const uint8_t box_offset = (uint8_t)(object_offset << 2);
+  const uint8_t control = ram[SprObj_BoundBoxCtrl + object_offset];
+  const uint8_t control_offset = (uint8_t)(control << 2);
+  const uint8_t *const bounds = &data[BoundBoxCtrlData - 0x8000u + control_offset];
+  uint8_t *const box = &ram[BoundingBox_UL_Corner + box_offset];
+  uint16_t sum;
+  ram[0x0] = object_offset;
+  ram[0x2] = relative_y;
+  ram[0x1] = relative_x;
+  ram[0x100u + sp] = box_offset;
+  sum = (uint16_t)relative_x + bounds[0];
+  box[0] = (uint8_t)sum;
+  sum = (uint16_t)relative_x + bounds[2];
+  box[2] = (uint8_t)sum;
+  sum = (uint16_t)relative_y + bounds[1];
+  box[1] = (uint8_t)sum;
+  sum = (uint16_t)relative_y + bounds[3];
+  box[3] = (uint8_t)sum;
+  a = box_offset;
+  y = box_offset;
+  x = object_offset;
+  carry_flag = sum > 0xffu;
+  nz_value = object_offset;
 }
 
 void PlayerCollisionCore(void) {
@@ -13174,66 +13414,73 @@ void PlayerCollisionCore(void) {
 }
 
 void SprObjectCollisionCore(void) {
-  ram[0x6] = y; // save contents of Y here
-  lda_imm(0x1);
-  ram[0x7] = a; // save value 1 here as counter, compare horizontal coordinates first
-  
-CollisionCoreLoop:
-  lda_absy(BoundingBox_UL_Corner); // compare left/top coordinates
-  cmp_absx(BoundingBox_UL_Corner); // of first and second objects' bounding boxes
-  if (carry_flag) { goto FirstBoxGreater; } // if first left/top => second, branch
-  cmp_absx(BoundingBox_LR_Corner); // otherwise compare to right/bottom of second
-  if (!carry_flag) { goto SecondBoxVerticalChk; } // if first left/top < second right/bottom, branch elsewhere
-  if (zero_flag) { goto CollisionFound; } // if somehow equal, collision, thus branch
-  lda_absy(BoundingBox_LR_Corner); // if somehow greater, check to see if bottom of
-  cmp_absy(BoundingBox_UL_Corner); // first object's bounding box is greater than its top
-  if (!carry_flag) { goto CollisionFound; } // if somehow less, vertical wrap collision, thus branch
-  cmp_absx(BoundingBox_UL_Corner); // otherwise compare bottom of first bounding box to the top
-  if (carry_flag) { goto CollisionFound; } // of second box, and if equal or greater, collision, thus branch
-  ldy_zp(0x6); // otherwise return with carry clear and Y = $0006
-  return; // note horizontal wrapping never occurs
-  
-SecondBoxVerticalChk:
-  lda_absx(BoundingBox_LR_Corner); // check to see if the vertical bottom of the box
-  cmp_absx(BoundingBox_UL_Corner); // is greater than the vertical top
-  if (!carry_flag) { goto CollisionFound; } // if somehow less, vertical wrap collision, thus branch
-  lda_absy(BoundingBox_LR_Corner); // otherwise compare horizontal right or vertical bottom
-  cmp_absx(BoundingBox_UL_Corner); // of first box with horizontal left or vertical top of second box
-  if (carry_flag) { goto CollisionFound; } // if equal or greater, collision, thus branch
-  ldy_zp(0x6); // otherwise return with carry clear and Y = $0006
-  return;
-  
-FirstBoxGreater:
-  cmp_absx(BoundingBox_UL_Corner); // compare first and second box horizontal left/vertical top again
-  if (zero_flag) { goto CollisionFound; } // if first coordinate = second, collision, thus branch
-  cmp_absx(BoundingBox_LR_Corner); // if not, compare with second object right or bottom edge
-  if (!carry_flag) { goto CollisionFound; } // if left/top of first less than or equal to right/bottom of second
-  if (zero_flag) { goto CollisionFound; } // then collision, thus branch
-  cmp_absy(BoundingBox_LR_Corner); // otherwise check to see if top of first box is greater than bottom
-  if (!carry_flag) { goto NoCollisionFound; } // if less than or equal, no collision, branch to end
-  if (zero_flag) { goto NoCollisionFound; }
-  lda_absy(BoundingBox_LR_Corner); // otherwise compare bottom of first to top of second
-  cmp_absx(BoundingBox_UL_Corner); // if bottom of first is greater than top of second, vertical wrap
-  if (carry_flag) { goto CollisionFound; } // collision, and branch, otherwise, proceed onwards here
-  
-NoCollisionFound:
-  carry_flag = false; // clear carry, then load value set earlier, then leave
-  ldy_zp(0x6); // like previous ones, if horizontal coordinates do not collide, we do
-  return; // not bother checking vertical ones, because what's the point?
-  
-CollisionFound:
-  inx(); // increment offsets on both objects to check
-  iny(); // the vertical coordinates
-  dec_zp(0x7); // decrement counter to reflect this
-  if (!neg_flag) { goto CollisionCoreLoop; } // if counter not expired, branch to loop
-  carry_flag = true; // otherwise we already did both sets, therefore collision, so set carry
-  ldy_zp(0x6); // load original value set here earlier, then leave
-  // -------------------------------------------------------------------------------------
-  // $02 - modified y coordinate
-  // $03 - stores metatile involved in block buffer collisions
-  // $04 - comes in with offset to block buffer adder data, goes out with low nybble x/y coordinate
-  // $05 - modified x coordinate
-  // $06-$07 - block buffer address
+  // Reviewed leaf specialization; guarded by the exact lowered structure.
+  uint8_t local_a = 0x1u;
+  uint8_t local_x = x;
+  uint8_t local_y = y;
+  const uint8_t saved_y = local_y;
+  uint8_t local_operand;
+  bool local_carry;
+  ram[0x6] = saved_y;
+  ram[0x7] = local_a;
+SprCollisionCoreLoop:
+  local_a = ram[BoundingBox_UL_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFirstBoxGreater; }
+  local_operand = ram[BoundingBox_LR_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionSecondBoxVerticalChk; }
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_y];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+  goto SprCollisionReturn;
+SprCollisionSecondBoxVerticalChk:
+  local_a = ram[BoundingBox_LR_Corner + local_x];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+  goto SprCollisionReturn;
+SprCollisionFirstBoxGreater:
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_LR_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_LR_Corner + local_y];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionNoCollision; }
+  if (local_a == local_operand) { goto SprCollisionNoCollision; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+SprCollisionNoCollision:
+  local_carry = false;
+  goto SprCollisionReturn;
+SprCollisionFound:
+  local_x = (uint8_t)(local_x + 1u);
+  local_y = (uint8_t)(local_y + 1u);
+  ram[0x7] = (uint8_t)(ram[0x7] - 1u);
+  if ((ram[0x7] & 0x80u) == 0u) { goto SprCollisionCoreLoop; }
+  local_carry = true;
+SprCollisionReturn:
+  a = local_a;
+  x = local_x;
+  y = saved_y;
+  carry_flag = local_carry;
+  nz_value = y;
 }
 
 void BlockBufferChk_FBall(void) {
@@ -13273,53 +13520,54 @@ void BlockBufferColli_SideSkip(void) {
 }
 
 void BlockBufferCollision(void) {
-  pha(); // save contents of A to stack
-  ram[0x4] = y; // save contents of Y here
-  lda_absy(BlockBuffer_X_Adder); // add horizontal coordinate
-  carry_flag = false; // of object to value obtained using Y as offset
-  adc_zpx(SprObject_X_Position);
-  ram[0x5] = a; // store here
-  lda_zpx(SprObject_PageLoc);
-  adc_imm(0x0); // add carry to page location
-  and_imm(0x1); // get LSB, mask out all other bits
-  lsr_acc(); // move to carry
-  ora_zp(0x5); // get stored value
-  ror_acc(); // rotate carry to MSB of A
-  lsr_acc(); // and effectively move high nybble to
-  lsr_acc(); // lower, LSB which became MSB will be
-  lsr_acc(); // d4 at this point
-  GetBlockBufferAddr(); // get address of block buffer into $06, $07
-  ldy_zp(0x4); // get old contents of Y
-  lda_zpx(SprObject_Y_Position); // get vertical coordinate of object
-  carry_flag = false;
-  adc_absy(BlockBuffer_Y_Adder); // add it to value obtained using Y as offset
-  and_imm(0b11110000); // mask out low nybble
-  carry_flag = true;
-  sbc_imm(0x20); // subtract 32 pixels for the status bar
-  ram[0x2] = a; // store result here
-  tay(); // use as offset for block buffer
-  lda_indy(0x6); // check current content of block buffer
-  ram[0x3] = a; // and store here
-  ldy_zp(0x4); // get old contents of Y again
-  pla(); // pull A from stack
-  // if A = 1, branch
-  if (zero_flag) {
-    lda_zpx(SprObject_Y_Position); // if A = 0, load vertical coordinate
-    goto RetYC; // and jump
-  }
-  // RetXC:
-  lda_zpx(SprObject_X_Position); // otherwise load horizontal coordinate
-  
-RetYC:
-  and_imm(0b00001111); // and mask out high nybble
-  ram[0x4] = a; // store masked out result here
-  lda_zp(0x3); // get saved content of block buffer
-  // -------------------------------------------------------------------------------------
-  // unused byte
-  //       .db $ff
-  // -------------------------------------------------------------------------------------
-  // $00 - offset to vine Y coordinate adder
-  // $02 - offset to sprite data
+  // Reviewed block-buffer specialization; guarded with its address leaf.
+  // Exact BlockBufferAddr table is extracted into direct RAM addressing.
+  const uint8_t local_x = x;
+  const uint8_t local_y = y;
+  uint16_t coordinate_sum;
+  uint16_t block_address;
+  uint8_t adjusted_x;
+  uint8_t adjusted_y;
+  uint8_t block_column;
+  uint8_t block_bank;
+  uint8_t restored_y;
+  uint8_t return_coordinate;
+  ram[0x100u + sp] = a;
+  sp = (uint8_t)(sp - 1u);
+  ram[0x4] = local_y;
+  coordinate_sum = (uint16_t)data[BlockBuffer_X_Adder - 0x8000u + local_y] +
+    ram[(uint8_t)(SprObject_X_Position + local_x)];
+  adjusted_x = (uint8_t)coordinate_sum;
+  ram[0x5] = adjusted_x;
+  coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_PageLoc + local_x)] +
+    (coordinate_sum > 0xffu ? 1u : 0u);
+  block_column = (uint8_t)((((uint8_t)coordinate_sum & 1u) << 4) |
+    (adjusted_x >> 4));
+  ram[0x100u + sp] = block_column;
+  sp = (uint8_t)(sp - 1u);
+  block_bank = (uint8_t)(block_column >> 4);
+  block_address = block_bank == 0u ? Block_Buffer_1 : Block_Buffer_2;
+  ram[0x7] = (uint8_t)(block_address >> 8);
+  sp = (uint8_t)(sp + 1u);
+  block_column = ram[0x100u + sp];
+  block_address = (uint16_t)(block_address + (block_column & 0x0fu));
+  ram[0x6] = (uint8_t)block_address;
+  restored_y = ram[0x4];
+  coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_Y_Position + local_x)] +
+    data[BlockBuffer_Y_Adder - 0x8000u + restored_y];
+  adjusted_y = (uint8_t)((coordinate_sum & 0xf0u) - 0x20u);
+  ram[0x2] = adjusted_y;
+  ram[0x3] = ram[(block_address + adjusted_y) & (RAM_SIZE - 1u)];
+  y = restored_y;
+  sp = (uint8_t)(sp + 1u);
+  a = ram[0x100u + sp];
+  return_coordinate = a == 0u
+    ? ram[(uint8_t)(SprObject_Y_Position + local_x)]
+    : ram[(uint8_t)(SprObject_X_Position + local_x)];
+  ram[0x4] = (uint8_t)(return_coordinate & 0x0fu);
+  a = ram[0x3];
+  carry_flag = (coordinate_sum & 0xf0u) >= 0x20u;
+  nz_value = a;
 }
 
 void DrawVine(void) {
@@ -13547,6 +13795,9 @@ void DumpTwoSpr(void) {
 }
 
 void DrawLargePlatform(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_draw_large_platform()) { return; }
+  #endif
   ldy_absx(Enemy_SprDataOffset); // get OAM data offset
   ram[0x2] = y; // store here
   iny(); // add 3 to it for offset
@@ -14436,9 +14687,22 @@ void RelativeMiscPosition(void) {
 }
 
 void RelativeEnemyPosition(void) {
-  lda_imm(0x1); // get coordinates of enemy object
-  ldy_imm(0x1); // relative to the screen
-  VariableObjOfsRelPos();
+  // Reviewed enemy-relative-position specialization; guarded by exact folded helper shapes.
+  const uint8_t initial_x = x;
+  const uint8_t object_index = (uint8_t)(initial_x + 1u);
+  uint8_t object_x;
+  uint8_t screen_x;
+  ram[0x0] = initial_x;
+  a = ram[(uint8_t)(SprObject_Y_Position + object_index)];
+  ram[SprObject_Rel_YPos + 1u] = a;
+  object_x = ram[(uint8_t)(SprObject_X_Position + object_index)];
+  screen_x = ram[ScreenLeft_X_Pos];
+  carry_flag = object_x >= screen_x;
+  a = (uint8_t)(object_x - screen_x);
+  ram[SprObject_Rel_XPos + 1u] = a;
+  y = 1u;
+  x = ram[ObjectOffset];
+  nz_value = x;
 }
 
 void RelativeBlockPosition(void) {
@@ -14527,20 +14791,96 @@ void SetOffscrBitsOffset(void) {
 }
 
 void GetOffScreenBitsSet(void) {
-  tya(); // save offscreen bits offset to stack for now
-  pha();
-  RunOffscrBitsSubs();
-  asl_acc(); // move low nybble to high nybble
-  asl_acc();
-  asl_acc();
-  asl_acc();
-  ora_zp(0x0); // mask together with previously saved low nybble
-  ram[0x0] = a; // store both here
-  pla(); // get offscreen bits offset from stack
-  tay();
-  lda_zp(0x0); // get value here and store elsewhere
+  // Reviewed fused offscreen-mask specialization; guarded by exact helper and table shapes.
+  const uint8_t object_index = x;
+  const uint8_t output_offset = y;
+  const uint8_t x_pixel_address = (uint8_t)(SprObject_X_Position + object_index);
+  const uint8_t x_page_address = (uint8_t)(SprObject_PageLoc + object_index);
+  const uint8_t y_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);
+  const uint8_t y_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);
+  const uint8_t *const x_defaults = &data[DefaultXOnscreenOfs - 0x8000u];
+  const uint8_t *const x_bit_table = &data[XOffscreenBitsData - 0x8000u];
+  const uint8_t *const y_edges = &data[HighPosUnitData - 0x8000u];
+  const uint8_t *const y_defaults = &data[DefaultYOnscreenOfs - 0x8000u];
+  const uint8_t *const y_bit_table = &data[YOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t x_bits;
+  uint8_t y_bits;
+  ram[0x100u + sp] = output_offset;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];
+    const uint8_t object_pixel = ram[x_pixel_address];
+    const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_page;
+    uint8_t page_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_page = ram[x_page_address];
+    page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));
+    table_index = x_defaults[side];
+    if ((page_diff & 0x80u) == 0u) {
+      table_index = x_defaults[side + 1u];
+      if (page_diff == 0u) {
+        ram[0x6] = 0x38u;
+        ram[0x5] = 0x08u;
+        if (pixel_diff < 0x38u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));
+        }
+      }
+    }
+    x_bits = x_bit_table[table_index];
+    if (x_bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
+    }
+  }
+  ram[0x0] = (uint8_t)(x_bits >> 4);
+  side = 1u;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = y_edges[side];
+    const uint8_t object_pixel = ram[y_pixel_address];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_high;
+    uint8_t high_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_high = ram[y_high_address];
+    high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));
+    table_index = y_defaults[side];
+    if ((high_diff & 0x80u) == 0u) {
+      table_index = y_defaults[side + 1u];
+      if (high_diff == 0u) {
+        ram[0x6] = 0x20u;
+        ram[0x5] = 0x04u;
+        if (pixel_diff < 0x20u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));
+        }
+      }
+    }
+    y_bits = y_bit_table[table_index];
+    if (y_bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
+    }
+  }
+  ram[0x0] = (uint8_t)((y_bits << 4) | ram[0x0]);
+  y = ram[0x100u + sp];
+  a = ram[0x0];
   ram[SprObject_OffscrBits + y] = a;
-  ldx_zp(ObjectOffset);
+  x = ram[ObjectOffset];
+  carry_flag = (y_bits & 0x10u) != 0u;
+  nz_value = x;
 }
 
 void RunOffscrBitsSubs(void) {
@@ -14560,75 +14900,101 @@ void RunOffscrBitsSubs(void) {
 }
 
 void GetXOffscreenBits(void) {
-  ram[0x4] = x; // save position in buffer to here
-  ldy_imm(0x1); // start with right side of screen
-  
-XOfsLoop:
-  lda_absy(ScreenEdge_X_Pos); // get pixel coordinate of edge
-  carry_flag = true; // get difference between pixel coordinate of edge
-  sbc_zpx(SprObject_X_Position); // and pixel coordinate of object position
-  ram[0x7] = a; // store here
-  lda_absy(ScreenEdge_PageLoc); // get page location of edge
-  sbc_zpx(SprObject_PageLoc); // subtract from page location of object position
-  ldx_absy(DefaultXOnscreenOfs); // load offset value here
-  cmp_imm(0x0);
-  // if beyond right edge or in front of left edge, branch
-  if (!neg_flag) {
-    ldx_absy(DefaultXOnscreenOfs + 1); // if not, load alternate offset value here
-    cmp_imm(0x1);
-    // if one page or more to the left of either edge, branch
-    if (neg_flag) {
-      lda_imm(0x38); // if no branching, load value here and store
-      ram[0x6] = a;
-      lda_imm(0x8); // load some other value and execute subroutine
-      DividePDiff();
+  // Reviewed table-driven horizontal offscreen specialization; guarded by exact lowered structures.
+  const uint8_t object_index = x;
+  const uint8_t object_pixel_address = (uint8_t)(SprObject_X_Position + object_index);
+  const uint8_t object_page_address = (uint8_t)(SprObject_PageLoc + object_index);
+  const uint8_t *const defaults = &data[DefaultXOnscreenOfs - 0x8000u];
+  const uint8_t *const bit_table = &data[XOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t bits;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];
+    const uint8_t object_pixel = ram[object_pixel_address];
+    const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_page;
+    uint8_t page_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_page = ram[object_page_address];
+    page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));
+    table_index = defaults[side];
+    if ((page_diff & 0x80u) == 0u) {
+      table_index = defaults[side + 1u];
+      if (page_diff == 0u) {
+        ram[0x6] = 0x38u;
+        ram[0x5] = 0x08u;
+        if (pixel_diff < 0x38u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));
+        }
+      }
+    }
+    bits = bit_table[table_index];
+    if (bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
     }
   }
-  // XLdBData:
-  lda_absx(XOffscreenBitsData); // get bits here
-  ldx_zp(0x4); // reobtain position in buffer
-  cmp_imm(0x0); // if bits not zero, branch to leave
-  if (zero_flag) {
-    dey(); // otherwise, do left side of screen now
-    if (!neg_flag) { goto XOfsLoop; } // branch if not already done with left side
-    // --------------------------------
-  }
+  a = bits;
+  x = object_index;
+  y = side;
+  carry_flag = true;
+  nz_value = bits != 0u ? bits : side;
 }
 
 void GetYOffscreenBits(void) {
-  ram[0x4] = x; // save position in buffer to here
-  ldy_imm(0x1); // start with top of screen
-  
-YOfsLoop:
-  lda_absy(HighPosUnitData); // load coordinate for edge of vertical unit
-  carry_flag = true;
-  sbc_zpx(SprObject_Y_Position); // subtract from vertical coordinate of object
-  ram[0x7] = a; // store here
-  lda_imm(0x1); // subtract one from vertical high byte of object
-  sbc_zpx(SprObject_Y_HighPos);
-  ldx_absy(DefaultYOnscreenOfs); // load offset value here
-  cmp_imm(0x0);
-  // if under top of the screen or beyond bottom, branch
-  if (!neg_flag) {
-    ldx_absy(DefaultYOnscreenOfs + 1); // if not, load alternate offset value here
-    cmp_imm(0x1);
-    // if one vertical unit or more above the screen, branch
-    if (neg_flag) {
-      lda_imm(0x20); // if no branching, load value here and store
-      ram[0x6] = a;
-      lda_imm(0x4); // load some other value and execute subroutine
-      DividePDiff();
+  // Reviewed table-driven vertical offscreen specialization; guarded by exact lowered structures.
+  const uint8_t object_index = x;
+  const uint8_t object_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);
+  const uint8_t object_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);
+  const uint8_t *const edge_pixels = &data[HighPosUnitData - 0x8000u];
+  const uint8_t *const defaults = &data[DefaultYOnscreenOfs - 0x8000u];
+  const uint8_t *const bit_table = &data[YOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t bits;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = edge_pixels[side];
+    const uint8_t object_pixel = ram[object_pixel_address];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_high;
+    uint8_t high_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_high = ram[object_high_address];
+    high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));
+    table_index = defaults[side];
+    if ((high_diff & 0x80u) == 0u) {
+      table_index = defaults[side + 1u];
+      if (high_diff == 0u) {
+        ram[0x6] = 0x20u;
+        ram[0x5] = 0x04u;
+        if (pixel_diff < 0x20u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));
+        }
+      }
+    }
+    bits = bit_table[table_index];
+    if (bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
     }
   }
-  // YLdBData:
-  lda_absx(YOffscreenBitsData); // get offscreen data bits using offset
-  ldx_zp(0x4); // reobtain position in buffer
-  cmp_imm(0x0);
-  if (zero_flag) {
-    dey(); // otherwise, do bottom of the screen now
-    if (!neg_flag) { goto YOfsLoop; }
-    // --------------------------------
-  }
+  a = bits;
+  x = object_index;
+  y = side;
+  carry_flag = true;
+  nz_value = bits != 0u ? bits : side;
 }
 
 void DividePDiff(void) {
@@ -14657,49 +15023,31 @@ void DividePDiff(void) {
 }
 
 void DrawSpriteObject(void) {
-  lda_zp(0x3); // get saved flip control bits
-  lsr_acc();
-  lsr_acc(); // move d1 into carry
-  lda_zp(0x0);
-  if (!carry_flag) { goto NoHFlip; } // if d1 not set, branch
-  ram[Sprite_Tilenumber + 4 + y] = a; // store first tile into second sprite
-  lda_zp(0x1); // and second into first sprite
-  ram[Sprite_Tilenumber + y] = a;
-  lda_imm(0x40); // activate horizontal flip OAM attribute
-  if (!zero_flag) { goto SetHFAt; } // and unconditionally branch
-  
-NoHFlip:
-  ram[Sprite_Tilenumber + y] = a; // store first tile into first sprite
-  lda_zp(0x1); // and second into second sprite
-  ram[Sprite_Tilenumber + 4 + y] = a;
-  lda_imm(0x0); // clear bit for horizontal flip
-  
-SetHFAt:
-  ora_zp(0x4); // add other OAM attributes if necessary
-  ram[Sprite_Attributes + y] = a; // store sprite attributes
-  ram[Sprite_Attributes + 4 + y] = a;
-  lda_zp(0x2); // now the y coordinates
-  ram[Sprite_Y_Position + y] = a; // note because they are
-  ram[Sprite_Y_Position + 4 + y] = a; // side by side, they are the same
-  lda_zp(0x5);
-  ram[Sprite_X_Position + y] = a; // store x coordinate, then
-  carry_flag = false; // add 8 pixels and store another to
-  adc_imm(0x8); // put them side by side
-  ram[Sprite_X_Position + 4 + y] = a;
-  lda_zp(0x2); // add eight pixels to the next y
-  carry_flag = false; // coordinate
-  adc_imm(0x8);
-  ram[0x2] = a;
-  tya(); // add eight to the offset in Y to
-  carry_flag = false; // move to the next two sprites
-  adc_imm(0x8);
-  tay();
-  inx(); // increment offset to return it to the
-  inx(); // routine that called this subroutine
-  // -------------------------------------------------------------------------------------
-  // unused space
-  //         .db $ff, $ff, $ff, $ff, $ff, $ff
-  // -------------------------------------------------------------------------------------
+  // Reviewed sprite-row specialization; guarded by the exact lowered structure.
+  const uint8_t local_x = x;
+  const uint8_t local_y = y;
+  const uint16_t right_sprite = (uint16_t)local_y + 4u;
+  const bool horizontal_flip = (ram[0x3] & 0x02u) != 0u;
+  const uint8_t left_tile = horizontal_flip ? ram[0x1] : ram[0x0];
+  const uint8_t right_tile = horizontal_flip ? ram[0x0] : ram[0x1];
+  const uint8_t attributes = (uint8_t)(ram[0x4] | (horizontal_flip ? 0x40u : 0x00u));
+  const uint8_t row_y = ram[0x2];
+  const uint8_t row_x = ram[0x5];
+  const uint16_t next_y = (uint16_t)local_y + 8u;
+  ram[Sprite_Tilenumber + local_y] = left_tile;
+  ram[Sprite_Tilenumber + right_sprite] = right_tile;
+  ram[Sprite_Attributes + local_y] = attributes;
+  ram[Sprite_Attributes + right_sprite] = attributes;
+  ram[Sprite_Y_Position + local_y] = row_y;
+  ram[Sprite_Y_Position + right_sprite] = row_y;
+  ram[Sprite_X_Position + local_y] = row_x;
+  ram[Sprite_X_Position + right_sprite] = (uint8_t)(row_x + 8u);
+  ram[0x2] = (uint8_t)(row_y + 8u);
+  a = (uint8_t)next_y;
+  y = a;
+  carry_flag = next_y > 0xffu;
+  x = (uint8_t)(local_x + 2u);
+  nz_value = x;
 }
 
 void SoundEngine(void) {

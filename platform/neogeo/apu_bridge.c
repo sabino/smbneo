@@ -1,4 +1,5 @@
 #include "apu_bridge.h"
+#include "apu_frame_units.h"
 
 #include <string.h>
 
@@ -148,94 +149,51 @@ static void restart_envelope(
     envelope->divider = (uint8_t)(control & 0x0fu);
 }
 
-static void clock_envelope(
-    NeogeoApuEnvelope *envelope,
-    uint8_t control
-) {
-    if ((control & 0x10u) != 0u) {
-        return;
-    }
-    if (envelope->divider != 0u) {
-        --envelope->divider;
-        return;
-    }
-
-    envelope->divider = (uint8_t)(control & 0x0fu);
-    if (envelope->decay != 0u) {
-        --envelope->decay;
-    } else if ((control & 0x20u) != 0u) {
-        envelope->decay = 0x0fu;
-    }
-}
-
 static void clock_frame_envelopes(NeogeoApuBridge *bridge) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_ENVELOPE_TICKS_PER_FRAME; ++tick) {
-        clock_envelope(
-            &bridge->pulse_envelope[0],
-            bridge->pulse_control[0]
-        );
-        clock_envelope(
-            &bridge->pulse_envelope[1],
-            bridge->pulse_control[1]
-        );
-        clock_envelope(
-            &bridge->noise_envelope,
-            bridge->noise_control
-        );
-    }
+    neogeo_apu_clock_envelope_4(
+        bridge->pulse_control[0],
+        &bridge->pulse_envelope[0].decay,
+        &bridge->pulse_envelope[0].divider
+    );
+    neogeo_apu_clock_envelope_4(
+        bridge->pulse_control[1],
+        &bridge->pulse_envelope[1].decay,
+        &bridge->pulse_envelope[1].divider
+    );
+    neogeo_apu_clock_envelope_4(
+        bridge->noise_control,
+        &bridge->noise_envelope.decay,
+        &bridge->noise_envelope.divider
+    );
 }
 
 static void clock_triangle_linear_counter(
     NeogeoApuBridge *bridge
 ) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_LINEAR_TICKS_PER_FRAME; ++tick) {
-        if (bridge->triangle_linear_reload != 0u) {
-            bridge->triangle_linear_counter =
-                (uint8_t)(bridge->triangle_control & 0x7fu);
-        } else if (bridge->triangle_linear_counter != 0u) {
-            --bridge->triangle_linear_counter;
-        }
-
-        if ((bridge->triangle_control & 0x80u) == 0u) {
-            bridge->triangle_linear_reload = 0;
-        }
-    }
-}
-
-static void clock_length_counter(
-    uint8_t *counter,
-    uint8_t halted
-) {
-    if (halted == 0u && *counter != 0u) {
-        --*counter;
-    }
+    neogeo_apu_clock_triangle_linear_4(
+        bridge->triangle_control,
+        &bridge->triangle_linear_counter,
+        &bridge->triangle_linear_reload
+    );
 }
 
 static void clock_frame_length_counters(NeogeoApuBridge *bridge) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_LENGTH_TICKS_PER_FRAME; ++tick) {
-        clock_length_counter(
-            &bridge->pulse_length[0],
-            (uint8_t)(bridge->pulse_control[0] & 0x20u)
-        );
-        clock_length_counter(
-            &bridge->pulse_length[1],
-            (uint8_t)(bridge->pulse_control[1] & 0x20u)
-        );
-        clock_length_counter(
-            &bridge->triangle_length,
-            (uint8_t)(bridge->triangle_control & 0x80u)
-        );
-        clock_length_counter(
-            &bridge->noise_length,
-            (uint8_t)(bridge->noise_control & 0x20u)
-        );
-    }
+    neogeo_apu_clock_length_2(
+        &bridge->pulse_length[0],
+        (uint8_t)(bridge->pulse_control[0] & 0x20u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->pulse_length[1],
+        (uint8_t)(bridge->pulse_control[1] & 0x20u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->triangle_length,
+        (uint8_t)(bridge->triangle_control & 0x80u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->noise_length,
+        (uint8_t)(bridge->noise_control & 0x20u)
+    );
 }
 
 static uint16_t pulse_sweep_target_period(
@@ -308,6 +266,7 @@ static void clock_pulse_sweep(
         bridge->pulse_sweep_mute[channel] == 0u
     ) {
         bridge->pulse_timer[channel] = target;
+        bridge->pulse_period_dirty |= (uint8_t)(1u << channel);
         refresh_pulse_sweep_mute(bridge, channel);
     }
 
@@ -389,25 +348,32 @@ static uint8_t noise_is_audible(
 }
 
 static void build_ym_registers(
-    const NeogeoApuBridge *bridge,
+    NeogeoApuBridge *bridge,
     uint8_t registers[NEOGEO_APU_YM_REGISTER_LIMIT]
 ) {
     static const uint8_t noise_periods[16] = {
         1, 1, 1, 2, 4, 7, 9, 11,
         14, 18, 27, 31, 31, 31, 31, 31
     };
-    uint16_t period;
     uint8_t pulse_volume[2];
     uint8_t noise_volume;
     uint8_t mixer = SSG_ALL_CHANNELS_DISABLED;
     uint8_t channel;
 
-    memset(registers, 0, NEOGEO_APU_YM_REGISTER_LIMIT);
-
     for (channel = 0; channel < 2u; ++channel) {
         uint8_t base = (uint8_t)(channel * 2u);
+        uint8_t dirty_mask = (uint8_t)(1u << channel);
+        uint16_t period;
 
-        period = scale_period(bridge->pulse_timer[channel], 286u);
+        if ((bridge->pulse_period_dirty & dirty_mask) != 0u) {
+            bridge->pulse_ssg_period[channel] = scale_period(
+                bridge->pulse_timer[channel],
+                286u
+            );
+            bridge->pulse_period_dirty &= (uint8_t)~dirty_mask;
+        }
+        period = bridge->pulse_ssg_period[channel];
+
         registers[base] = (uint8_t)period;
         registers[base + 1u] = (uint8_t)(period >> 8);
         pulse_volume[channel] = envelope_volume(
@@ -472,6 +438,8 @@ static void build_ym_registers(
 
 void neogeo_apu_bridge_init(NeogeoApuBridge *bridge) {
     memset(bridge, 0, sizeof(*bridge));
+    bridge->pulse_ssg_period[0] = scale_period(0u, 286u);
+    bridge->pulse_ssg_period[1] = scale_period(0u, 286u);
     bridge->triangle_delta_n = triangle_delta_n(0);
     refresh_pulse_sweep_mute(bridge, 0);
     refresh_pulse_sweep_mute(bridge, 1);
@@ -509,6 +477,7 @@ void neogeo_apu_bridge_write(
                 (uint16_t)(
                     (bridge->pulse_timer[channel] & 0x0700u) | value
                 );
+            bridge->pulse_period_dirty |= (uint8_t)(1u << channel);
             refresh_pulse_sweep_mute(bridge, channel);
             break;
 
@@ -521,6 +490,7 @@ void neogeo_apu_bridge_write(
                     (bridge->pulse_timer[channel] & 0x00ffu) |
                     (((uint16_t)value & 0x07u) << 8)
                 );
+            bridge->pulse_period_dirty |= (uint8_t)(1u << channel);
             if (
                 (
                     bridge->master_enable &

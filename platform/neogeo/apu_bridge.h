@@ -34,6 +34,8 @@ typedef struct {
     uint8_t pulse_sweep_reload[2];
     uint8_t pulse_sweep_mute[2];
     uint16_t pulse_timer[2];
+    uint16_t pulse_ssg_period[2];
+    uint8_t pulse_period_dirty;
     uint8_t pulse_length[2];
     NeogeoApuEnvelope pulse_envelope[2];
 

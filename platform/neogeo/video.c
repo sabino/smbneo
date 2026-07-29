@@ -1,8 +1,11 @@
 #include "video.h"
 
+#include "background_chain.h"
+#include "background_update_plan.h"
 #include "constants.h"
 #include "cpu.h"
 #include "external.h"
+#include "hud_update.h"
 #include "input_policy.h"
 #include "oam_tiles.h"
 #include "oam_visibility.h"
@@ -17,12 +20,9 @@
 #define NES_CROP_TOP 8
 #define NES_CONTENT_X ((NEO_SCREEN_WIDTH - SCREEN_WIDTH) / 2u)
 
-#define FIX_VISIBLE_Y 2u
 #define FIX_CONTENT_X (NES_CONTENT_X / 8u)
 #define FIX_CONTENT_COLUMNS 32u
-#define FIX_HUD_ROWS 3u
-#define FIX_NES_TILE_BASE 1u
-#define FIX_BLANK_TILE 513u
+#define FIX_BLANK_TILE NEOGEO_HUD_FIX_BLANK_TILE
 #define FIX_SOLID_TILE 514u
 #define FIX_BORDER_PALETTE 15u
 
@@ -80,7 +80,24 @@
 #define NEO_BACKDROP_COLOR (*(volatile uint16_t *)0x401ffe)
 
 #define RENDER_PALETTE_COUNT 12u
-#define HUD_ENTRY_COUNT (FIX_HUD_ROWS * FIX_CONTENT_COLUMNS)
+#define HUD_ENTRY_COUNT NEOGEO_HUD_ENTRY_COUNT
+
+_Static_assert(
+    FIX_CONTENT_X == NEOGEO_HUD_FIX_CONTENT_X,
+    "HUD FIX-map X origin must match the renderer crop"
+);
+_Static_assert(
+    ADDR_FIXMAP == NEOGEO_HUD_FIXMAP_BASE,
+    "HUD FIX-map base must match ngdevkit"
+);
+_Static_assert(
+    BACKGROUND_STRIPS == NEOGEO_BACKGROUND_VISIBLE_STRIPS,
+    "background update planner must cover every hardware strip"
+);
+_Static_assert(
+    SPRITE_SET_COUNT == NEOGEO_PPU_BACKGROUND_RENDER_BANKS,
+    "PPU dirty tracking must cover every hidden renderer bank"
+);
 
 typedef struct {
     uint16_t tile;
@@ -107,16 +124,12 @@ static volatile uint16_t neogeo_vblank_signal;
 static BackgroundTileCache
     background_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
 static uint16_t background_x_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t background_chain_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint32_t
-    background_generation_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t
-    background_world_column_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint16_t background_config_cache[SPRITE_SET_COUNT];
 static uint8_t background_first_column[SPRITE_SET_COUNT];
 static uint8_t background_ring_origin[SPRITE_SET_COUNT];
 static uint8_t background_ring_valid[SPRITE_SET_COUNT];
-static uint32_t background_built_generation[SPRITE_SET_COUNT];
+static uint8_t background_chain_origin[SPRITE_SET_COUNT];
+static uint8_t background_chain_valid[SPRITE_SET_COUNT];
 
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
 static uint8_t active_oam_count[SPRITE_SET_COUNT];
@@ -132,14 +145,7 @@ static uint8_t next_background_driver_count;
 static uint16_t next_background_y_word;
 static uint16_t next_background_x_word[BACKGROUND_MAX_DRIVERS];
 
-static uint16_t desired_hud[HUD_ENTRY_COUNT];
-static uint16_t cached_hud[HUD_ENTRY_COUNT];
-static uint32_t built_hud_generation;
-static uint16_t built_hud_config;
-static uint8_t hud_upload_pending;
-static uint8_t hud_changed_count;
-static uint8_t hud_upload_cursor;
-static uint8_t hud_changed_indices[HUD_ENTRY_COUNT];
+static NeoGeoHudState hud_state;
 static uint16_t desired_palettes[24][4];
 static uint16_t cached_palettes[24][4];
 static uint16_t desired_backdrop;
@@ -200,6 +206,30 @@ void neogeo_video_wait_for_present(void) {
         wait_for_next_vblank();
     }
 }
+
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+void neogeo_video_benchmark_invalidate(void) {
+    memset(background_cache, 0xff, sizeof(background_cache));
+    memset(background_x_cache, 0xff, sizeof(background_x_cache));
+    memset(background_config_cache, 0xff, sizeof(background_config_cache));
+    memset(background_ring_valid, 0, sizeof(background_ring_valid));
+    memset(background_chain_valid, 0, sizeof(background_chain_valid));
+
+    memset(cached_palettes, 0xff, sizeof(cached_palettes));
+    cached_backdrop = 0xffffu;
+    built_palette_generation = 0xffffffffu;
+    palette_upload_pending = 0u;
+    palette_changed_count = 0u;
+
+    memset(hud_state.cached, 0xff, sizeof(hud_state.cached));
+    hud_state.built_generation = 0xffffffffu;
+    hud_state.built_config = 0xffffu;
+    hud_state.upload_pending = 0u;
+    hud_state.changed_count = 0u;
+    hud_state.upload_cursor = 0u;
+    neogeo_ppu_hud_dirty_invalidate();
+}
+#endif
 
 /*
  * LSPC requires at least twelve 68000 cycles between VRAM register accesses.
@@ -544,11 +574,15 @@ static void build_background(uint8_t set, uint8_t show_hud) {
     uint8_t first_tile_y = show_hud ? 4u : 1u;
     uint8_t tile_rows = show_hud ? 26u : 28u;
     uint16_t output_y = show_hud ? 24u : 0u;
-    uint32_t source_generation = show_hud
-        ? neogeo_ppu_background_hud_generation
-        : neogeo_ppu_background_full_generation;
-    uint8_t scan_background;
+    uint8_t *dirty_columns = neogeo_ppu_background_dirty_columns(
+        set,
+        show_hud
+    );
+    NeoGeoBackgroundUpdatePlan update_plan;
+    uint8_t previous_ring_valid = background_ring_valid[set];
+    uint8_t forward_delta = 0u;
     uint8_t reset_physical_map;
+    uint8_t force_full_rebuild;
     uint8_t ring_origin;
     uint8_t strip;
 
@@ -560,18 +594,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
 
     reset_physical_map =
         (uint8_t)(background_config_cache[set] != render_config);
-    scan_background = (uint8_t)(
-        background_ring_valid[set] == 0u ||
-        reset_physical_map != 0u ||
-        background_first_column[set] != first_column ||
-        background_built_generation[set] != source_generation
-    );
     if (reset_physical_map != 0u) {
-        memset(
-            background_generation_cache[set],
-            0xff,
-            sizeof(background_generation_cache[set])
-        );
         background_config_cache[set] = render_config;
     }
 
@@ -581,13 +604,13 @@ static void build_background(uint8_t set, uint8_t show_hud) {
      * fine scrolling becomes one or two driver updates on the hidden bank.
      */
     if (background_ring_valid[set] != 0u) {
-        uint8_t delta = (uint8_t)(
+        forward_delta = (uint8_t)(
             (first_column - background_first_column[set]) & 63u
         );
 
-        if (delta < BACKGROUND_STRIPS) {
+        if (forward_delta < BACKGROUND_STRIPS) {
             uint8_t origin =
-                (uint8_t)(background_ring_origin[set] + delta);
+                (uint8_t)(background_ring_origin[set] + forward_delta);
 
             if (origin >= BACKGROUND_STRIPS) {
                 origin = (uint8_t)(origin - BACKGROUND_STRIPS);
@@ -595,43 +618,36 @@ static void build_background(uint8_t set, uint8_t show_hud) {
             background_ring_origin[set] = origin;
         } else {
             background_ring_origin[set] = 0;
-            memset(
-                background_generation_cache[set],
-                0xff,
-                sizeof(background_generation_cache[set])
-            );
-            memset(
-                background_world_column_cache[set],
-                0xff,
-                sizeof(background_world_column_cache[set])
-            );
         }
     } else {
         background_ring_valid[set] = 1;
         background_ring_origin[set] = 0;
-        memset(
-            background_generation_cache[set],
-            0xff,
-            sizeof(background_generation_cache[set])
-        );
-        memset(
-            background_world_column_cache[set],
-            0xff,
-            sizeof(background_world_column_cache[set])
-        );
     }
 
     background_first_column[set] = first_column;
     ring_origin = background_ring_origin[set];
     next_background_active = 1;
+    force_full_rebuild = (uint8_t)(
+        previous_ring_valid == 0u ||
+        reset_physical_map != 0u ||
+        forward_delta >= BACKGROUND_STRIPS
+    );
+    neogeo_background_plan_updates(
+        first_column,
+        forward_delta,
+        force_full_rebuild,
+        dirty_columns,
+        &update_plan
+    );
 
-    if (scan_background != 0u) {
+    if (update_plan.count != 0u) {
+        uint8_t plan_index;
+
         write_vram_mod(1);
-        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+        for (plan_index = 0u; plan_index < update_plan.count; ++plan_index) {
+            strip = update_plan.logical_strips[plan_index];
             uint8_t world_column =
                 (uint8_t)((first_column + strip) & 63u);
-            uint32_t column_generation =
-                neogeo_ppu_column_generation[world_column];
             uint8_t physical_strip = (uint8_t)(ring_origin + strip);
 
             if (physical_strip >= BACKGROUND_STRIPS) {
@@ -639,12 +655,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
                     (uint8_t)(physical_strip - BACKGROUND_STRIPS);
             }
 
-            if (
-                background_world_column_cache[set][physical_strip] !=
-                    world_column ||
-                background_generation_cache[set][physical_strip] !=
-                    column_generation
-            ) {
+            {
                 uint8_t source_x = (uint8_t)(world_column & 31u);
                 uint16_t nametable_offset =
                     (world_column & 32u) ? 0x0400u : 0u;
@@ -736,14 +747,9 @@ static void build_background(uint8_t set, uint8_t show_hud) {
                     cached->attributes = attributes;
                     previous_physical_row = physical_row;
                 }
-                background_world_column_cache[set][physical_strip] =
-                    world_column;
-                background_generation_cache[set][physical_strip] =
-                    column_generation;
             }
         }
     }
-    background_built_generation[set] = source_generation;
 
     /*
      * Hardware sticky sprites inherit the preceding strip's position, height,
@@ -799,6 +805,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
 }
 
 static void prepare_background_hidden(uint8_t set) {
+    NeoGeoBackgroundChainPlan chain_plan;
     uint8_t ring_origin;
     uint8_t strip;
 
@@ -806,36 +813,48 @@ static void prepare_background_hidden(uint8_t set) {
         return;
     }
     ring_origin = next_background_drivers[0];
+    chain_plan = neogeo_background_chain_plan(
+        background_chain_valid[set],
+        background_chain_origin[set],
+        ring_origin
+    );
     write_vram_mod(1);
 
     /*
-     * A hidden bank's prospective drivers must be real chain roots.  Clear
-     * them unconditionally before writing any sticky followers so stale SCB3
-     * state can never chain one background bank into its neighbor.
+     * Reconcile every SCB3 word after initialization/invalidation. Thereafter
+     * a ring-origin change affects only the entering root and the old wrapped
+     * root. Clear the new root before making the old one sticky so even an
+     * interrupted hidden-bank update cannot join neighboring sprite banks.
      */
-    for (strip = 0; strip < next_background_driver_count; ++strip) {
-        uint8_t physical_strip = next_background_drivers[strip];
+    if (chain_plan.full_rebuild != 0u) {
+        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+            uint8_t sticky = (uint8_t)(
+                strip != 0u && strip != ring_origin
+            );
 
-        write_vram_address((uint16_t)(
-            ADDR_SCB3 + background_hardware_sprite(set, physical_strip)
-        ));
-        write_vram_data(0);
-        background_chain_cache[set][physical_strip] = 0;
-    }
-    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
-        uint8_t sticky = (uint8_t)(
-            strip != ring_origin &&
-            (ring_origin == 0u || strip != 0u)
-        );
-
-        if (background_chain_cache[set][strip] != sticky) {
             write_vram_address((uint16_t)(
                 ADDR_SCB3 + background_hardware_sprite(set, strip)
             ));
             write_vram_data(sticky != 0u ? NEO_SCB3_STICKY : 0u);
-            background_chain_cache[set][strip] = sticky;
+        }
+    } else {
+        if (chain_plan.clear_root != 0xffu) {
+            strip = chain_plan.clear_root;
+            write_vram_address((uint16_t)(
+                ADDR_SCB3 + background_hardware_sprite(set, strip)
+            ));
+            write_vram_data(0u);
+        }
+        if (chain_plan.set_sticky != 0xffu) {
+            strip = chain_plan.set_sticky;
+            write_vram_address((uint16_t)(
+                ADDR_SCB3 + background_hardware_sprite(set, strip)
+            ));
+            write_vram_data(NEO_SCB3_STICKY);
         }
     }
+    background_chain_origin[set] = ring_origin;
+    background_chain_valid[set] = 1u;
     for (strip = 0; strip < next_background_driver_count; ++strip) {
         uint8_t physical_strip = next_background_drivers[strip];
         uint16_t x_word = next_background_x_word[strip];
@@ -920,91 +939,51 @@ static void build_oam_sprites(uint8_t set) {
 
 static void build_hud(uint8_t show_hud) {
     uint16_t pattern_base = (ppu_ctrl & 0x10u) ? 256u : 0u;
-    uint16_t render_config =
-        (uint16_t)(pattern_base | (show_hud != 0u ? 1u : 0u));
-    uint8_t row;
-
-    if (
-        built_hud_generation == neogeo_ppu_hud_generation &&
-        built_hud_config == render_config
-    ) {
-        return;
-    }
 
     /*
      * NES tile row 0 is overscan.  Rows 1..3 become the three visible FIX
      * rows, keeping the status bar stationary while SCB strips scroll below.
      */
-    hud_changed_count = 0;
-    for (row = 0; row < FIX_HUD_ROWS; ++row) {
-        uint8_t source_y = (uint8_t)(row + 1u);
-        uint8_t column;
-
-        for (column = 0; column < FIX_CONTENT_COLUMNS; ++column) {
-            uint16_t index =
-                (uint16_t)row * FIX_CONTENT_COLUMNS + column;
-            uint16_t entry = FIX_BLANK_TILE;
-
-            if (show_hud != 0u) {
-                uint8_t tile =
-                    nametable[(uint16_t)source_y * 32u + column];
-                uint8_t palette_number =
-                    background_palette_index(0, column, source_y);
-
-                entry = (uint16_t)(
-                    ((uint16_t)palette_number << 12) +
-                    FIX_NES_TILE_BASE +
-                    pattern_base +
-                    tile
-                );
-            }
-            desired_hud[index] = entry;
-            if (cached_hud[index] != entry) {
-                hud_changed_indices[hud_changed_count] = (uint8_t)index;
-                ++hud_changed_count;
-            }
-        }
-    }
-    built_hud_generation = neogeo_ppu_hud_generation;
-    built_hud_config = render_config;
-    hud_upload_cursor = 0;
-    hud_upload_pending = (uint8_t)(hud_changed_count != 0u);
+    (void)neogeo_hud_build(
+        &hud_state,
+        nametable,
+        neogeo_ppu_hud_generation,
+        neogeo_ppu_hud_dirty_rows,
+        &neogeo_ppu_hud_dirty_tracking_valid,
+        pattern_base,
+        show_hud
+    );
 }
 
 static void upload_hud_chunk(void) {
     uint8_t chunk_end;
 
-    if (hud_upload_pending == 0u) {
+    if (hud_state.upload_pending == 0u) {
         return;
     }
     chunk_end = (uint8_t)(
-        hud_upload_cursor +
+        hud_state.upload_cursor +
         neogeo_vblank_hud_chunk(
-            (uint16_t)(hud_changed_count - hud_upload_cursor)
+            (uint16_t)(
+                hud_state.changed_count - hud_state.upload_cursor
+            )
         )
     );
     write_vram_mod(1);
-    while (hud_upload_cursor < chunk_end) {
-        uint16_t index = hud_changed_indices[hud_upload_cursor];
-        uint16_t value = desired_hud[index];
+    while (hud_state.upload_cursor < chunk_end) {
+        uint16_t index =
+            hud_state.changed_indices[hud_state.upload_cursor];
+        uint16_t value = hud_state.desired[index];
 
-        uint8_t row = (uint8_t)(index >> 5);
-        uint8_t column = (uint8_t)(index & 31u);
-
-        write_vram_address((uint16_t)(
-            ADDR_FIXMAP +
-            ((FIX_CONTENT_X + column) << 5) +
-            FIX_VISIBLE_Y +
-            row
-        ));
+        write_vram_address(neogeo_hud_fixmap_address((uint8_t)index));
         write_vram_data(value);
-        cached_hud[index] = value;
-        ++hud_upload_cursor;
+        hud_state.cached[index] = value;
+        ++hud_state.upload_cursor;
     }
-    if (hud_upload_cursor == hud_changed_count) {
-        hud_upload_pending = 0;
-        hud_changed_count = 0;
-        hud_upload_cursor = 0;
+    if (hud_state.upload_cursor == hud_state.changed_count) {
+        hud_state.upload_pending = 0;
+        hud_state.changed_count = 0;
+        hud_state.upload_cursor = 0;
     }
 }
 
@@ -1140,24 +1119,9 @@ void neogeo_video_init(void) {
 
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
-    memset(background_chain_cache, 0, sizeof(background_chain_cache));
-    memset(
-        background_generation_cache,
-        0xff,
-        sizeof(background_generation_cache)
-    );
-    memset(
-        background_world_column_cache,
-        0xff,
-        sizeof(background_world_column_cache)
-    );
     memset(background_config_cache, 0xff, sizeof(background_config_cache));
     memset(background_ring_valid, 0, sizeof(background_ring_valid));
-    memset(
-        background_built_generation,
-        0xff,
-        sizeof(background_built_generation)
-    );
+    memset(background_chain_valid, 0, sizeof(background_chain_valid));
     memset(active_oam_count, 0, sizeof(active_oam_count));
     memset(active_background, 0, sizeof(active_background));
     memset(
@@ -1170,15 +1134,16 @@ void neogeo_video_init(void) {
     built_palette_generation = 0xffffffffu;
     palette_upload_pending = 0;
     palette_changed_count = 0;
-    built_hud_generation = 0xffffffffu;
-    built_hud_config = 0xffffu;
-    hud_upload_pending = 0;
-    hud_changed_count = 0;
-    hud_upload_cursor = 0;
+    hud_state.built_generation = 0xffffffffu;
+    hud_state.built_config = 0xffffu;
+    hud_state.upload_pending = 0;
+    hud_state.changed_count = 0;
+    hud_state.upload_cursor = 0;
+    neogeo_ppu_hud_dirty_invalidate();
 
     for (i = 0; i < HUD_ENTRY_COUNT; ++i) {
-        desired_hud[i] = FIX_BLANK_TILE;
-        cached_hud[i] = FIX_BLANK_TILE;
+        hud_state.desired[i] = FIX_BLANK_TILE;
+        hud_state.cached[i] = FIX_BLANK_TILE;
     }
 
     build_palette_state();
@@ -1219,7 +1184,7 @@ void neogeo_video_render(void) {
     commit_phase = neogeo_vblank_choose_commit_phase(
         1u,
         palette_changed_count,
-        hud_changed_count
+        hud_state.changed_count
     );
     share_live_with_swap = (uint8_t)(
         commit_phase == NEO_VBLANK_COMMIT_SHARED_LIVE_AND_SCB
@@ -1238,7 +1203,7 @@ void neogeo_video_render(void) {
     while (
         (palette_upload_pending != 0u &&
             share_live_with_swap == 0u) ||
-        (hud_upload_pending != 0u && share_live_with_swap == 0u)
+        (hud_state.upload_pending != 0u && share_live_with_swap == 0u)
     ) {
         wait_for_next_vblank();
         upload_palette_changes();

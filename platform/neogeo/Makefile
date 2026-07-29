@@ -18,19 +18,43 @@ WEB_MROM := $(WEB_BUILD)/smbneo-m1.m1
 WEB_VROM := $(WEB_BUILD)/smbneo-v1.v1
 WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
+BACKGROUND_UPDATE_PLAN_TEST := $(BUILD)/test_neogeo_background_update_plan
+HUD_UPDATE_TEST := $(BUILD)/test_neogeo_hud_updates
+BACKGROUND_CHAIN_TEST := $(BUILD)/test_neogeo_background_chain
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
 REPLAY_CHECKPOINT_TEST := $(BUILD)/test_neogeo_replay_checkpoint
 JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
+COLLISION_CORE_TEST := $(BUILD)/test_collision_core
+BLOCK_BUFFER_COLLISION_TEST := $(BUILD)/test_block_buffer_collision
+BOUNDING_BOX_CORE_TEST := $(BUILD)/test_bounding_box_core
+ENEMY_BOUNDING_BOX_TEST := $(BUILD)/test_enemy_bounding_box
+MOVE_OBJECT_HORIZ_TEST := $(BUILD)/test_move_object_horizontally
+RELATIVE_ENEMY_POSITION_TEST := $(BUILD)/test_relative_enemy_position
+DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
+MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
+SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
+CORE_FAST_PATHS_TEST := $(BUILD)/test_neogeo_core_fast_paths
+DRAW_LARGE_PLATFORM_FAST_TEST := $(BUILD)/test_draw_large_platform_fast
+SPR_OBJECT_OFFSCREEN_FAST_TEST := $(BUILD)/test_spr_object_offscreen_fast
+ENEMY_BG_COLLISION_FAST_TEST := $(BUILD)/test_enemy_bg_collision_fast
+ENEMY_COLLISION_FAST_TEST := $(BUILD)/test_enemy_collision_fast
+RENDER_AREA_GRAPHICS_FAST_TEST := $(BUILD)/test_render_area_graphics_fast
+READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
+OFFSCREEN_BITS_TEST := $(BUILD)/test_offscreen_bits
+TOP_SCORE_CHECK_TEST := $(BUILD)/test_top_score_check
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
+APU_FRAME_UNITS_TEST := $(BUILD)/test_neogeo_apu_frame_units
 AUDIO_PACKET_TEST := $(BUILD)/test_neogeo_audio_packet
 AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
 OAM_TILES_TEST := $(BUILD)/test_neogeo_oam_tiles
 PALETTE_POLICY_TEST := $(BUILD)/test_neogeo_palette_policy
 VBLANK_BUDGET_TEST := $(BUILD)/test_neogeo_vblank_budget
+VRAM_BATCH_TEST := $(BUILD)/test_neogeo_vram_batch
+VRAM_BATCH_SANITIZE_TEST := $(BUILD)/test_neogeo_vram_batch_sanitize
 GAMEROM := smbneo
 SMBNEO_NGH := 2026
 
@@ -76,7 +100,8 @@ LDFLAGS := \
 	-Wl,--defsym=rom_NGH_ID=0x$(SMBNEO_NGH)
 
 ENGINE_SOURCES := \
-	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
+	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c \
+	core_fast_paths.c
 CORE_NAMES := instructions code data cpu
 ENGINE_OBJECTS := \
 	$(ENGINE_SOURCES:%.c=$(BUILD)/%.o) \
@@ -94,7 +119,8 @@ DEPENDENCIES = \
 	$(BUILD)/title_data_stub.d \
 	$(BUILD)/smbneogeo-title.d \
 	$(REPLAY_MAIN_OBJECT:.o=.d) \
-	$(REPLAY_GATE_OBJECT:.o=.d)
+	$(REPLAY_GATE_OBJECT:.o=.d) \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAY_VIDEO_OBJECT:.o=.d),)
 
 PROM := $(ROMDIR)/$(GAMEROM)-p1.p1
 CROM1 := $(ROMDIR)/$(GAMEROM)-c1.c1
@@ -110,12 +136,16 @@ GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
 REPLAY_FM2 ?=
+REPLAY_DATA_HEADER ?=
 REPLAY_FAST ?= 0
 REPLAY_HARDWARE_PLAYABLE ?= 0
 REPLAY_TAIL_FRAMES ?= 1800
 REPLAY_BOOTSTRAP_FRAMES ?= 7
 REPLAY_AREA_INIT_HOLD_FRAMES ?= 1
 REPLAY_STAGE_SETTLE_FRAMES ?= 2
+REPLAY_WINDOW_BENCH ?= 0
+REPLAY_WINDOWS ?= 3435:3554,25691:25810
+REPLAY_WINDOW_WARMUP_FRAMES ?= 240
 REPLAY_EVIDENCE_TIMEOUT ?= 7200
 REPLAY_EVIDENCE_OVERCLOCK ?= 0
 REPLAY_EVIDENCE_DIR ?=
@@ -152,13 +182,17 @@ REPLAY_VARIANT := $(if $(filter 1,$(REPLAY_FAST)),fast,rendered)
 REPLAYDIR := $(BUILD)/replay-$(REPLAY_VARIANT)
 REPLAY_ROMDIR := $(REPLAYDIR)/rom
 REPLAY_HEADER := $(REPLAYDIR)/smb_replay_data.h
+REPLAY_WINDOW_HEADER := $(REPLAYDIR)/smb_neogeo_replay_windows.h
 REPLAY_MAIN_OBJECT := $(REPLAYDIR)/replay_main.o
 REPLAY_GATE_OBJECT := $(REPLAYDIR)/replay_gate.o
+REPLAY_VIDEO_OBJECT := $(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAYDIR)/video.o,$(BUILD)/video.o)
 REPLAY_TARGET := $(REPLAYDIR)/smbneogeo-replay.elf
 REPLAY_MAP := $(REPLAYDIR)/smbneogeo-replay.map
+REPLAY_ENGINE_OBJECTS := \
+	$(patsubst $(BUILD)/video.o,$(REPLAY_VIDEO_OBJECT),$(ENGINE_OBJECTS))
 REPLAY_OBJECTS := \
 	$(REPLAY_MAIN_OBJECT) $(REPLAY_GATE_OBJECT) \
-	$(ENGINE_OBJECTS) $(BUILD)/smbneogeo-title.o
+	$(REPLAY_ENGINE_OBJECTS) $(BUILD)/smbneogeo-title.o
 REPLAY_PROM := $(REPLAY_ROMDIR)/$(GAMEROM)-p1.p1
 REPLAY_CROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-c1.c1
 REPLAY_CROM2 := $(REPLAY_ROMDIR)/$(GAMEROM)-c2.c2
@@ -187,11 +221,17 @@ REPLAY_POLICY_FLAG := \
 	$(if $(filter 1,$(REPLAY_HARDWARE_PLAYABLE)),--hardware-playable,)
 REPLAY_FAST_FLAG := \
 	$(if $(filter 1,$(REPLAY_FAST)),-DSMB_NEOGEO_REPLAY_FAST,)
+REPLAY_WINDOW_FLAG := \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),-DSMB_NEOGEO_REPLAY_WINDOW_BENCH,)
+REPLAY_WINDOW_DEPENDENCY := \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAY_WINDOW_HEADER),)
+REPLAY_WINDOW_TOOL := $(ROOT)/tools/neogeo_replay_window.py
 
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen verify-sound-driver assets \
+	all elf test test-vram-batch-sanitize verify verify-codegen \
+	verify-sound-driver assets \
 	native-roms cart compat-cart hardware-cart neosd-cart run web \
 	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
@@ -237,26 +277,55 @@ $(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(REPLAY_HEADER): FORCE | $(REPLAYDIR)
-	@test -n "$(REPLAY_FM2)" || { \
-		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+	@test -z "$(REPLAY_FM2)" || test -z "$(REPLAY_DATA_HEADER)" || { \
+		echo "set only one of REPLAY_FM2 or REPLAY_DATA_HEADER" >&2; \
 		exit 2; \
 	}
-	$(PYTHON) $(ROOT)/tools/rec_tool.py emit-fm2-c \
-		"$(REPLAY_FM2)" \
-		--symbol-prefix smb_replay \
-		$(REPLAY_POLICY_FLAG) \
+	@test -n "$(REPLAY_FM2)" || test -n "$(REPLAY_DATA_HEADER)" || { \
+		echo "REPLAY_FM2 or REPLAY_DATA_HEADER is required" >&2; \
+		exit 2; \
+	}
+	@if test -n "$(REPLAY_DATA_HEADER)"; then \
+		test -f "$(REPLAY_DATA_HEADER)" || { \
+			echo "replay data header is missing: $(REPLAY_DATA_HEADER)" >&2; \
+			exit 2; \
+		}; \
+		cp -- "$(REPLAY_DATA_HEADER)" "$@"; \
+	else \
+		$(PYTHON) $(ROOT)/tools/rec_tool.py emit-fm2-c \
+			"$(REPLAY_FM2)" \
+			--symbol-prefix smb_replay \
+			$(REPLAY_POLICY_FLAG) \
+			--output "$@"; \
+	fi
+
+$(REPLAY_WINDOW_HEADER): FORCE $(REPLAY_WINDOW_TOOL) | $(REPLAYDIR)
+	@test "$(REPLAY_WINDOW_BENCH)" = "1" || { \
+		echo "window metadata requires REPLAY_WINDOW_BENCH=1" >&2; \
+		exit 2; \
+	}
+	@test "$(REPLAY_FAST)" = "0" || { \
+		echo "replay-window benchmarking requires REPLAY_FAST=0" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(REPLAY_WINDOW_TOOL) emit-header \
+		--windows "$(REPLAY_WINDOWS)" \
+		--warmup "$(REPLAY_WINDOW_WARMUP_FRAMES)" \
 		--output "$@"
 
 $(REPLAY_MAIN_OBJECT): \
 		replay_main.c replay_checkpoint.h replay_gate.h replay_timing.h \
-		$(REPLAY_HEADER) | $(REPLAYDIR)
+		$(REPLAY_HEADER) $(REPLAY_WINDOW_DEPENDENCY) | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) -I$(REPLAYDIR) $(CFLAGS) \
-		$(REPLAY_FAST_FLAG) \
+		$(REPLAY_FAST_FLAG) $(REPLAY_WINDOW_FLAG) \
 		-DSMB_NEOGEO_REPLAY_TAIL_FRAMES=$(REPLAY_TAIL_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES=$(REPLAY_BOOTSTRAP_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES=$(REPLAY_AREA_INIT_HOLD_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES=$(REPLAY_STAGE_SETTLE_FRAMES) \
 		-c $< -o $@
+
+$(REPLAYDIR)/video.o: video.c video.h | $(REPLAYDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(REPLAY_WINDOW_FLAG) -c $< -o $@
 
 $(REPLAY_GATE_OBJECT): replay_gate.c replay_gate.h | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -286,6 +355,30 @@ $(PPU_STATE_TEST): \
 		-I. -I$(ROOT)/codegen/lib \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
 		ppu_direct.c title_data_stub.c -o $@
+
+$(BACKGROUND_UPDATE_PLAN_TEST): \
+		$(ROOT)/tools/test_neogeo_background_update_plan.c \
+		background_update_plan.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_background_update_plan.c -o $@
+
+$(HUD_UPDATE_TEST): \
+		$(ROOT)/tools/test_neogeo_hud_updates.c \
+		ppu_direct.c ppu_render_state.h hud_update.h vblank_budget.h \
+		title_data_stub.c title_data.h video.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_neogeo_hud_updates.c \
+		ppu_direct.c title_data_stub.c -o $@
+
+$(BACKGROUND_CHAIN_TEST): \
+		$(ROOT)/tools/test_neogeo_background_chain.c \
+		background_chain.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_background_chain.c -o $@
 
 $(REPLAY_GATE_TEST): \
 		$(ROOT)/tools/test_neogeo_replay_gate.c \
@@ -329,6 +422,396 @@ $(JUMP_ENGINE_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(COLLISION_CORE_TEST): \
+		$(ROOT)/tools/test_collision_core.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_collision_core.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(BLOCK_BUFFER_COLLISION_TEST): \
+		$(ROOT)/tools/test_block_buffer_collision.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_block_buffer_collision.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(BOUNDING_BOX_CORE_TEST): \
+		$(ROOT)/tools/test_bounding_box_core.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_bounding_box_core.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(ENEMY_BOUNDING_BOX_TEST): \
+		$(ROOT)/tools/test_enemy_bounding_box.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_enemy_bounding_box.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(MOVE_OBJECT_HORIZ_TEST): \
+		$(ROOT)/tools/test_move_object_horizontally.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_move_object_horizontally.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(RELATIVE_ENEMY_POSITION_TEST): \
+		$(ROOT)/tools/test_relative_enemy_position.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_relative_enemy_position.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(DRAW_SPRITE_OBJECT_TEST): \
+		$(ROOT)/tools/test_draw_sprite_object.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_draw_sprite_object.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(MOVE_SPRITES_OFFSCREEN_TEST): \
+		$(ROOT)/tools/test_move_sprites_offscreen.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_move_sprites_offscreen.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(SPRITE_SHUFFLER_TEST): \
+		$(ROOT)/tools/test_sprite_shuffler.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_sprite_shuffler.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(CORE_FAST_PATHS_TEST): \
+		$(ROOT)/tools/test_neogeo_core_fast_paths.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_neogeo_core_fast_paths.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(DRAW_LARGE_PLATFORM_FAST_TEST): \
+		$(ROOT)/tools/test_draw_large_platform_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_draw_large_platform_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(SPR_OBJECT_OFFSCREEN_FAST_TEST): \
+		$(ROOT)/tools/test_spr_object_offscreen_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_spr_object_offscreen_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(ENEMY_BG_COLLISION_FAST_TEST): \
+		$(ROOT)/tools/test_enemy_bg_collision_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_enemy_bg_collision_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(ENEMY_COLLISION_FAST_TEST): \
+		$(ROOT)/tools/test_enemy_collision_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib -I$(ROOT)/tools \
+		$(ROOT)/tools/test_enemy_collision_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(RENDER_AREA_GRAPHICS_FAST_TEST): \
+		$(ROOT)/tools/test_render_area_graphics_fast.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_render_area_graphics_fast.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(READ_PORT_BITS_TEST): \
+		$(ROOT)/tools/test_read_port_bits.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_read_port_bits.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(OFFSCREEN_BITS_TEST): \
+		$(ROOT)/tools/test_offscreen_bits.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_offscreen_bits.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(TOP_SCORE_CHECK_TEST): \
+		$(ROOT)/tools/test_top_score_check.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_top_score_check.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(ROM_FALLTHROUGH_TEST): \
 		$(ROOT)/tools/test_rom_fallthrough_data.c \
 		$(ROOT)/codegen/lib/data.c \
@@ -346,11 +829,18 @@ $(INPUT_POLICY_TEST): \
 
 $(APU_BRIDGE_TEST): \
 		$(ROOT)/tools/test_neogeo_apu_bridge.c \
-		apu_bridge.c apu_bridge.h | $(BUILD)
+		apu_bridge.c apu_bridge.h apu_frame_units.h | $(BUILD)
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
 		-I. \
 		$(ROOT)/tools/test_neogeo_apu_bridge.c \
 		apu_bridge.c -o $@
+
+$(APU_FRAME_UNITS_TEST): \
+		$(ROOT)/tools/test_neogeo_apu_frame_units.c \
+		apu_frame_units.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_apu_frame_units.c -o $@
 
 $(AUDIO_PACKET_TEST): \
 		$(ROOT)/tools/test_neogeo_audio_packet.c audio_packet.h | $(BUILD)
@@ -394,30 +884,101 @@ $(VBLANK_BUDGET_TEST): \
 		-I. \
 		$(ROOT)/tools/test_neogeo_vblank_budget.c -o $@
 
+VRAM_BATCH_TEST_SOURCES := \
+	$(ROOT)/tools/test_neogeo_vram_batch.c \
+	$(ROOT)/codegen/lib/instructions.c \
+	$(ROOT)/codegen/lib/code.c \
+	$(ROOT)/codegen/lib/data.c \
+	$(ROOT)/codegen/lib/cpu.c \
+	ppu_direct.c title_data_stub.c apu_null.c
+
+$(VRAM_BATCH_TEST): \
+		$(VRAM_BATCH_TEST_SOURCES) ppu_render_state.h title_data.h video.h \
+		$(ROOT)/codegen/lib/ppu.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-DSMB_NEOGEO_VRAM_BATCH_TEST \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
+		-I. -I$(ROOT)/codegen/lib \
+		$(VRAM_BATCH_TEST_SOURCES) -o $@
+
+$(VRAM_BATCH_SANITIZE_TEST): \
+		$(VRAM_BATCH_TEST_SOURCES) ppu_render_state.h title_data.h video.h \
+		$(ROOT)/codegen/lib/ppu.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function -fno-omit-frame-pointer \
+		-fsanitize=address,undefined \
+		-DSMB_NEOGEO_VRAM_BATCH_TEST \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
+		-I. -I$(ROOT)/codegen/lib \
+		$(VRAM_BATCH_TEST_SOURCES) -o $@
+
+test-vram-batch-sanitize: $(VRAM_BATCH_SANITIZE_TEST)
+	$(VRAM_BATCH_SANITIZE_TEST)
+
 test: \
-		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
+		$(PPU_STATE_TEST) $(BACKGROUND_UPDATE_PLAN_TEST) \
+		$(HUD_UPDATE_TEST) $(BACKGROUND_CHAIN_TEST) \
+		$(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
-		$(JUMP_ENGINE_TEST) \
+		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) $(BOUNDING_BOX_CORE_TEST) \
+		$(ENEMY_BOUNDING_BOX_TEST) \
+		$(BLOCK_BUFFER_COLLISION_TEST) $(MOVE_OBJECT_HORIZ_TEST) \
+		$(RELATIVE_ENEMY_POSITION_TEST) \
+		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
+		$(SPRITE_SHUFFLER_TEST) $(CORE_FAST_PATHS_TEST) \
+		$(DRAW_LARGE_PLATFORM_FAST_TEST) \
+		$(SPR_OBJECT_OFFSCREEN_FAST_TEST) \
+		$(ENEMY_BG_COLLISION_FAST_TEST) \
+		$(ENEMY_COLLISION_FAST_TEST) \
+		$(RENDER_AREA_GRAPHICS_FAST_TEST) \
+		$(READ_PORT_BITS_TEST) $(OFFSCREEN_BITS_TEST) \
+		$(TOP_SCORE_CHECK_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
-		$(APU_BRIDGE_TEST) $(AUDIO_PACKET_TEST) \
+		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
 		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
-		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST)
+		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST) $(VRAM_BATCH_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
+	$(BACKGROUND_UPDATE_PLAN_TEST)
+	$(HUD_UPDATE_TEST)
+	$(BACKGROUND_CHAIN_TEST)
 	$(REPLAY_GATE_TEST)
 	$(REPLAY_TIMING_TEST)
 	$(REPLAY_CHECKPOINT_TEST)
 	$(JUMP_ENGINE_TEST)
+	$(COLLISION_CORE_TEST)
+	$(BLOCK_BUFFER_COLLISION_TEST)
+	$(BOUNDING_BOX_CORE_TEST)
+	$(ENEMY_BOUNDING_BOX_TEST)
+	$(MOVE_OBJECT_HORIZ_TEST)
+	$(RELATIVE_ENEMY_POSITION_TEST)
+	$(DRAW_SPRITE_OBJECT_TEST)
+	$(MOVE_SPRITES_OFFSCREEN_TEST)
+	$(SPRITE_SHUFFLER_TEST)
+	$(CORE_FAST_PATHS_TEST)
+	$(DRAW_LARGE_PLATFORM_FAST_TEST)
+	$(SPR_OBJECT_OFFSCREEN_FAST_TEST)
+	$(ENEMY_BG_COLLISION_FAST_TEST)
+	$(ENEMY_COLLISION_FAST_TEST)
+	$(RENDER_AREA_GRAPHICS_FAST_TEST)
+	$(READ_PORT_BITS_TEST)
+	$(OFFSCREEN_BITS_TEST)
+	$(TOP_SCORE_CHECK_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
 	$(APU_BRIDGE_TEST)
+	$(APU_FRAME_UNITS_TEST)
 	$(AUDIO_PACKET_TEST)
 	$(AUDIO_CADENCE_TEST)
 	$(OAM_VISIBILITY_TEST)
 	$(OAM_TILES_TEST)
 	$(PALETTE_POLICY_TEST)
 	$(VBLANK_BUDGET_TEST)
+	$(VRAM_BATCH_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \
@@ -607,7 +1168,13 @@ replay-cart: \
 		exit 2; \
 	}
 	@test -n "$(REPLAY_FM2)" || { \
-		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+		test -n "$(REPLAY_DATA_HEADER)" || { \
+			echo "REPLAY_FM2 or REPLAY_DATA_HEADER is required" >&2; \
+			exit 2; \
+		}; \
+	}
+	@test -z "$(REPLAY_FM2)" || test -z "$(REPLAY_DATA_HEADER)" || { \
+		echo "set only one of REPLAY_FM2 or REPLAY_DATA_HEADER" >&2; \
 		exit 2; \
 	}
 	@test -f "$(GNGEO_SUPPORT_DATA)" || { \

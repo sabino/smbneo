@@ -10,6 +10,10 @@
 #include "smb_replay_data.h"
 #include "video.h"
 
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+#include "smb_neogeo_replay_windows.h"
+#endif
+
 #include <stdint.h>
 #include <string.h>
 
@@ -37,10 +41,19 @@
 #define NEOGEO_REPLAY_STATUS_VERSION UINT32_C(4)
 #define NEOGEO_REPLAY_RESULT_INCOMPLETE UINT32_C(0x100)
 
-#if defined(SMB_NEOGEO_REPLAY_FAST)
+#if \
+    defined(SMB_NEOGEO_REPLAY_FAST) || \
+    (defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH) && \
+        defined(SMB_NEOGEO_LOGIC_BENCH))
 #define NEOGEO_REPLAY_RENDERING_ENABLED UINT32_C(0)
 #else
 #define NEOGEO_REPLAY_RENDERING_ENABLED UINT32_C(1)
+#endif
+
+#if \
+    defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH) && \
+    defined(SMB_NEOGEO_REPLAY_FAST)
+#error "selective-render replay benchmarking requires rendered replay mode"
 #endif
 
 #if SMB_REPLAY_END_FRAME != SMB_REPLAY_FM2_FRAME_COUNT
@@ -61,11 +74,22 @@ _Static_assert(
     SMB_REPLAY_SEGMENT_COUNT > 0,
     "replay must contain at least one input segment"
 );
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+_Static_assert(
+    SMB_NEOGEO_REPLAY_CHECKPOINT_COUNT > 0,
+    "window benchmark must contain at least one checkpoint"
+);
+_Static_assert(
+    SMB_NEOGEO_REPLAY_RENDER_RANGE_COUNT > 0,
+    "window benchmark must contain at least one render range"
+);
+#else
 _Static_assert(
     SMB_NEOGEO_REPLAY_PROGRESS_FRAMES > 0 &&
         SMB_NEOGEO_REPLAY_PROGRESS_FRAMES <= UINT16_MAX,
     "replay progress interval must fit in uint16_t"
 );
+#endif
 _Static_assert(
     SMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES <= SMB_REPLAY_END_FRAME,
     "replay bootstrap interval must fit inside the input movie"
@@ -124,10 +148,42 @@ typedef struct NeogeoReplayStatus {
 volatile NeogeoReplayStatus neogeo_replay_status
     __attribute__((aligned(4), used, externally_visible));
 
+/*
+ * ngdevkit clears BSS in one final 32-byte block. Keep replay-only
+ * initialized data large enough for startup to restore every over-cleared
+ * byte before main executes, independent of the replay mode or LTO symbol
+ * ordering.
+ */
+volatile uint8_t neogeo_replay_startup_guard[32]
+    __attribute__((used, externally_visible)) = {1u};
+
 static NeogeoReplayTiming replay_timing;
 static uint32_t replay_core_frames_advanced;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
 static uint16_t replay_audio_vblank;
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+static uint8_t replay_benchmark_rendering;
+#endif
+#endif
+
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+static uint8_t benchmark_should_render(uint32_t frame) {
+    uint32_t index;
+
+    for (
+        index = 0;
+        index < SMB_NEOGEO_REPLAY_RENDER_RANGE_COUNT;
+        ++index
+    ) {
+        if (
+            frame >= smb_neogeo_replay_render_ranges[index][0] &&
+            frame <= smb_neogeo_replay_render_ranges[index][1]
+        ) {
+            return 1u;
+        }
+    }
+    return 0u;
+}
 #endif
 
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
@@ -249,24 +305,65 @@ static NeogeoReplayGateResult run_replay_frame(
     NeogeoReplaySnapshot snapshot;
     NeogeoReplayGateResult result;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+    uint8_t render_frame = benchmark_should_render(frame);
+#endif
     uint16_t game_frame_vblank;
 
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+    if (render_frame != 0u) {
+        if (replay_benchmark_rendering == 0u) {
+            neogeo_video_benchmark_invalidate();
+            /*
+             * The fast-forwarded prefix deliberately skips native bridge
+             * work. Reset it before the warmup so stale audio transport state
+             * cannot reach a measured frame.
+             */
+            apu_init(0);
+            replay_audio_vblank = neogeo_video_current_vblank();
+            replay_benchmark_rendering = 1u;
+        }
+        replay_audio_vblank = neogeo_audio_prepare_game_frame(
+            replay_audio_vblank,
+            &game_frame_vblank
+        );
+    } else {
+        replay_benchmark_rendering = 0u;
+    }
+#else
     replay_audio_vblank = neogeo_audio_prepare_game_frame(
         replay_audio_vblank,
         &game_frame_vblank
     );
+#endif
 #endif
 
     update_controller1(controller_state);
     next_frame();
     ++replay_core_frames_advanced;
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+    if (render_frame != 0u) {
+        apu_step_frame();
+        replay_audio_vblank = game_frame_vblank;
+        ppu_render();
+    }
+#else
     apu_step_frame();
     replay_audio_vblank = game_frame_vblank;
     ppu_render();
 #endif
+#endif
     snapshot = snapshot_core();
     result = neogeo_replay_gate_update(gate, &snapshot);
+#if \
+    defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH) && \
+    !defined(SMB_NEOGEO_REPLAY_FAST)
+    if (render_frame == 0u) {
+        /* Keep distant fast-forward prefixes free of mailbox-store overhead. */
+        return result;
+    }
+#endif
     publish_status(
         gate,
         &snapshot,
@@ -361,6 +458,24 @@ void neogeo_replay_transition_trap(void) {
     __asm__ volatile ("nop");
 }
 
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+static void update_progress_checkpoint(
+    uint32_t *remaining,
+    uint32_t *interval_index
+) {
+    --*remaining;
+    if (*remaining == 0u) {
+        neogeo_replay_progress_trap();
+        ++*interval_index;
+        if (*interval_index < SMB_NEOGEO_REPLAY_CHECKPOINT_COUNT) {
+            *remaining =
+                smb_neogeo_replay_progress_intervals[*interval_index];
+        } else {
+            *remaining = UINT32_MAX;
+        }
+    }
+}
+#else
 static void update_progress_checkpoint(uint16_t *remaining) {
     --*remaining;
     if (*remaining == 0u) {
@@ -368,6 +483,7 @@ static void update_progress_checkpoint(uint16_t *remaining) {
         *remaining = SMB_NEOGEO_REPLAY_PROGRESS_FRAMES;
     }
 }
+#endif
 
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
 static void update_stage_checkpoint(
@@ -402,7 +518,13 @@ int main(void) {
     uint32_t tail_frame = 0;
     uint32_t segment_index = 0;
     uint16_t segment_remaining;
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+    uint32_t progress_interval_index = 0;
+    uint32_t progress_remaining =
+        smb_neogeo_replay_progress_intervals[0];
+#else
     uint16_t progress_remaining = SMB_NEOGEO_REPLAY_PROGRESS_FRAMES;
+#endif
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
     NeogeoReplayCheckpoint stage_checkpoint;
 #endif
@@ -447,7 +569,14 @@ int main(void) {
         );
 
         ++frame;
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+        update_progress_checkpoint(
+            &progress_remaining,
+            &progress_interval_index
+        );
+#else
         update_progress_checkpoint(&progress_remaining);
+#endif
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
         update_stage_checkpoint(
             &stage_checkpoint,
@@ -491,7 +620,14 @@ int main(void) {
 
         ++frame;
         ++tail_frame;
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+        update_progress_checkpoint(
+            &progress_remaining,
+            &progress_interval_index
+        );
+#else
         update_progress_checkpoint(&progress_remaining);
+#endif
 #if !defined(SMB_NEOGEO_REPLAY_FAST)
         update_stage_checkpoint(
             &stage_checkpoint,

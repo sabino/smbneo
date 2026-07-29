@@ -23,6 +23,11 @@ void neogeo_video_render(void);
  */
 void neogeo_video_wait_for_present(void);
 
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+/* Force a complete rebuild when selective rendering resumes after a gap. */
+void neogeo_video_benchmark_invalidate(void);
+#endif
+
 /*
  * Return the low 16 bits of the display interrupt counter. This access is
  * atomic on the MC68000 and is suitable for short wrap-safe cadence deltas.
