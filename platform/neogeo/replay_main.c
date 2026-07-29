@@ -148,15 +148,14 @@ typedef struct NeogeoReplayStatus {
 volatile NeogeoReplayStatus neogeo_replay_status
     __attribute__((aligned(4), used, externally_visible));
 
-#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
 /*
- * ngdevkit clears BSS in one final 32-byte block. Keep benchmark-only
+ * ngdevkit clears BSS in one final 32-byte block. Keep replay-only
  * initialized data large enough for startup to restore every over-cleared
- * byte before main executes, independent of the LTO symbol ordering.
+ * byte before main executes, independent of the replay mode or LTO symbol
+ * ordering.
  */
-volatile uint8_t neogeo_replay_window_startup_guard[32]
+volatile uint8_t neogeo_replay_startup_guard[32]
     __attribute__((used, externally_visible)) = {1u};
-#endif
 
 static NeogeoReplayTiming replay_timing;
 static uint32_t replay_core_frames_advanced;
