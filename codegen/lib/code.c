@@ -13163,11 +13163,72 @@ void FBallB(void) {
   CheckRightScreenBBox(); // jump to handle any offscreen coordinates
 }
 
-void GetEnemyBoundBox(void) {
+static __attribute__((noinline, cold)) void GetEnemyBoundBoxAliasExact(void) {
   ldy_imm(0x48); // store bitmask here for now
   ram[0x0] = y;
   ldy_imm(0x44); // store another bitmask here for now and jump
   GetMaskedOffScrBits();
+}
+
+__attribute__((noinline)) void GetEnemyBoundBox(void) {
+  // Reviewed enemy bounding-box specialization; guarded by exact caller and folded-helper shapes.
+  const uint8_t object_offset = x;
+  uint8_t enemy_x;
+  uint8_t screen_x;
+  uint8_t pixel_difference;
+  uint8_t enemy_page;
+  uint8_t screen_page;
+  uint16_t page_difference;
+  if (object_offset > 5u) {
+    GetEnemyBoundBoxAliasExact();
+    return;
+  }
+  ram[0x0] = 0x48u;
+  y = 0x44u;
+  nz_value = y;
+  enemy_x = ram[Enemy_X_Position + object_offset];
+  a = enemy_x;
+  nz_value = a;
+  screen_x = ram[ScreenLeft_X_Pos];
+  carry_flag = enemy_x >= screen_x;
+  pixel_difference = (uint8_t)(enemy_x - screen_x);
+  a = pixel_difference;
+  nz_value = a;
+  ram[0x1] = pixel_difference;
+  enemy_page = ram[Enemy_PageLoc + object_offset];
+  a = enemy_page;
+  nz_value = a;
+  screen_page = ram[ScreenLeft_PageLoc];
+  page_difference = (uint16_t)((uint16_t)enemy_page - (uint16_t)screen_page - (carry_flag ? 0u : 1u));
+  carry_flag = page_difference <= 0xffu;
+  a = (uint8_t)page_difference;
+  nz_value = a;
+  if ((a & 0x80u) == 0u) {
+    a = (uint8_t)(a | ram[0x1]);
+    nz_value = a;
+    if (a != 0u) {
+      y = ram[0x0];
+      nz_value = y;
+    }
+  }
+  a = y;
+  nz_value = a;
+  a = (uint8_t)(a & ram[Enemy_OffscreenBits]);
+  nz_value = a;
+  ram[EnemyOffscrBitsMasked + object_offset] = a;
+  if (a == 0u) {
+    SetupEOffsetFBBox();
+    return;
+  }
+  const uint8_t box_offset = (uint8_t)(object_offset << 2);
+  y = box_offset;
+  carry_flag = (object_offset & 0x40u) != 0u;
+  a = 0xffu;
+  nz_value = a;
+  ram[EnemyBoundingBoxCoord + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 1u + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 2u + box_offset] = a;
+  ram[EnemyBoundingBoxCoord + 3u + box_offset] = a;
 }
 
 void SmallPlatformBoundBox(void) {

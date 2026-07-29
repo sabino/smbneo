@@ -1120,6 +1120,88 @@ fn is_bounding_box_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
 }
 
 ///|
+fn is_reviewed_get_enemy_bound_box(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "GetEnemyBoundBox" {
+    return false
+  }
+
+  // The direct path folds both fixed masks and the completely-offscreen leaf.
+  // Keep the source-emitted implementation unless its complete executable
+  // shape, including the two mask constants, remains reviewed.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    4,
+    207,
+    "335d9f8f67b7757417e929a8488484b2362b0c8902f315e18f8e59b761c6e392",
+  )
+}
+
+///|
+fn is_reviewed_enemy_bound_box_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "GetMaskedOffScrBits" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        17,
+        689,
+        "0105b1108022612d66e6e8aba4b3f44c7ee03cfcfd564445fd62e71c9f233f63",
+      )
+    "MoveBoundBoxOffscreen__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        9,
+        534,
+        "1ef53cbfdf10020f1bcbf8b6dfe0daee8a25672ea8f8074de763c84394a98013",
+      )
+    "SetupEOffsetFBBox" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        7,
+        240,
+        "d859442de1e36d4cf5c862c94334b27fcefd328623825c8967bd209ef0869157",
+      )
+    "CheckRightScreenBBox" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        31,
+        1399,
+        "c2afa622f15ba87ca0705b8bbdf530c2113ab05c980ff8ec7308c58c39eb513c",
+      )
+    _ => false
+  }
+}
+
+///|
+fn has_reviewed_enemy_bound_box_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut masked = false
+  let mut move_offscreen = false
+  let mut setup = false
+  let mut check_right = false
+  let mut geometry = false
+
+  for subroutine in low.flat_subroutines {
+    if is_bounding_box_core(subroutine) {
+      geometry = true
+    } else if is_reviewed_enemy_bound_box_dependency(subroutine) {
+      match subroutine.name {
+        "GetMaskedOffScrBits" => masked = true
+        "MoveBoundBoxOffscreen__sub" => move_offscreen = true
+        "SetupEOffsetFBBox" => setup = true
+        "CheckRightScreenBBox" => check_right = true
+        _ => ()
+      }
+    }
+  }
+  masked && move_offscreen && setup && check_right && geometry
+}
+
+///|
 fn is_move_object_horizontally(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -1683,6 +1765,100 @@ fn Emitter::emit_bounding_box_core(self : Emitter) -> Unit {
   self.emit("x = object_offset;")
   self.emit("carry_flag = sum > 0xffu;")
   self.emit("nz_value = object_offset;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_get_enemy_bound_box(
+  self : Emitter,
+  subroutine : @lower.AsmFlatSubroutine,
+  low : @lower.AsmLowering,
+) -> Unit {
+  // Preserve the ordinary translated routine as the exact aliasing fallback.
+  // Unsupported X values can make zero-page indexed operands overlap scratch
+  // bytes, so they must retain literal source ordering.
+  self.indentation = 0
+  self.emit("static __attribute__((noinline, cold)) void GetEnemyBoundBoxAliasExact(void) {")
+  self.indentation = 1
+  for item in subroutine.items {
+    self.emit_item(item, low)
+  }
+  self.indentation = 0
+  self.emit("}\n")
+
+  self.emit("__attribute__((noinline)) void GetEnemyBoundBox(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed enemy bounding-box specialization; guarded by exact caller and folded-helper shapes.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("uint8_t enemy_x;")
+  self.emit("uint8_t screen_x;")
+  self.emit("uint8_t pixel_difference;")
+  self.emit("uint8_t enemy_page;")
+  self.emit("uint8_t screen_page;")
+  self.emit("uint16_t page_difference;")
+  self.emit("if (object_offset > 5u) {")
+  self.indentation += 1
+  self.emit("GetEnemyBoundBoxAliasExact();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = 0x48u;")
+  self.emit("y = 0x44u;")
+  self.emit("nz_value = y;")
+  self.emit("enemy_x = ram[Enemy_X_Position + object_offset];")
+  self.emit("a = enemy_x;")
+  self.emit("nz_value = a;")
+  self.emit("screen_x = ram[ScreenLeft_X_Pos];")
+  self.emit("carry_flag = enemy_x >= screen_x;")
+  self.emit("pixel_difference = (uint8_t)(enemy_x - screen_x);")
+  self.emit("a = pixel_difference;")
+  self.emit("nz_value = a;")
+  self.emit("ram[0x1] = pixel_difference;")
+  self.emit("enemy_page = ram[Enemy_PageLoc + object_offset];")
+  self.emit("a = enemy_page;")
+  self.emit("nz_value = a;")
+  self.emit("screen_page = ram[ScreenLeft_PageLoc];")
+  self.emit(
+    "page_difference = (uint16_t)((uint16_t)enemy_page - (uint16_t)screen_page - (carry_flag ? 0u : 1u));",
+  )
+  self.emit("carry_flag = page_difference <= 0xffu;")
+  self.emit("a = (uint8_t)page_difference;")
+  self.emit("nz_value = a;")
+  self.emit("if ((a & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("a = (uint8_t)(a | ram[0x1]);")
+  self.emit("nz_value = a;")
+  self.emit("if (a != 0u) {")
+  self.indentation += 1
+  self.emit("y = ram[0x0];")
+  self.emit("nz_value = y;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = y;")
+  self.emit("nz_value = a;")
+  self.emit("a = (uint8_t)(a & ram[Enemy_OffscreenBits]);")
+  self.emit("nz_value = a;")
+  self.emit("ram[EnemyOffscrBitsMasked + object_offset] = a;")
+  self.emit("if (a == 0u) {")
+  self.indentation += 1
+  self.emit("SetupEOffsetFBBox();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("const uint8_t box_offset = (uint8_t)(object_offset << 2);")
+  self.emit("y = box_offset;")
+  self.emit("carry_flag = (object_offset & 0x40u) != 0u;")
+  self.emit("a = 0xffu;")
+  self.emit("nz_value = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 1u + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 2u + box_offset] = a;")
+  self.emit("ram[EnemyBoundingBoxCoord + 3u + box_offset] = a;")
   self.indentation = 0
   self.emit("}\n")
 }
@@ -2659,6 +2835,12 @@ fn Emitter::emit_relative_enemy_position(self : Emitter) -> Unit {
 
 ///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
+  if is_reviewed_get_enemy_bound_box(subroutine) &&
+    has_reviewed_enemy_bound_box_dependencies(low) {
+    self.emit_get_enemy_bound_box(subroutine, low)
+    return
+  }
+
   if is_bounding_box_core(subroutine) {
     self.emit_bounding_box_core()
     return
