@@ -49,7 +49,11 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn("GAMEROM := smbneo", self.makefile)
-        self.assertIn("--defsym=rom_NGH_ID=0x534d", self.makefile)
+        self.assertIn("SMBNEO_NGH := 2026", self.makefile)
+        self.assertIn(
+            "--defsym=rom_NGH_ID=0x$(SMBNEO_NGH)",
+            self.makefile,
+        )
         self.assertIn(
             "COMPAT_CART := $(ROMDIR)/puzzledp.zip",
             self.makefile,
@@ -92,7 +96,7 @@ class InteractiveLaunchRecipeTests(unittest.TestCase):
         )[1].split("run: hardware-cart", 1)[0]
         self.assertIn("$(ROMTOOL) -b cartridge -f neo", neosd_recipe)
         self.assertIn("neo.genre=Platformer", neosd_recipe)
-        self.assertIn("neo.ngh=534d", neosd_recipe)
+        self.assertIn("neo.ngh=$(SMBNEO_NGH)", neosd_recipe)
         self.assertIn("--validate $(NEOSD_CART)", neosd_recipe)
 
     def test_both_interactive_recipes_use_realtime_flags(self) -> None:

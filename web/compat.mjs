@@ -45,7 +45,7 @@ const NEOSD_DEFAULTS = Object.freeze({
   year: 2026,
   genre: 5,
   screenshot: 0,
-  ngh: 0x534d,
+  ngh: 0x2026,
 });
 
 const PUZZLEDP_LAYOUT = Object.freeze([
@@ -504,6 +504,19 @@ function requireUint32(value, label) {
   return value;
 }
 
+export function validatePackedBcdNgh(value) {
+  const ngh = requireUint32(value, "NGH");
+  if (
+    ngh > 0xffff ||
+    [0, 4, 8, 12].some((shift) => ((ngh >>> shift) & 0xf) > 9)
+  ) {
+    throw new Error(
+      `NGH 0x${ngh.toString(16)} must be a four-digit packed-BCD value`,
+    );
+  }
+  return ngh;
+}
+
 function writeAsciiField(output, offset, width, value, label) {
   if (typeof value !== "string") {
     throw new Error(`${label} must be text`);
@@ -597,7 +610,10 @@ export function buildNeoSdFile(cartridge, metadata = {}) {
     ["screenshot", resolved.screenshot],
     ["NGH", resolved.ngh],
   ].entries()) {
-    view.setUint32(0x1c + index * 4, requireUint32(value, label), true);
+    const encoded = label === "NGH"
+      ? validatePackedBcdNgh(value)
+      : requireUint32(value, label);
+    view.setUint32(0x1c + index * 4, encoded, true);
   }
   writeAsciiField(output, 0x2c, 33, resolved.name, "game name");
   writeAsciiField(
@@ -658,13 +674,14 @@ export function parseNeoSdHeader(input) {
     }
   }
 
+  const ngh = validatePackedBcdNgh(view.getUint32(0x28, true));
   return Object.freeze({
     sizes: Object.freeze(sizes),
     sections: Object.freeze(sections),
     year: view.getUint32(0x1c, true),
     genre: view.getUint32(0x20, true),
     screenshot: view.getUint32(0x24, true),
-    ngh: view.getUint32(0x28, true),
+    ngh,
     name: readAsciiField(bytes, 0x2c, 33, "game name"),
     manufacturer: readAsciiField(bytes, 0x4d, 17, "manufacturer"),
   });

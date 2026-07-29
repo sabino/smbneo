@@ -68,17 +68,19 @@ emulator supplies its own BIOS.
 The format, metadata, and complete payload have been checked byte for byte
 against ngdevkit's writer and the pinned open-source `neosdconv` implementation.
 That establishes converter interoperability, but it is not a substitute for a
-physical-device test. Booting this image on an actual NeoSD or NeoSD Pro is
-still awaiting confirmation from a device owner.
+physical-device test. Booting has now been confirmed on NeoSD Pro and original
+NeoSD hardware. The palette-reference, LSPC-write-spacing, and hidden-bank
+safety changes described in the port notes still require a follow-up hardware
+test.
 
 The image follows the documented NeoSD v1 layout: a 4 KiB `NEO\x01` header,
 followed by P, S, M, V, and byte-interleaved C data. Its metadata records the
-project title, 2026, the Platformer genre, `Community port`, and the project's
-unofficial NGH value `0x534d`. P data remains in native byte order and the
-full hardware-sized regions are preserved. The final image is 6,033,408
-bytes. A validator checks the header, exact end of file, reserved bytes, and
-canonical title/year/genre/NGH metadata, plus every transformed payload byte
-after generation.
+project title, 2026, the Platformer genre, `Community port`, and the
+project-specific packed-BCD NGH value `0x2026`. P data remains in native byte
+order and the full hardware-sized regions are preserved. The final image is
+6,033,408 bytes. A validator checks the header, exact end of file, reserved
+bytes, and canonical title/year/genre/NGH metadata, plus every transformed
+payload byte after generation.
 
 The format itself has no embedded checksum field. TerraOnion's separate
 NeoValidator catalog may report an unknown homebrew file; that is not a
