@@ -2459,28 +2459,84 @@ void UpdateTopScore(void) {
 }
 
 void TopScoreCheck(void) {
-  ldy_imm(0x5); // start with the lowest digit
-  carry_flag = true;
-  
-GetScoreDiff:
-  lda_absx(PlayerScoreDisplay); // subtract each player digit from each high score digit
-  sbc_absy(TopScoreDisplay); // from lowest to highest, if any top score digit exceeds
-  dex(); // any player digit, borrow will be set until a subsequent
-  dey(); // subtraction clears it (player digit is higher than top)
-  if (!neg_flag) { goto GetScoreDiff; }
-  if (carry_flag) {
-    inx(); // increment X and Y once to the start of the score
-    iny();
-    
-CopyScore:
-    lda_absx(PlayerScoreDisplay); // store player's score digits into high score memory area
-    ram[TopScoreDisplay + y] = a;
-    inx();
-    iny();
-    cpy_imm(0x6); // do this until we have stored them all
-    if (!carry_flag) { goto CopyScore; }
-    // -------------------------------------------------------------------------------------
+  // Reviewed score-chain specialization; guarded by the exact lowered structure.
+  const uint8_t initial_x = x;
+  if (initial_x == 5u || initial_x == 11u) {
+    const uint8_t *const player_score = &ram[PlayerScoreDisplay + initial_x - 5u];
+    const uint8_t *const top_score = &ram[TopScoreDisplay];
+    bool lower_digits_equal = false;
+    bool lower_digits_borrow;
+    if (player_score[1] != top_score[1]) {
+      lower_digits_borrow = player_score[1] < top_score[1];
+    } else if (player_score[2] != top_score[2]) {
+      lower_digits_borrow = player_score[2] < top_score[2];
+    } else if (player_score[3] != top_score[3]) {
+      lower_digits_borrow = player_score[3] < top_score[3];
+    } else if (player_score[4] != top_score[4]) {
+      lower_digits_borrow = player_score[4] < top_score[4];
+    } else {
+      lower_digits_equal = player_score[5] == top_score[5];
+      lower_digits_borrow = player_score[5] < top_score[5];
+    }
+    const uint16_t high_difference = (uint16_t)player_score[0] - (uint16_t)top_score[0] - (lower_digits_borrow ? 1u : 0u);
+    const bool score_carry = high_difference <= 0xffu;
+    if (!score_carry) {
+      a = (uint8_t)high_difference;
+      x = (uint8_t)(initial_x - 6u);
+      y = 0xffu;
+      carry_flag = false;
+      nz_value = 0xffu;
+      return;
+    }
+    if (!(lower_digits_equal && player_score[0] == top_score[0])) {
+      ram[TopScoreDisplay] = player_score[0];
+      ram[TopScoreDisplay + 1u] = player_score[1];
+      ram[TopScoreDisplay + 2u] = player_score[2];
+      ram[TopScoreDisplay + 3u] = player_score[3];
+      ram[TopScoreDisplay + 4u] = player_score[4];
+      ram[TopScoreDisplay + 5u] = player_score[5];
+    }
+    a = player_score[5];
+    x = (uint8_t)(initial_x + 1u);
+    y = 6u;
+    carry_flag = true;
+    nz_value = 0u;
+    return;
   }
+  uint8_t local_x = initial_x;
+  uint8_t local_a = 0u;
+  bool local_carry = true;
+  uint8_t digit = 6u;
+  do {
+    const uint8_t player_digit = read_byte((uint16_t)(PlayerScoreDisplay + local_x));
+    const uint8_t top_digit = ram[TopScoreDisplay + digit - 1u];
+    const uint16_t difference = (uint16_t)player_digit - (uint16_t)top_digit - (local_carry ? 0u : 1u);
+    local_a = (uint8_t)difference;
+    local_carry = difference <= 0xffu;
+    local_x = (uint8_t)(local_x - 1u);
+    digit = (uint8_t)(digit - 1u);
+  } while (digit != 0u);
+  a = local_a;
+  x = local_x;
+  y = 0xffu;
+  carry_flag = local_carry;
+  nz_value = 0xffu;
+  if (!local_carry) {
+    return;
+  }
+  local_x = (uint8_t)(local_x + 1u);
+  digit = 0u;
+  do {
+    local_a = read_byte((uint16_t)(PlayerScoreDisplay + local_x));
+    ram[TopScoreDisplay + digit] = local_a;
+    local_x = (uint8_t)(local_x + 1u);
+    digit = (uint8_t)(digit + 1u);
+  } while (digit != 6u);
+  a = local_a;
+  x = local_x;
+  y = 6u;
+  carry_flag = true;
+  nz_value = 0u;
 }
 
 void InitializeMemory(void) {

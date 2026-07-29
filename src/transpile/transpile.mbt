@@ -1059,6 +1059,39 @@ fn is_get_x_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   )
 }
 
+///|
+fn is_top_score_check(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "TopScoreCheck" {
+    return false
+  }
+
+  // TopScoreCheck runs twice on every unpaused frame. Fingerprint its complete
+  // lowered control flow so the semantic implementation cannot silently outlive
+  // a source change to the subtract/borrow chain or the conditional copy.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:imm:0x5
+    #|I:SEC:imp
+    #|L:GetScoreDiff
+    #|I:LDA:absx:PlayerScoreDisplay
+    #|I:SBC:absy:TopScoreDisplay
+    #|I:DEX:imp
+    #|I:DEY:imp
+    #|I:BPL:rel:GetScoreDiff
+    #|IF:BCS
+    #|I:INX:imp
+    #|I:INY:imp
+    #|L:CopyScore
+    #|I:LDA:absx:PlayerScoreDisplay
+    #|I:STA:absy:TopScoreDisplay
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:CPY:imm:0x6
+    #|I:BCC:rel:CopyScore
+    #|END_IF
+    #|
+  )
+}
+
 fn is_get_y_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "GetYOffscreenBits" {
     return false
@@ -1732,6 +1765,125 @@ fn Emitter::emit_get_y_offscreen_bits(self : Emitter) -> Unit {
 }
 
 ///|
+fn Emitter::emit_top_score_check(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void TopScoreCheck(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed score-chain specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t initial_x = x;")
+  self.emit("if (initial_x == 5u || initial_x == 11u) {")
+  self.indentation += 1
+  self.emit(
+    "const uint8_t *const player_score = &ram[PlayerScoreDisplay + initial_x - 5u];",
+  )
+  self.emit("const uint8_t *const top_score = &ram[TopScoreDisplay];")
+  self.emit("bool lower_digits_equal = false;")
+  self.emit("bool lower_digits_borrow;")
+  self.emit("if (player_score[1] != top_score[1]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[1] < top_score[1];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[2] != top_score[2]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[2] < top_score[2];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[3] != top_score[3]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[3] < top_score[3];")
+  self.indentation -= 1
+  self.emit("} else if (player_score[4] != top_score[4]) {")
+  self.indentation += 1
+  self.emit("lower_digits_borrow = player_score[4] < top_score[4];")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("lower_digits_equal = player_score[5] == top_score[5];")
+  self.emit("lower_digits_borrow = player_score[5] < top_score[5];")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit(
+    "const uint16_t high_difference = (uint16_t)player_score[0] - (uint16_t)top_score[0] - (lower_digits_borrow ? 1u : 0u);",
+  )
+  self.emit("const bool score_carry = high_difference <= 0xffu;")
+  self.emit("if (!score_carry) {")
+  self.indentation += 1
+  self.emit("a = (uint8_t)high_difference;")
+  self.emit("x = (uint8_t)(initial_x - 6u);")
+  self.emit("y = 0xffu;")
+  self.emit("carry_flag = false;")
+  self.emit("nz_value = 0xffu;")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit(
+    "if (!(lower_digits_equal && player_score[0] == top_score[0])) {",
+  )
+  self.indentation += 1
+  self.emit("ram[TopScoreDisplay] = player_score[0];")
+  self.emit("ram[TopScoreDisplay + 1u] = player_score[1];")
+  self.emit("ram[TopScoreDisplay + 2u] = player_score[2];")
+  self.emit("ram[TopScoreDisplay + 3u] = player_score[3];")
+  self.emit("ram[TopScoreDisplay + 4u] = player_score[4];")
+  self.emit("ram[TopScoreDisplay + 5u] = player_score[5];")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = player_score[5];")
+  self.emit("x = (uint8_t)(initial_x + 1u);")
+  self.emit("y = 6u;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = 0u;")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("uint8_t local_x = initial_x;")
+  self.emit("uint8_t local_a = 0u;")
+  self.emit("bool local_carry = true;")
+  self.emit("uint8_t digit = 6u;")
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("const uint8_t player_digit = read_byte((uint16_t)(PlayerScoreDisplay + local_x));")
+  self.emit("const uint8_t top_digit = ram[TopScoreDisplay + digit - 1u];")
+  self.emit(
+    "const uint16_t difference = (uint16_t)player_digit - (uint16_t)top_digit - (local_carry ? 0u : 1u);",
+  )
+  self.emit("local_a = (uint8_t)difference;")
+  self.emit("local_carry = difference <= 0xffu;")
+  self.emit("local_x = (uint8_t)(local_x - 1u);")
+  self.emit("digit = (uint8_t)(digit - 1u);")
+  self.indentation -= 1
+  self.emit("} while (digit != 0u);")
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = 0xffu;")
+  self.emit("carry_flag = local_carry;")
+  self.emit("nz_value = 0xffu;")
+  self.emit("if (!local_carry) {")
+  self.indentation += 1
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("digit = 0u;")
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("local_a = read_byte((uint16_t)(PlayerScoreDisplay + local_x));")
+  self.emit("ram[TopScoreDisplay + digit] = local_a;")
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("digit = (uint8_t)(digit + 1u);")
+  self.indentation -= 1
+  self.emit("} while (digit != 6u);")
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = 6u;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = 0u;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
   if is_spr_object_collision_core(subroutine) {
     self.emit_spr_object_collision_core()
@@ -1777,6 +1929,11 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
   if is_get_y_offscreen_bits(subroutine) && has_reviewed_divide_pdiff(low) {
     self.emit_get_y_offscreen_bits()
+    return
+  }
+
+  if is_top_score_check(subroutine) {
+    self.emit_top_score_check()
     return
   }
 
