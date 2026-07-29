@@ -639,6 +639,25 @@ fn is_reviewed_write_buffer_to_screen(
 }
 
 ///|
+fn is_reviewed_render_area_graphics(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RenderAreaGraphics" {
+    return false
+  }
+
+  // The direct helper folds all thirteen metatile rows and the final name
+  // table/CPU state. Keep the byte-ordered translated body as fallback unless
+  // every executable item, branch, operand, and label has the reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    96,
+    4282,
+    "08b5eacf08fd9a086b2544ed9b86601dce325ce1411bfd12e41d3c6c02b2393d",
+  )
+}
+
+///|
 fn is_reviewed_enemy_gfx_handler(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -1947,6 +1966,29 @@ fn has_reviewed_byte_table(
       entries.join("|") == expected
     }
   }
+}
+
+fn has_reviewed_render_area_graphics_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  // The direct helper reads metatile pixels straight from immutable cartridge
+  // data rather than through the generic CPU-bus dispatcher. Keep that
+  // specialization disabled unless both pointer tables still select exactly
+  // the four reviewed ROM-resident palette tables.
+  has_reviewed_byte_table(
+    low,
+    "MetatileGraphics_Low",
+    4,
+    "LOW_BYTE(Palette0_MTiles)|LOW_BYTE(Palette1_MTiles)|" +
+    "LOW_BYTE(Palette2_MTiles)|LOW_BYTE(Palette3_MTiles)",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "MetatileGraphics_High",
+    4,
+    "HIGH_BYTE(Palette0_MTiles)|HIGH_BYTE(Palette1_MTiles)|" +
+    "HIGH_BYTE(Palette2_MTiles)|HIGH_BYTE(Palette3_MTiles)",
+  )
 }
 
 fn has_reviewed_offscreen_tables(low : @lower.AsmLowering) -> Bool {
@@ -3328,6 +3370,13 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
     has_reviewed_large_platform_draw_dependencies(low) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_draw_large_platform()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_render_area_graphics(subroutine) &&
+    has_reviewed_render_area_graphics_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_render_area_graphics()) { return; }")
     self.emit("#endif")
   }
 

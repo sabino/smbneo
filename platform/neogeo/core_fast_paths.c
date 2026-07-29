@@ -190,6 +190,99 @@ static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
 }
 
+bool smb_core_fast_render_area_graphics(void) {
+    uint8_t buffer_offset = ram[VRAM_Buffer2_Offset];
+    const uint8_t attribute_column =
+        (uint8_t)(ram[CurrentColumnPos] & 1u);
+    const uint8_t metatile_side = (uint8_t)(
+        ((ram[AreaParserTaskNum] & 1u) ^ 1u) << 1
+    );
+    uint8_t attribute_row = 0u;
+    uint8_t row;
+
+    /*
+     * The gameplay parser starts each 29-byte column command in an empty
+     * $0341 buffer. Other offsets can overlap attribute/input state while the
+     * translated routine is still reading it, so retain that byte-ordered
+     * implementation for every non-canonical caller.
+     */
+    if (buffer_offset != 0u) {
+        return false;
+    }
+
+    ram[0x5] = attribute_column;
+    ram[0x0] = buffer_offset;
+    ram[VRAM_Buffer2] = ram[CurrentNTAddr_High];
+    ram[VRAM_Buffer2 + 1u] = ram[CurrentNTAddr_Low];
+    ram[VRAM_Buffer2 + 2u] = 0x9au;
+    ram[0x4] = 0u;
+
+    for (row = 0u; row < 13u; ++row) {
+        const uint8_t metatile = ram[MetatileBuffer + row];
+        const uint8_t palette = (uint8_t)(metatile >> 6);
+        const uint8_t graphics_low =
+            rom_byte((uint16_t)(MetatileGraphics_Low + palette));
+        const uint8_t graphics_high =
+            rom_byte((uint16_t)(MetatileGraphics_High + palette));
+        const uint16_t graphics_address = (uint16_t)(
+            (uint16_t)graphics_low | ((uint16_t)graphics_high << 8)
+        );
+        const uint8_t tile_offset = (uint8_t)(metatile << 2);
+        const uint8_t tile_index =
+            (uint8_t)(tile_offset + metatile_side);
+        uint8_t attribute_bits;
+
+        ram[0x1] = row;
+        ram[0x3] = (uint8_t)(metatile & 0xc0u);
+        ram[0x6] = graphics_low;
+        ram[0x7] = graphics_high;
+        ram[0x2] = tile_offset;
+
+        ram[VRAM_Buffer2 + 3u + buffer_offset] =
+            rom_byte((uint16_t)(graphics_address + tile_index));
+        ram[VRAM_Buffer2 + 4u + buffer_offset] =
+            rom_byte((uint16_t)(graphics_address + tile_index + 1u));
+
+        if (attribute_column == 0u) {
+            attribute_bits = (uint8_t)(
+                palette << ((row & 1u) != 0u ? 4u : 0u)
+            );
+        } else {
+            attribute_bits = (uint8_t)(
+                palette << ((row & 1u) != 0u ? 6u : 2u)
+            );
+        }
+        ram[0x3] = attribute_bits;
+        ram[AttributeBuffer + attribute_row] = (uint8_t)(
+            ram[AttributeBuffer + attribute_row] | attribute_bits
+        );
+        if ((row & 1u) != 0u) {
+            attribute_row = (uint8_t)(attribute_row + 1u);
+        }
+        ram[0x4] = attribute_row;
+
+        buffer_offset = (uint8_t)(buffer_offset + 2u);
+        ram[0x0] = buffer_offset;
+    }
+
+    y = (uint8_t)(buffer_offset + 3u);
+    ram[VRAM_Buffer2 + y] = 0u;
+    ram[VRAM_Buffer2_Offset] = y;
+
+    ram[CurrentNTAddr_Low] = (uint8_t)(ram[CurrentNTAddr_Low] + 1u);
+    if ((ram[CurrentNTAddr_Low] & 0x1fu) == 0u) {
+        ram[CurrentNTAddr_Low] = 0x80u;
+        ram[CurrentNTAddr_High] ^= 0x04u;
+    }
+
+    a = 0x06u;
+    x = 0x0du;
+    carry_flag = true;
+    nz_value = a;
+    ram[VRAM_Buffer_AddrCtrl] = a;
+    return true;
+}
+
 static inline __attribute__((always_inline)) FastEnemyBlockProbe
 fast_probe_enemy_block(
     uint8_t slot,

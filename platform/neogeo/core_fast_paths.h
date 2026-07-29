@@ -32,6 +32,7 @@ bool smb_core_fast_offscreen_bounds_check(void);
 bool smb_core_fast_enemy_to_bg_collision_det(void);
 bool smb_core_fast_draw_large_platform(void);
 bool smb_core_fast_enemies_collision(void);
+bool smb_core_fast_render_area_graphics(void);
 
 SMB_CORE_FAST_INLINE bool smb_core_fast_spr_object_offscr_known_safe(
     uint8_t slot,

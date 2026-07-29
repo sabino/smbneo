@@ -1813,6 +1813,9 @@ void ResetScreenTimer(void) {
 }
 
 void RenderAreaGraphics(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_render_area_graphics()) { return; }
+  #endif
   lda_abs(CurrentColumnPos); // store LSB of where we're at
   and_imm(0x1);
   ram[0x5] = a;
