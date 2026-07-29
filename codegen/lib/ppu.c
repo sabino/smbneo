@@ -138,6 +138,17 @@ void ppu_write_data(uint8_t value) {
     vram_addr += increment;
 }
 
+uint8_t ppu_write_buffer_run(
+    uint16_t source_pointer,
+    uint8_t length,
+    uint8_t repeat
+) {
+    (void)source_pointer;
+    (void)length;
+    (void)repeat;
+    return 0u;
+}
+
 // https://www.nesdev.org/wiki/PPU_memory_map
 uint8_t ppu_read(uint16_t addr) {
     if (addr < 0x2000) {

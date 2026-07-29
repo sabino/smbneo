@@ -51,6 +51,23 @@ void ppu_write_scroll(uint8_t value);
 void ppu_write_address(uint8_t value);
 void ppu_write_data(uint8_t value);
 
+/*
+ * Attempt one decoded SMB VRAM-buffer run without the translated per-byte
+ * CPU/PPU dispatch.  A false return guarantees that no state was changed, so
+ * callers can execute the original byte loop unchanged.
+ */
+uint8_t ppu_write_buffer_run(
+    uint16_t source_pointer,
+    uint8_t length,
+    uint8_t repeat
+);
+
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+extern uint8_t neogeo_ppu_batch_test_enabled;
+extern uint32_t neogeo_ppu_batched_run_count;
+extern uint32_t neogeo_ppu_rejected_run_count;
+#endif
+
 uint8_t ppu_read(uint16_t addr);
 void ppu_write(uint16_t addr, uint8_t value);
 void ppu_render(void);

@@ -27,6 +27,12 @@ uint8_t oam_dma;
 
 static uint8_t status_phase;
 
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+uint8_t neogeo_ppu_batch_test_enabled = 1u;
+uint32_t neogeo_ppu_batched_run_count;
+uint32_t neogeo_ppu_rejected_run_count;
+#endif
+
 uint32_t neogeo_ppu_column_generation[64];
 uint32_t neogeo_ppu_background_full_generation;
 uint32_t neogeo_ppu_background_hud_generation;
@@ -139,6 +145,10 @@ void ppu_init(uint8_t *chr) {
     neogeo_ppu_hud_dirty_rows[1] = 0u;
     neogeo_ppu_hud_dirty_rows[2] = 0u;
     neogeo_ppu_hud_dirty_tracking_valid = 0u;
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+    neogeo_ppu_batched_run_count = 0u;
+    neogeo_ppu_rejected_run_count = 0u;
+#endif
 }
 
 uint8_t ppu_read_register(uint16_t addr) {
@@ -206,6 +216,90 @@ void ppu_write_data(uint8_t value) {
 
     ppu_write(vram_addr, value);
     vram_addr = normalize_ppu_address((uint16_t)(vram_addr + increment));
+}
+
+uint8_t ppu_write_buffer_run(
+    uint16_t source_pointer,
+    uint8_t length,
+    uint8_t repeat
+) {
+    uint16_t count = length;
+    uint16_t increment = (ppu_ctrl & 0x04u) ? 32u : 1u;
+    uint32_t source_last;
+    uint32_t destination_last;
+    uint16_t destination;
+    uint16_t run_index;
+
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+    if (neogeo_ppu_batch_test_enabled == 0u) {
+        ++neogeo_ppu_rejected_run_count;
+        return 0u;
+    }
+#endif
+
+    /*
+     * Only direct page-$03 RAM is admitted.  This excludes every CPU alias,
+     * device register, ROM read, and 16-bit source wrap from the shortcut.
+     * Length zero means 256 writes in the original DEX loop and deliberately
+     * remains on that loop.
+     */
+    if (
+        count == 0u ||
+        source_pointer < 0x0300u ||
+        source_pointer > 0x03ffu
+    ) {
+        goto rejected;
+    }
+
+    source_last = (uint32_t)source_pointer + 3u;
+    if (repeat == 0u) {
+        source_last += (uint32_t)count - 1u;
+    }
+    if (source_last > 0x03ffu) {
+        goto rejected;
+    }
+
+    /*
+     * Pattern-table and palette behavior stays in ppu_write().  Preflight the
+     * complete run before touching state so an unsupported record can fall
+     * back byte-for-byte, including writes that would cross into $3f00.
+     */
+    destination = normalize_ppu_address(vram_addr);
+    destination_last =
+        (uint32_t)destination + ((uint32_t)count - 1u) * increment;
+    if (
+        destination < 0x2000u ||
+        destination >= 0x3f00u ||
+        destination_last >= 0x3f00u
+    ) {
+        goto rejected;
+    }
+
+    for (run_index = 0u; run_index < count; ++run_index) {
+        uint16_t physical_index = nametable_index(destination);
+        uint16_t source_index = (uint16_t)(
+            source_pointer + 3u + (repeat != 0u ? 0u : run_index)
+        );
+        uint8_t value = ram[source_index];
+
+        if (nametable[physical_index] != value) {
+            nametable[physical_index] = value;
+            mark_nametable_changed(physical_index);
+        }
+        destination = (uint16_t)(destination + increment);
+    }
+    vram_addr = normalize_ppu_address(destination);
+
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+    ++neogeo_ppu_batched_run_count;
+#endif
+    return 1u;
+
+rejected:
+#if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+    ++neogeo_ppu_rejected_run_count;
+#endif
+    return 0u;
 }
 
 uint8_t ppu_read(uint16_t addr) {

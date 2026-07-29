@@ -51,6 +51,8 @@ OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
 OAM_TILES_TEST := $(BUILD)/test_neogeo_oam_tiles
 PALETTE_POLICY_TEST := $(BUILD)/test_neogeo_palette_policy
 VBLANK_BUDGET_TEST := $(BUILD)/test_neogeo_vblank_budget
+VRAM_BATCH_TEST := $(BUILD)/test_neogeo_vram_batch
+VRAM_BATCH_SANITIZE_TEST := $(BUILD)/test_neogeo_vram_batch_sanitize
 GAMEROM := smbneo
 SMBNEO_NGH := 2026
 
@@ -226,7 +228,8 @@ REPLAY_WINDOW_TOOL := $(ROOT)/tools/neogeo_replay_window.py
 .DEFAULT_GOAL := elf
 
 .PHONY: \
-	all elf test verify verify-codegen verify-sound-driver assets \
+	all elf test test-vram-batch-sanitize verify verify-codegen \
+	verify-sound-driver assets \
 	native-roms cart compat-cart hardware-cart neosd-cart run web \
 	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
@@ -850,6 +853,40 @@ $(VBLANK_BUDGET_TEST): \
 		-I. \
 		$(ROOT)/tools/test_neogeo_vblank_budget.c -o $@
 
+VRAM_BATCH_TEST_SOURCES := \
+	$(ROOT)/tools/test_neogeo_vram_batch.c \
+	$(ROOT)/codegen/lib/instructions.c \
+	$(ROOT)/codegen/lib/code.c \
+	$(ROOT)/codegen/lib/data.c \
+	$(ROOT)/codegen/lib/cpu.c \
+	ppu_direct.c title_data_stub.c apu_null.c
+
+$(VRAM_BATCH_TEST): \
+		$(VRAM_BATCH_TEST_SOURCES) ppu_render_state.h title_data.h video.h \
+		$(ROOT)/codegen/lib/ppu.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-DSMB_NEOGEO_VRAM_BATCH_TEST \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
+		-I. -I$(ROOT)/codegen/lib \
+		$(VRAM_BATCH_TEST_SOURCES) -o $@
+
+$(VRAM_BATCH_SANITIZE_TEST): \
+		$(VRAM_BATCH_TEST_SOURCES) ppu_render_state.h title_data.h video.h \
+		$(ROOT)/codegen/lib/ppu.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function -fno-omit-frame-pointer \
+		-fsanitize=address,undefined \
+		-DSMB_NEOGEO_VRAM_BATCH_TEST \
+		-DSMB_NEOGEO_TITLE_TEST_DATA \
+		-I. -I$(ROOT)/codegen/lib \
+		$(VRAM_BATCH_TEST_SOURCES) -o $@
+
+test-vram-batch-sanitize: $(VRAM_BATCH_SANITIZE_TEST)
+	$(VRAM_BATCH_SANITIZE_TEST)
+
 test: \
 		$(PPU_STATE_TEST) $(HUD_UPDATE_TEST) $(BACKGROUND_CHAIN_TEST) \
 		$(REPLAY_GATE_TEST) \
@@ -869,7 +906,7 @@ test: \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
 		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
-		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST)
+		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST) $(VRAM_BATCH_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
@@ -906,6 +943,7 @@ test: \
 	$(OAM_TILES_TEST)
 	$(PALETTE_POLICY_TEST)
 	$(VBLANK_BUDGET_TEST)
+	$(VRAM_BATCH_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \

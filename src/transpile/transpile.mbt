@@ -620,6 +620,25 @@ fn reviewed_flat_subroutine_fingerprint(
 }
 
 ///|
+fn is_reviewed_write_buffer_to_screen(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "WriteBufferToScreen__sub" {
+    return false
+  }
+
+  // The specialized emitter changes control flow around the PPU_DATA loop.
+  // Admit it only for the exact reviewed instruction, operand, nested branch,
+  // label, and jump-target structure. Comments are intentionally irrelevant.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    42,
+    1451,
+    "1ab865f9531d4ba356bfc72ef79e637dd6b77096ae79e02628f364c5ac9eaffc",
+  )
+}
+
+///|
 fn is_reviewed_enemy_gfx_handler(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -3109,7 +3128,114 @@ fn Emitter::emit_relative_enemy_position(self : Emitter) -> Unit {
 }
 
 ///|
+fn Emitter::emit_write_buffer_to_screen(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void WriteBufferToScreen(void) {")
+  self.indentation = 1
+  self.emit("ppu_write_address(a); // store high byte of vram address")
+  self.emit("iny();")
+  self.emit("lda_indy(0x0); // load next byte (second)")
+  self.emit("ppu_write_address(a); // store low byte of vram address")
+  self.emit("iny();")
+  self.emit("lda_indy(0x0); // load next byte (third)")
+  self.emit("asl_acc(); // shift to left and save in stack")
+  self.emit("pha();")
+  self.emit("lda_abs(Mirror_PPU_CTRL_REG1); // load mirror of $2000,")
+  self.emit("ora_imm(0b00000100); // set ppu to increment by 32 by default")
+  self.emit("// if d7 of third byte was clear, ppu will")
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("and_imm(0b11111011); // only increment by 1")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// SetupWrites:")
+  self.emit("WritePPUReg1(); // write to register")
+  self.emit("pla(); // pull from stack and shift to left again")
+  self.emit("asl_acc();")
+  self.emit("// if d6 of third byte was clear, do not repeat byte")
+  self.emit("if (carry_flag) {")
+  self.indentation += 1
+  self.emit("ora_imm(0b00000010); // otherwise set d1 and increment Y")
+  self.emit("iny();")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// GetLength:")
+  self.emit("lsr_acc(); // shift back to the right to get proper length")
+  self.emit("lsr_acc(); // note that d1 will now be in carry")
+  self.emit("tax();")
+  self.emit(
+    "#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)",
+  )
+  self.emit("// Reviewed VRAM-buffer batch hook; rejected runs use the original loop.")
+  self.emit("{")
+  self.indentation += 1
+  self.emit("const uint8_t run_length = x;")
+  self.emit(
+    "const uint16_t source_pointer = (uint16_t)((uint16_t)ram[0x0] | ((uint16_t)ram[0x1] << 8));",
+  )
+  self.emit(
+    "if (ppu_write_buffer_run(source_pointer, run_length, carry_flag ? 1u : 0u)) {",
+  )
+  self.indentation += 1
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("y = (uint8_t)(y + run_length);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("x = 0u;")
+  self.emit("nz_value = 0u;")
+  self.emit("goto OutputToVRAMComplete;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("#endif")
+  self.indentation = 0
+  self.emit("OutputToVRAM:")
+  self.indentation = 1
+  self.emit("// if carry set, repeat loading the same byte")
+  self.emit("if (!carry_flag) {")
+  self.indentation += 1
+  self.emit("iny(); // otherwise increment Y to load next byte")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("// RepeatByte:")
+  self.emit("lda_indy(0x0); // load more data from buffer and write to vram")
+  self.emit("ppu_write_data(a);")
+  self.emit("dex(); // done writing?")
+  self.emit("if (!zero_flag) { goto OutputToVRAM; }")
+  self.indentation = 0
+  self.emit(
+    "#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)",
+  )
+  self.emit("OutputToVRAMComplete:")
+  self.emit("#endif")
+  self.indentation = 1
+  self.emit("carry_flag = true;")
+  self.emit("tya();")
+  self.emit("adc_zp(0x0); // add end length plus one to the indirect at $00")
+  self.emit("ram[0x0] = a; // to allow this routine to read another set of updates")
+  self.emit("lda_imm(0x0);")
+  self.emit("adc_zp(0x1);")
+  self.emit("ram[0x1] = a;")
+  self.emit("lda_imm(0x3f); // sets vram address to $3f00")
+  self.emit("ppu_write_address(a);")
+  self.emit("lda_imm(0x0);")
+  self.emit("ppu_write_address(a);")
+  self.emit("ppu_write_address(a); // then reinitializes it for some reason")
+  self.emit("ppu_write_address(a);")
+  self.emit("UpdateScreen(); // <fallthrough>")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
+  if is_reviewed_write_buffer_to_screen(subroutine) {
+    self.emit_write_buffer_to_screen()
+    return
+  }
+
   if is_reviewed_get_enemy_bound_box(subroutine) &&
     has_reviewed_enemy_bound_box_dependencies(low) {
     self.emit_get_enemy_bound_box(subroutine, low)

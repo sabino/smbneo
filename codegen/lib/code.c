@@ -2294,7 +2294,21 @@ void WriteBufferToScreen(void) {
   lsr_acc(); // shift back to the right to get proper length
   lsr_acc(); // note that d1 will now be in carry
   tax();
-  
+  #if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+  // Reviewed VRAM-buffer batch hook; rejected runs use the original loop.
+  {
+    const uint8_t run_length = x;
+    const uint16_t source_pointer = (uint16_t)((uint16_t)ram[0x0] | ((uint16_t)ram[0x1] << 8));
+    if (ppu_write_buffer_run(source_pointer, run_length, carry_flag ? 1u : 0u)) {
+      if (!carry_flag) {
+        y = (uint8_t)(y + run_length);
+      }
+      x = 0u;
+      nz_value = 0u;
+      goto OutputToVRAMComplete;
+    }
+  }
+  #endif
 OutputToVRAM:
   // if carry set, repeat loading the same byte
   if (!carry_flag) {
@@ -2305,6 +2319,9 @@ OutputToVRAM:
   ppu_write_data(a);
   dex(); // done writing?
   if (!zero_flag) { goto OutputToVRAM; }
+#if defined(SMB_NEOGEO_FAST_CORE) || defined(SMB_NEOGEO_VRAM_BATCH_TEST)
+OutputToVRAMComplete:
+#endif
   carry_flag = true;
   tya();
   adc_zp(0x0); // add end length plus one to the indirect at $00
