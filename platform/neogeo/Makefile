@@ -19,6 +19,7 @@ WEB_VROM := $(WEB_BUILD)/smbneo-v1.v1
 WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 HUD_UPDATE_TEST := $(BUILD)/test_neogeo_hud_updates
+BACKGROUND_CHAIN_TEST := $(BUILD)/test_neogeo_background_chain
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
 REPLAY_CHECKPOINT_TEST := $(BUILD)/test_neogeo_replay_checkpoint
@@ -359,6 +360,13 @@ $(HUD_UPDATE_TEST): \
 		-I. -I$(ROOT)/codegen/lib \
 		$(ROOT)/tools/test_neogeo_hud_updates.c \
 		ppu_direct.c title_data_stub.c -o $@
+
+$(BACKGROUND_CHAIN_TEST): \
+		$(ROOT)/tools/test_neogeo_background_chain.c \
+		background_chain.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_background_chain.c -o $@
 
 $(REPLAY_GATE_TEST): \
 		$(ROOT)/tools/test_neogeo_replay_gate.c \
@@ -843,7 +851,8 @@ $(VBLANK_BUDGET_TEST): \
 		$(ROOT)/tools/test_neogeo_vblank_budget.c -o $@
 
 test: \
-		$(PPU_STATE_TEST) $(HUD_UPDATE_TEST) $(REPLAY_GATE_TEST) \
+		$(PPU_STATE_TEST) $(HUD_UPDATE_TEST) $(BACKGROUND_CHAIN_TEST) \
+		$(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) $(BOUNDING_BOX_CORE_TEST) \
 		$(ENEMY_BOUNDING_BOX_TEST) \
@@ -865,6 +874,7 @@ test: \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
 	$(HUD_UPDATE_TEST)
+	$(BACKGROUND_CHAIN_TEST)
 	$(REPLAY_GATE_TEST)
 	$(REPLAY_TIMING_TEST)
 	$(REPLAY_CHECKPOINT_TEST)

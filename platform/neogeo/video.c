@@ -1,5 +1,6 @@
 #include "video.h"
 
+#include "background_chain.h"
 #include "constants.h"
 #include "cpu.h"
 #include "external.h"
@@ -114,7 +115,6 @@ static volatile uint16_t neogeo_vblank_signal;
 static BackgroundTileCache
     background_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
 static uint16_t background_x_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t background_chain_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint32_t
     background_generation_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint8_t
@@ -123,6 +123,8 @@ static uint16_t background_config_cache[SPRITE_SET_COUNT];
 static uint8_t background_first_column[SPRITE_SET_COUNT];
 static uint8_t background_ring_origin[SPRITE_SET_COUNT];
 static uint8_t background_ring_valid[SPRITE_SET_COUNT];
+static uint8_t background_chain_origin[SPRITE_SET_COUNT];
+static uint8_t background_chain_valid[SPRITE_SET_COUNT];
 static uint32_t background_built_generation[SPRITE_SET_COUNT];
 
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
@@ -205,7 +207,6 @@ void neogeo_video_wait_for_present(void) {
 void neogeo_video_benchmark_invalidate(void) {
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
-    memset(background_chain_cache, 0, sizeof(background_chain_cache));
     memset(
         background_generation_cache,
         0xff,
@@ -218,6 +219,7 @@ void neogeo_video_benchmark_invalidate(void) {
     );
     memset(background_config_cache, 0xff, sizeof(background_config_cache));
     memset(background_ring_valid, 0, sizeof(background_ring_valid));
+    memset(background_chain_valid, 0, sizeof(background_chain_valid));
     memset(
         background_built_generation,
         0xff,
@@ -838,6 +840,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
 }
 
 static void prepare_background_hidden(uint8_t set) {
+    NeoGeoBackgroundChainPlan chain_plan;
     uint8_t ring_origin;
     uint8_t strip;
 
@@ -845,36 +848,48 @@ static void prepare_background_hidden(uint8_t set) {
         return;
     }
     ring_origin = next_background_drivers[0];
+    chain_plan = neogeo_background_chain_plan(
+        background_chain_valid[set],
+        background_chain_origin[set],
+        ring_origin
+    );
     write_vram_mod(1);
 
     /*
-     * A hidden bank's prospective drivers must be real chain roots.  Clear
-     * them unconditionally before writing any sticky followers so stale SCB3
-     * state can never chain one background bank into its neighbor.
+     * Reconcile every SCB3 word after initialization/invalidation. Thereafter
+     * a ring-origin change affects only the entering root and the old wrapped
+     * root. Clear the new root before making the old one sticky so even an
+     * interrupted hidden-bank update cannot join neighboring sprite banks.
      */
-    for (strip = 0; strip < next_background_driver_count; ++strip) {
-        uint8_t physical_strip = next_background_drivers[strip];
+    if (chain_plan.full_rebuild != 0u) {
+        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+            uint8_t sticky = (uint8_t)(
+                strip != 0u && strip != ring_origin
+            );
 
-        write_vram_address((uint16_t)(
-            ADDR_SCB3 + background_hardware_sprite(set, physical_strip)
-        ));
-        write_vram_data(0);
-        background_chain_cache[set][physical_strip] = 0;
-    }
-    for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
-        uint8_t sticky = (uint8_t)(
-            strip != ring_origin &&
-            (ring_origin == 0u || strip != 0u)
-        );
-
-        if (background_chain_cache[set][strip] != sticky) {
             write_vram_address((uint16_t)(
                 ADDR_SCB3 + background_hardware_sprite(set, strip)
             ));
             write_vram_data(sticky != 0u ? NEO_SCB3_STICKY : 0u);
-            background_chain_cache[set][strip] = sticky;
+        }
+    } else {
+        if (chain_plan.clear_root != 0xffu) {
+            strip = chain_plan.clear_root;
+            write_vram_address((uint16_t)(
+                ADDR_SCB3 + background_hardware_sprite(set, strip)
+            ));
+            write_vram_data(0u);
+        }
+        if (chain_plan.set_sticky != 0xffu) {
+            strip = chain_plan.set_sticky;
+            write_vram_address((uint16_t)(
+                ADDR_SCB3 + background_hardware_sprite(set, strip)
+            ));
+            write_vram_data(NEO_SCB3_STICKY);
         }
     }
+    background_chain_origin[set] = ring_origin;
+    background_chain_valid[set] = 1u;
     for (strip = 0; strip < next_background_driver_count; ++strip) {
         uint8_t physical_strip = next_background_drivers[strip];
         uint16_t x_word = next_background_x_word[strip];
@@ -1139,7 +1154,6 @@ void neogeo_video_init(void) {
 
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
-    memset(background_chain_cache, 0, sizeof(background_chain_cache));
     memset(
         background_generation_cache,
         0xff,
@@ -1152,6 +1166,7 @@ void neogeo_video_init(void) {
     );
     memset(background_config_cache, 0xff, sizeof(background_config_cache));
     memset(background_ring_valid, 0, sizeof(background_ring_valid));
+    memset(background_chain_valid, 0, sizeof(background_chain_valid));
     memset(
         background_built_generation,
         0xff,
