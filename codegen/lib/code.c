@@ -13262,41 +13262,34 @@ void CheckRightScreenBBox(void) {
 }
 
 void BoundingBoxCore(void) {
-  ram[0x0] = x; // save offset here
-  lda_absy(SprObject_Rel_YPos); // store object coordinates relative to screen
-  ram[0x2] = a; // vertically and horizontally, respectively
-  lda_absy(SprObject_Rel_XPos);
-  ram[0x1] = a;
-  txa(); // multiply offset by four and save to stack
-  asl_acc();
-  asl_acc();
-  pha();
-  tay(); // use as offset for Y, X is left alone
-  lda_absx(SprObj_BoundBoxCtrl); // load value here to be used as offset for X
-  asl_acc(); // multiply that by four and use as X
-  asl_acc();
-  tax();
-  lda_zp(0x1); // add the first number in the bounding box data to the
-  carry_flag = false; // relative horizontal coordinate using enemy object offset
-  adc_absx(BoundBoxCtrlData); // and store somewhere using same offset * 4
-  ram[BoundingBox_UL_Corner + y] = a; // store here
-  lda_zp(0x1);
-  carry_flag = false;
-  adc_absx(BoundBoxCtrlData + 2); // add the third number in the bounding box data to the
-  ram[BoundingBox_LR_Corner + y] = a; // relative horizontal coordinate and store
-  inx(); // increment both offsets
-  iny();
-  lda_zp(0x2); // add the second number to the relative vertical coordinate
-  carry_flag = false; // using incremented offset and store using the other
-  adc_absx(BoundBoxCtrlData); // incremented offset
-  ram[BoundingBox_UL_Corner + y] = a;
-  lda_zp(0x2);
-  carry_flag = false;
-  adc_absx(BoundBoxCtrlData + 2); // add the fourth number to the relative vertical coordinate
-  ram[BoundingBox_LR_Corner + y] = a; // and store
-  pla(); // get original offset loaded into $00 * y from stack
-  tay(); // use as Y
-  ldx_zp(0x0); // get original offset and use as X again
+  // Reviewed bounding-box specialization; guarded by the exact lowered structure.
+  const uint8_t object_offset = x;
+  const uint8_t object_index = y;
+  const uint8_t relative_y = ram[SprObject_Rel_YPos + object_index];
+  const uint8_t relative_x = ram[SprObject_Rel_XPos + object_index];
+  const uint8_t box_offset = (uint8_t)(object_offset << 2);
+  const uint8_t control = ram[SprObj_BoundBoxCtrl + object_offset];
+  const uint8_t control_offset = (uint8_t)(control << 2);
+  const uint8_t *const bounds = &data[BoundBoxCtrlData - 0x8000u + control_offset];
+  uint8_t *const box = &ram[BoundingBox_UL_Corner + box_offset];
+  uint16_t sum;
+  ram[0x0] = object_offset;
+  ram[0x2] = relative_y;
+  ram[0x1] = relative_x;
+  ram[0x100u + sp] = box_offset;
+  sum = (uint16_t)relative_x + bounds[0];
+  box[0] = (uint8_t)sum;
+  sum = (uint16_t)relative_x + bounds[2];
+  box[2] = (uint8_t)sum;
+  sum = (uint16_t)relative_y + bounds[1];
+  box[1] = (uint8_t)sum;
+  sum = (uint16_t)relative_y + bounds[3];
+  box[3] = (uint8_t)sum;
+  a = box_offset;
+  y = box_offset;
+  x = object_offset;
+  carry_flag = sum > 0xffu;
+  nz_value = object_offset;
 }
 
 void PlayerCollisionCore(void) {

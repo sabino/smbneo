@@ -833,6 +833,55 @@ fn is_block_buffer_collision(subroutine : @lower.AsmFlatSubroutine) -> Bool {
 }
 
 ///|
+fn is_bounding_box_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "BoundingBoxCore" {
+    return false
+  }
+
+  // This is a complete lowered-structure allowlist. BoundingBoxCore has
+  // observable scratch, stack, register, and flag effects, so even a small
+  // source change must use the generic instruction emitter until reviewed.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x0
+    #|I:LDA:absy:SprObject_Rel_YPos
+    #|I:STA:zp:0x2
+    #|I:LDA:absy:SprObject_Rel_XPos
+    #|I:STA:zp:0x1
+    #|I:TXA:imp
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:PHA:imp
+    #|I:TAY:imp
+    #|I:LDA:absx:SprObj_BoundBoxCtrl
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:TAX:imp
+    #|I:LDA:zp:0x1
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData
+    #|I:STA:absy:BoundingBox_UL_Corner
+    #|I:LDA:zp:0x1
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData + 2
+    #|I:STA:absy:BoundingBox_LR_Corner
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData
+    #|I:STA:absy:BoundingBox_UL_Corner
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:absx:BoundBoxCtrlData + 2
+    #|I:STA:absy:BoundingBox_LR_Corner
+    #|I:PLA:imp
+    #|I:TAY:imp
+    #|I:LDX:zp:0x0
+    #|
+  )
+}
+
+///|
 fn is_draw_sprite_object(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "DrawSpriteObject" {
     return false
@@ -1172,6 +1221,45 @@ fn has_reviewed_read_port_bits(low : @lower.AsmLowering) -> Bool {
     }
   }
   false
+}
+
+///|
+fn Emitter::emit_bounding_box_core(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void BoundingBoxCore(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed bounding-box specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("const uint8_t object_index = y;")
+  self.emit("const uint8_t relative_y = ram[SprObject_Rel_YPos + object_index];")
+  self.emit("const uint8_t relative_x = ram[SprObject_Rel_XPos + object_index];")
+  self.emit("const uint8_t box_offset = (uint8_t)(object_offset << 2);")
+  self.emit("const uint8_t control = ram[SprObj_BoundBoxCtrl + object_offset];")
+  self.emit("const uint8_t control_offset = (uint8_t)(control << 2);")
+  self.emit("const uint8_t *const bounds = &data[BoundBoxCtrlData - 0x8000u + control_offset];")
+  self.emit("uint8_t *const box = &ram[BoundingBox_UL_Corner + box_offset];")
+  self.emit("uint16_t sum;")
+  self.emit("ram[0x0] = object_offset;")
+  self.emit("ram[0x2] = relative_y;")
+  self.emit("ram[0x1] = relative_x;")
+  self.emit("ram[0x100u + sp] = box_offset;")
+  self.emit("sum = (uint16_t)relative_x + bounds[0];")
+  self.emit("box[0] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_x + bounds[2];")
+  self.emit("box[2] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_y + bounds[1];")
+  self.emit("box[1] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)relative_y + bounds[3];")
+  self.emit("box[3] = (uint8_t)sum;")
+  self.emit("a = box_offset;")
+  self.emit("y = box_offset;")
+  self.emit("x = object_offset;")
+  self.emit("carry_flag = sum > 0xffu;")
+  self.emit("nz_value = object_offset;")
+  self.indentation = 0
+  self.emit("}\n")
 }
 
 ///|
@@ -1885,6 +1973,11 @@ fn Emitter::emit_top_score_check(self : Emitter) -> Unit {
 
 ///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
+  if is_bounding_box_core(subroutine) {
+    self.emit_bounding_box_core()
+    return
+  }
+
   if is_spr_object_collision_core(subroutine) {
     self.emit_spr_object_collision_core()
     return
