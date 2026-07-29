@@ -201,6 +201,44 @@ void neogeo_video_wait_for_present(void) {
     }
 }
 
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+void neogeo_video_benchmark_invalidate(void) {
+    memset(background_cache, 0xff, sizeof(background_cache));
+    memset(background_x_cache, 0xff, sizeof(background_x_cache));
+    memset(background_chain_cache, 0, sizeof(background_chain_cache));
+    memset(
+        background_generation_cache,
+        0xff,
+        sizeof(background_generation_cache)
+    );
+    memset(
+        background_world_column_cache,
+        0xff,
+        sizeof(background_world_column_cache)
+    );
+    memset(background_config_cache, 0xff, sizeof(background_config_cache));
+    memset(background_ring_valid, 0, sizeof(background_ring_valid));
+    memset(
+        background_built_generation,
+        0xff,
+        sizeof(background_built_generation)
+    );
+
+    memset(cached_palettes, 0xff, sizeof(cached_palettes));
+    cached_backdrop = 0xffffu;
+    built_palette_generation = 0xffffffffu;
+    palette_upload_pending = 0u;
+    palette_changed_count = 0u;
+
+    memset(cached_hud, 0xff, sizeof(cached_hud));
+    built_hud_generation = 0xffffffffu;
+    built_hud_config = 0xffffu;
+    hud_upload_pending = 0u;
+    hud_changed_count = 0u;
+    hud_upload_cursor = 0u;
+}
+#endif
+
 /*
  * LSPC requires at least twelve 68000 cycles between VRAM register accesses.
  * Forcing the absolute-long form makes each store take sixteen cycles by

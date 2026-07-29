@@ -98,7 +98,8 @@ DEPENDENCIES = \
 	$(BUILD)/title_data_stub.d \
 	$(BUILD)/smbneogeo-title.d \
 	$(REPLAY_MAIN_OBJECT:.o=.d) \
-	$(REPLAY_GATE_OBJECT:.o=.d)
+	$(REPLAY_GATE_OBJECT:.o=.d) \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAY_VIDEO_OBJECT:.o=.d),)
 
 PROM := $(ROMDIR)/$(GAMEROM)-p1.p1
 CROM1 := $(ROMDIR)/$(GAMEROM)-c1.c1
@@ -114,12 +115,16 @@ GNGEO_DATA := $(ROMDIR)/gngeo_data.zip
 
 SMB_ROM ?=
 REPLAY_FM2 ?=
+REPLAY_DATA_HEADER ?=
 REPLAY_FAST ?= 0
 REPLAY_HARDWARE_PLAYABLE ?= 0
 REPLAY_TAIL_FRAMES ?= 1800
 REPLAY_BOOTSTRAP_FRAMES ?= 7
 REPLAY_AREA_INIT_HOLD_FRAMES ?= 1
 REPLAY_STAGE_SETTLE_FRAMES ?= 2
+REPLAY_WINDOW_BENCH ?= 0
+REPLAY_WINDOWS ?= 3435:3554,25691:25810
+REPLAY_WINDOW_WARMUP_FRAMES ?= 240
 REPLAY_EVIDENCE_TIMEOUT ?= 7200
 REPLAY_EVIDENCE_OVERCLOCK ?= 0
 REPLAY_EVIDENCE_DIR ?=
@@ -156,13 +161,17 @@ REPLAY_VARIANT := $(if $(filter 1,$(REPLAY_FAST)),fast,rendered)
 REPLAYDIR := $(BUILD)/replay-$(REPLAY_VARIANT)
 REPLAY_ROMDIR := $(REPLAYDIR)/rom
 REPLAY_HEADER := $(REPLAYDIR)/smb_replay_data.h
+REPLAY_WINDOW_HEADER := $(REPLAYDIR)/smb_neogeo_replay_windows.h
 REPLAY_MAIN_OBJECT := $(REPLAYDIR)/replay_main.o
 REPLAY_GATE_OBJECT := $(REPLAYDIR)/replay_gate.o
+REPLAY_VIDEO_OBJECT := $(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAYDIR)/video.o,$(BUILD)/video.o)
 REPLAY_TARGET := $(REPLAYDIR)/smbneogeo-replay.elf
 REPLAY_MAP := $(REPLAYDIR)/smbneogeo-replay.map
+REPLAY_ENGINE_OBJECTS := \
+	$(patsubst $(BUILD)/video.o,$(REPLAY_VIDEO_OBJECT),$(ENGINE_OBJECTS))
 REPLAY_OBJECTS := \
 	$(REPLAY_MAIN_OBJECT) $(REPLAY_GATE_OBJECT) \
-	$(ENGINE_OBJECTS) $(BUILD)/smbneogeo-title.o
+	$(REPLAY_ENGINE_OBJECTS) $(BUILD)/smbneogeo-title.o
 REPLAY_PROM := $(REPLAY_ROMDIR)/$(GAMEROM)-p1.p1
 REPLAY_CROM1 := $(REPLAY_ROMDIR)/$(GAMEROM)-c1.c1
 REPLAY_CROM2 := $(REPLAY_ROMDIR)/$(GAMEROM)-c2.c2
@@ -191,6 +200,11 @@ REPLAY_POLICY_FLAG := \
 	$(if $(filter 1,$(REPLAY_HARDWARE_PLAYABLE)),--hardware-playable,)
 REPLAY_FAST_FLAG := \
 	$(if $(filter 1,$(REPLAY_FAST)),-DSMB_NEOGEO_REPLAY_FAST,)
+REPLAY_WINDOW_FLAG := \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),-DSMB_NEOGEO_REPLAY_WINDOW_BENCH,)
+REPLAY_WINDOW_DEPENDENCY := \
+	$(if $(filter 1,$(REPLAY_WINDOW_BENCH)),$(REPLAY_WINDOW_HEADER),)
+REPLAY_WINDOW_TOOL := $(ROOT)/tools/neogeo_replay_window.py
 
 .DEFAULT_GOAL := elf
 
@@ -241,26 +255,55 @@ $(BUILD)/smbneogeo-title.o: $(TITLE_SOURCE) title_data.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(REPLAY_HEADER): FORCE | $(REPLAYDIR)
-	@test -n "$(REPLAY_FM2)" || { \
-		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+	@test -z "$(REPLAY_FM2)" || test -z "$(REPLAY_DATA_HEADER)" || { \
+		echo "set only one of REPLAY_FM2 or REPLAY_DATA_HEADER" >&2; \
 		exit 2; \
 	}
-	$(PYTHON) $(ROOT)/tools/rec_tool.py emit-fm2-c \
-		"$(REPLAY_FM2)" \
-		--symbol-prefix smb_replay \
-		$(REPLAY_POLICY_FLAG) \
+	@test -n "$(REPLAY_FM2)" || test -n "$(REPLAY_DATA_HEADER)" || { \
+		echo "REPLAY_FM2 or REPLAY_DATA_HEADER is required" >&2; \
+		exit 2; \
+	}
+	@if test -n "$(REPLAY_DATA_HEADER)"; then \
+		test -f "$(REPLAY_DATA_HEADER)" || { \
+			echo "replay data header is missing: $(REPLAY_DATA_HEADER)" >&2; \
+			exit 2; \
+		}; \
+		cp -- "$(REPLAY_DATA_HEADER)" "$@"; \
+	else \
+		$(PYTHON) $(ROOT)/tools/rec_tool.py emit-fm2-c \
+			"$(REPLAY_FM2)" \
+			--symbol-prefix smb_replay \
+			$(REPLAY_POLICY_FLAG) \
+			--output "$@"; \
+	fi
+
+$(REPLAY_WINDOW_HEADER): FORCE $(REPLAY_WINDOW_TOOL) | $(REPLAYDIR)
+	@test "$(REPLAY_WINDOW_BENCH)" = "1" || { \
+		echo "window metadata requires REPLAY_WINDOW_BENCH=1" >&2; \
+		exit 2; \
+	}
+	@test "$(REPLAY_FAST)" = "0" || { \
+		echo "replay-window benchmarking requires REPLAY_FAST=0" >&2; \
+		exit 2; \
+	}
+	$(PYTHON) $(REPLAY_WINDOW_TOOL) emit-header \
+		--windows "$(REPLAY_WINDOWS)" \
+		--warmup "$(REPLAY_WINDOW_WARMUP_FRAMES)" \
 		--output "$@"
 
 $(REPLAY_MAIN_OBJECT): \
 		replay_main.c replay_checkpoint.h replay_gate.h replay_timing.h \
-		$(REPLAY_HEADER) | $(REPLAYDIR)
+		$(REPLAY_HEADER) $(REPLAY_WINDOW_DEPENDENCY) | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) -I$(REPLAYDIR) $(CFLAGS) \
-		$(REPLAY_FAST_FLAG) \
+		$(REPLAY_FAST_FLAG) $(REPLAY_WINDOW_FLAG) \
 		-DSMB_NEOGEO_REPLAY_TAIL_FRAMES=$(REPLAY_TAIL_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_BOOTSTRAP_FRAMES=$(REPLAY_BOOTSTRAP_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_AREA_INIT_HOLD_FRAMES=$(REPLAY_AREA_INIT_HOLD_FRAMES) \
 		-DSMB_NEOGEO_REPLAY_STAGE_SETTLE_FRAMES=$(REPLAY_STAGE_SETTLE_FRAMES) \
 		-c $< -o $@
+
+$(REPLAYDIR)/video.o: video.c video.h | $(REPLAYDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(REPLAY_WINDOW_FLAG) -c $< -o $@
 
 $(REPLAY_GATE_OBJECT): replay_gate.c replay_gate.h | $(REPLAYDIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -701,7 +744,13 @@ replay-cart: \
 		exit 2; \
 	}
 	@test -n "$(REPLAY_FM2)" || { \
-		echo "REPLAY_FM2 is required (a local text .fm2 movie)" >&2; \
+		test -n "$(REPLAY_DATA_HEADER)" || { \
+			echo "REPLAY_FM2 or REPLAY_DATA_HEADER is required" >&2; \
+			exit 2; \
+		}; \
+	}
+	@test -z "$(REPLAY_FM2)" || test -z "$(REPLAY_DATA_HEADER)" || { \
+		echo "set only one of REPLAY_FM2 or REPLAY_DATA_HEADER" >&2; \
 		exit 2; \
 	}
 	@test -f "$(GNGEO_SUPPORT_DATA)" || { \
