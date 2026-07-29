@@ -660,6 +660,69 @@ fn is_reviewed_move_normal_enemy(
 }
 
 ///|
+fn is_relative_enemy_position(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RelativeEnemyPosition" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0x1
+    #|I:LDY:imm:0x1
+    #|I:JSR:abs:VariableObjOfsRelPos
+    #|
+  )
+}
+
+///|
+fn is_relative_enemy_position_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "VariableObjOfsRelPos" =>
+      flat_subroutine_structure(subroutine.items) == (
+        #|I:STX:zp:0x0
+        #|I:CLC:imp
+        #|I:ADC:zp:0x0
+        #|I:TAX:imp
+        #|I:JSR:abs:GetObjRelativePosition
+        #|I:LDX:zp:ObjectOffset
+        #|
+      )
+    "GetObjRelativePosition" =>
+      flat_subroutine_structure(subroutine.items) == (
+        #|I:LDA:zpx:SprObject_Y_Position
+        #|I:STA:absy:SprObject_Rel_YPos
+        #|I:LDA:zpx:SprObject_X_Position
+        #|I:SEC:imp
+        #|I:SBC:abs:ScreenLeft_X_Pos
+        #|I:STA:absy:SprObject_Rel_XPos
+        #|
+      )
+    _ => false
+  }
+}
+
+fn has_reviewed_relative_enemy_position_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut variable = false
+  let mut relative = false
+
+  for subroutine in low.flat_subroutines {
+    if is_relative_enemy_position_dependency(subroutine) {
+      if subroutine.name == "VariableObjOfsRelPos" {
+        variable = true
+      } else if subroutine.name == "GetObjRelativePosition" {
+        relative = true
+      }
+    }
+  }
+  variable && relative
+}
+
+///|
 fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "SprObjectCollisionCore" {
     return false
@@ -2127,6 +2190,37 @@ fn Emitter::emit_top_score_check(self : Emitter) -> Unit {
 }
 
 ///|
+fn Emitter::emit_relative_enemy_position(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void RelativeEnemyPosition(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed enemy-relative-position specialization; guarded by exact folded helper shapes.",
+  )
+  self.emit("const uint8_t initial_x = x;")
+  self.emit("const uint8_t object_index = (uint8_t)(initial_x + 1u);")
+  self.emit("uint8_t object_x;")
+  self.emit("uint8_t screen_x;")
+  self.emit("ram[0x0] = initial_x;")
+  self.emit(
+    "a = ram[(uint8_t)(SprObject_Y_Position + object_index)];",
+  )
+  self.emit("ram[SprObject_Rel_YPos + 1u] = a;")
+  self.emit(
+    "object_x = ram[(uint8_t)(SprObject_X_Position + object_index)];",
+  )
+  self.emit("screen_x = ram[ScreenLeft_X_Pos];")
+  self.emit("carry_flag = object_x >= screen_x;")
+  self.emit("a = (uint8_t)(object_x - screen_x);")
+  self.emit("ram[SprObject_Rel_XPos + 1u] = a;")
+  self.emit("y = 1u;")
+  self.emit("x = ram[ObjectOffset];")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
   if is_bounding_box_core(subroutine) {
     self.emit_bounding_box_core()
@@ -2187,6 +2281,12 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
   if is_top_score_check(subroutine) {
     self.emit_top_score_check()
+    return
+  }
+
+  if is_relative_enemy_position(subroutine) &&
+    has_reviewed_relative_enemy_position_dependencies(low) {
+    self.emit_relative_enemy_position()
     return
   }
 

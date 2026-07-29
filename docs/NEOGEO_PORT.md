@@ -20,6 +20,10 @@ Completed:
   states of Spinies. It preserves the original fixed-point movement, emulated
   stack effects, registers, and flags, with the complete generated state
   machine retained as the fallback.
+- A folded enemy-relative-position path guarded by the exact caller and helper
+  shapes. It performs the source-ordered zero-page reads, coordinate writes,
+  subtraction, and register restoration directly while retaining the generic
+  helper chain for every other object class.
 - Direct background, OAM sprite, palette, FIX HUD, and input backends.
 - Two 33-strip background banks with generation-tracked columns, sparse
   changed-row uploads, and one or two sticky chain drivers per hidden bank.

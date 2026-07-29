@@ -14591,9 +14591,22 @@ void RelativeMiscPosition(void) {
 }
 
 void RelativeEnemyPosition(void) {
-  lda_imm(0x1); // get coordinates of enemy object
-  ldy_imm(0x1); // relative to the screen
-  VariableObjOfsRelPos();
+  // Reviewed enemy-relative-position specialization; guarded by exact folded helper shapes.
+  const uint8_t initial_x = x;
+  const uint8_t object_index = (uint8_t)(initial_x + 1u);
+  uint8_t object_x;
+  uint8_t screen_x;
+  ram[0x0] = initial_x;
+  a = ram[(uint8_t)(SprObject_Y_Position + object_index)];
+  ram[SprObject_Rel_YPos + 1u] = a;
+  object_x = ram[(uint8_t)(SprObject_X_Position + object_index)];
+  screen_x = ram[ScreenLeft_X_Pos];
+  carry_flag = object_x >= screen_x;
+  a = (uint8_t)(object_x - screen_x);
+  ram[SprObject_Rel_XPos + 1u] = a;
+  y = 1u;
+  x = ram[ObjectOffset];
+  nz_value = x;
 }
 
 void RelativeBlockPosition(void) {

@@ -26,6 +26,7 @@ COLLISION_CORE_TEST := $(BUILD)/test_collision_core
 BLOCK_BUFFER_COLLISION_TEST := $(BUILD)/test_block_buffer_collision
 BOUNDING_BOX_CORE_TEST := $(BUILD)/test_bounding_box_core
 MOVE_OBJECT_HORIZ_TEST := $(BUILD)/test_move_object_horizontally
+RELATIVE_ENEMY_POSITION_TEST := $(BUILD)/test_relative_enemy_position
 DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
 MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
 SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
@@ -469,6 +470,27 @@ $(MOVE_OBJECT_HORIZ_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(RELATIVE_ENEMY_POSITION_TEST): \
+		$(ROOT)/tools/test_relative_enemy_position.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_relative_enemy_position.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(DRAW_SPRITE_OBJECT_TEST): \
 		$(ROOT)/tools/test_draw_sprite_object.c \
 		$(ROOT)/codegen/lib/code.c \
@@ -695,6 +717,7 @@ test: \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) $(BOUNDING_BOX_CORE_TEST) \
 		$(BLOCK_BUFFER_COLLISION_TEST) $(MOVE_OBJECT_HORIZ_TEST) \
+		$(RELATIVE_ENEMY_POSITION_TEST) \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
 		$(SPRITE_SHUFFLER_TEST) $(CORE_FAST_PATHS_TEST) \
 		$(READ_PORT_BITS_TEST) $(OFFSCREEN_BITS_TEST) \
@@ -714,6 +737,7 @@ test: \
 	$(BLOCK_BUFFER_COLLISION_TEST)
 	$(BOUNDING_BOX_CORE_TEST)
 	$(MOVE_OBJECT_HORIZ_TEST)
+	$(RELATIVE_ENEMY_POSITION_TEST)
 	$(DRAW_SPRITE_OBJECT_TEST)
 	$(MOVE_SPRITES_OFFSCREEN_TEST)
 	$(SPRITE_SHUFFLER_TEST)
