@@ -112,6 +112,23 @@ class SymbolResolutionTests(unittest.TestCase):
 
 
 class CommandConstructionTests(unittest.TestCase):
+    def test_default_controls_preserve_neogeo_button_identity(self) -> None:
+        expected = (
+            "A=K97,B=K115,C=K113,D=K119,START=K49,"
+            "UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79"
+        )
+        makefile = (
+            Path(__file__).resolve().parents[1]
+            / "platform"
+            / "neogeo"
+            / "Makefile"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(cadence.DEFAULT_P1_CONTROLS, expected)
+        self.assertEqual(cadence.DEFAULT_JUMP_KEY, "a")
+        self.assertEqual(cadence.DEFAULT_RUN_KEY, "q")
+        self.assertIn(f"GNGEO_P1 ?= {expected}\n", makefile)
+
     def test_gdb_script_uses_resolved_addresses_and_32_bit_reads(self) -> None:
         script = cadence.build_gdb_script(
             sample_symbols(),

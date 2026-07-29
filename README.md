@@ -22,8 +22,8 @@ uploaded. After conversion, the page offers three local downloads:
 - `smbneo.neo`, the single-file NeoSD/NeoSD Pro image; and
 - `puzzledp.zip`, the optional package for fixed-database emulators.
 
-Use the arrow keys to move, `A` to jump, `S` to run or throw fireballs, `1`
-to start, and `2` to select.
+Use the arrow keys to move, `A` or `S` to jump, `Q` or `W` to run or throw
+fireballs, `1` to start, and `2` to select.
 
 ## Screenshots
 
@@ -51,8 +51,8 @@ to start, and `2` to select.
 | Action | Neo Geo | Default keyboard |
 | --- | --- | --- |
 | Move | Joystick | Arrow keys |
-| Jump / swim | A | `A` |
-| Run / fire | B | `S` |
+| Jump / swim | A or B | `A` or `S` |
+| Run / fire / grab / throw | C or D | `Q` or `W` |
 | Start | Start | `1` |
 | Select | Select | `2` |
 

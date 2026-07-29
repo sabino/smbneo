@@ -576,7 +576,7 @@ test("a generated puzzledp set can be uploaded and rebuilt byte-for-byte", () =>
   }
 });
 
-test("the browser mapping uses arrow keys for movement", async () => {
+test("the browser mapping preserves the Neo Geo control layout", async () => {
   const playerSource = await readFile(
     new URL("../web/player.mjs", import.meta.url),
     "utf8",
@@ -587,6 +587,10 @@ test("the browser mapping uses arrow keys for movement", async () => {
   assert.match(playerSource, /value: "right arrow", value2: "DPAD_RIGHT"/);
   assert.match(playerSource, /value: "a", value2: "BUTTON_2"/);
   assert.match(playerSource, /value: "s", value2: "BUTTON_1"/);
+  assert.match(playerSource, /value: "q", value2: "BUTTON_4"/);
+  assert.match(playerSource, /value: "w", value2: "BUTTON_3"/);
+  assert.match(playerSource, /jump: \["a", "s"\]/);
+  assert.match(playerSource, /run: \["q", "w"\]/);
   assert.match(playerSource, /EJS_gameName = "puzzledp"/);
   assert.match(
     playerSource,
@@ -611,4 +615,7 @@ test("the browser mapping uses arrow keys for movement", async () => {
   );
   assert.match(pageSource, /id="download-neosd"/);
   assert.match(pageSource, /Download smbneo\.neo/);
+  assert.match(pageSource, /<kbd>A<\/kbd><kbd>S<\/kbd>/);
+  assert.match(pageSource, /<kbd>Q<\/kbd><kbd>W<\/kbd>/);
+  assert.match(pageSource, /A and B both jump; C and D both run/);
 });

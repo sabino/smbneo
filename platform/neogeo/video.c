@@ -74,8 +74,6 @@
 #define NES_UP 0x10u
 #define NES_START 0x08u
 #define NES_SELECT 0x04u
-#define NES_B 0x02u
-#define NES_A 0x01u
 
 #define NEO_BACKDROP_COLOR (*(volatile uint16_t *)0x401ffe)
 
@@ -86,6 +84,10 @@ _Static_assert(
     FIX_CONTENT_X == NEOGEO_HUD_FIX_CONTENT_X,
     "HUD FIX-map X origin must match the renderer crop"
 );
+_Static_assert(SMB_NEOGEO_BUTTON_A == CNT_A, "Neo Geo A mask changed");
+_Static_assert(SMB_NEOGEO_BUTTON_B == CNT_B, "Neo Geo B mask changed");
+_Static_assert(SMB_NEOGEO_BUTTON_C == CNT_C, "Neo Geo C mask changed");
+_Static_assert(SMB_NEOGEO_BUTTON_D == CNT_D, "Neo Geo D mask changed");
 _Static_assert(
     ADDR_FIXMAP == NEOGEO_HUD_FIXMAP_BASE,
     "HUD FIX-map base must match ngdevkit"
@@ -1088,12 +1090,7 @@ uint8_t neogeo_read_controller1(void) {
     if ((controls & CNT_UP) == 0u) {
         state |= NES_UP;
     }
-    if ((controls & CNT_A) == 0u) {
-        state |= NES_A;
-    }
-    if ((controls & CNT_B) == 0u) {
-        state |= NES_B;
-    }
+    state |= neogeo_input_map_action_buttons(controls);
     if ((system & CNT_START1) == 0u) {
         state |= NES_START;
     }
