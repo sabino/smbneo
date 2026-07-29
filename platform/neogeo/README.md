@@ -251,9 +251,8 @@ The port reads the active-low Neo Geo controller registers directly. Its
 default GnGeo keyboard bindings are:
 
 - arrow keys: directional joystick
-- `A`: Neo Geo A / NES A (jump)
-- `S`: Neo Geo B / NES B (run/fire)
-- `Q`, `W`: Neo Geo C/D (currently unused by SMB)
+- `A`, `S`: Neo Geo A/B / NES A (jump/swim)
+- `Q`, `W`: Neo Geo C/D / NES B (run/fire/grab/throw)
 - `1`: player-one Start / NES Start
 - `2`: player-two Start / NES Select
 

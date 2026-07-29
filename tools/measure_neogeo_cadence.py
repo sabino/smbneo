@@ -34,6 +34,8 @@ DEFAULT_P1_CONTROLS = (
     "UP=K82,DOWN=K81,LEFT=K80,RIGHT=K79"
 )
 DEFAULT_P2_CONTROLS = "START=K50"
+DEFAULT_JUMP_KEY = "a"
+DEFAULT_RUN_KEY = "q"
 REQUIRED_SYMBOL_NAMES = (
     "rom_callback_VBlank",
     "neogeo_vblank_count",
@@ -1090,7 +1092,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--active-motion",
         action="store_true",
         help=(
-            "press Start, hold Right+B, and jump repeatedly; "
+            "press Start, hold Right+C, and jump repeatedly; "
             "use enough warmup to enter gameplay"
         ),
     )
@@ -1213,19 +1215,19 @@ def motion_child_main(argv: Sequence[str]) -> int:
     xdotool("key", "1")
     time.sleep(2.0)
     xdotool("keydown", "Right")
-    xdotool("keydown", "s")
+    xdotool("keydown", DEFAULT_RUN_KEY)
     print(f"MOTION_ACTIVE window={window}", flush=True)
     try:
         while not stopping:
             time.sleep(0.6)
             if stopping:
                 break
-            xdotool("keydown", "a")
+            xdotool("keydown", DEFAULT_JUMP_KEY)
             time.sleep(0.18)
-            xdotool("keyup", "a")
+            xdotool("keyup", DEFAULT_JUMP_KEY)
     finally:
-        xdotool("keyup", "a")
-        xdotool("keyup", "s")
+        xdotool("keyup", DEFAULT_JUMP_KEY)
+        xdotool("keyup", DEFAULT_RUN_KEY)
         xdotool("keyup", "Right")
     return 0
 
