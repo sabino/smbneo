@@ -196,6 +196,20 @@ def validate_ngh_id(
     return value
 
 
+def validate_title_data_alignment(symbols: dict[str, int]) -> int:
+    """Require a word-aligned title payload for swabbed P-ROM patching."""
+
+    name = "neogeo_title_screen_data"
+    address = symbols.get(name)
+    if address is None:
+        raise ElfCheckError(f"required title data symbol missing: {name}")
+    if address & 1:
+        raise ElfCheckError(
+            f"title data symbol has odd P-ROM address: {address:#x}"
+        )
+    return address
+
+
 def _parse_objdump_instruction(line: str) -> tuple[str, str] | None:
     match = re.match(
         r"^\s*[0-9a-fA-F]+:\s+"
@@ -499,6 +513,7 @@ def main() -> int:
     try:
         startup = validate_startup_layout(symbol_values)
         ngh_id = validate_ngh_id(symbol_values)
+        title_data_address = validate_title_data_alignment(symbol_values)
         disassembly = run(
             [f"{args.prefix}objdump", "-d", str(args.elf)]
         )
@@ -537,6 +552,7 @@ def main() -> int:
         f"data restore ends at ${data_copy_end:06x}"
     )
     print(f"Cartridge identity: packed-BCD NGH ${ngh_id:04x}")
+    print(f"Title data: word-aligned P-ROM address {title_data_address:#x}")
     print(
         "LSPC register safety: address/data/modifier writes are word-sized "
         "absolute-long "

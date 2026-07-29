@@ -238,6 +238,7 @@ def format_title_screen_source(data: bytes) -> str:
     lines = [
         '#include "title_data.h"',
         "",
+        "TITLE_SCREEN_DATA_ALIGNMENT",
         "const uint8_t neogeo_title_screen_data[TITLE_SCREEN_CHR_SIZE] = {",
     ]
     for offset in range(0, len(data), 12):

@@ -50,6 +50,24 @@ class WebPlayerBuilderTests(unittest.TestCase):
                 0x046A,
             )
 
+    def test_odd_title_symbol_offset_is_rejected(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["m68k-neogeo-elf-nm"],
+            0,
+            stdout="000004c1 r neogeo_title_screen_data\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            web_builder.subprocess,
+            "run",
+            return_value=completed,
+        ):
+            with self.assertRaisesRegex(
+                web_builder.BuildError,
+                "odd P-ROM offset 0x4c1",
+            ):
+                web_builder.find_title_offset(Path("fixture.elf"), "nm")
+
     def test_complete_site_is_rom_free_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
