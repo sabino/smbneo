@@ -50,6 +50,10 @@ int main(void) {
     assert_column_range(0, 64, 0);
     assert(neogeo_ppu_hud_generation == 0);
     assert(neogeo_ppu_palette_generation == 0);
+    assert(neogeo_ppu_hud_dirty_rows[0] == 0u);
+    assert(neogeo_ppu_hud_dirty_rows[1] == 0u);
+    assert(neogeo_ppu_hud_dirty_rows[2] == 0u);
+    assert(neogeo_ppu_hud_dirty_tracking_valid == 0u);
 
     /* Identical writes must not invalidate any renderer cache. */
     ppu_write(0x2000u, 0);
@@ -103,6 +107,26 @@ int main(void) {
     assert_column_range(0, 64, 0);
     assert(neogeo_ppu_hud_generation == 0);
     assert(neogeo_ppu_palette_generation == 0);
+
+    /* All vertical and $3000 aliases feed the same three-row HUD bitset. */
+    ppu_write(0x2020u, 1u);
+    ppu_write(0x2821u, 1u);
+    ppu_write(0x3022u, 1u);
+    assert(neogeo_ppu_hud_dirty_rows[0] == UINT32_C(0x00000007));
+    assert(neogeo_ppu_hud_dirty_rows[1] == 0u);
+    assert(neogeo_ppu_hud_dirty_rows[2] == 0u);
+    assert(neogeo_ppu_hud_generation == 3u);
+
+    /* A top attribute byte can alter all three rows across four columns. */
+    ppu_write(0x23c7u, 0xffu);
+    assert(neogeo_ppu_hud_dirty_rows[0] == UINT32_C(0xf0000007));
+    assert(neogeo_ppu_hud_dirty_rows[1] == UINT32_C(0xf0000000));
+    assert(neogeo_ppu_hud_dirty_rows[2] == UINT32_C(0xf0000000));
+    assert(neogeo_ppu_hud_generation == 4u);
+
+    neogeo_ppu_hud_dirty_acknowledge();
+    assert(neogeo_ppu_hud_dirty_any() == 0u);
+    assert(neogeo_ppu_hud_dirty_tracking_valid == 1u);
 
     puts("Neo Geo PPU render-state tests: OK");
     return 0;

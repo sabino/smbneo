@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "cpu.h"
 #include "external.h"
+#include "hud_update.h"
 #include "input_policy.h"
 #include "oam_tiles.h"
 #include "oam_visibility.h"
@@ -17,12 +18,9 @@
 #define NES_CROP_TOP 8
 #define NES_CONTENT_X ((NEO_SCREEN_WIDTH - SCREEN_WIDTH) / 2u)
 
-#define FIX_VISIBLE_Y 2u
 #define FIX_CONTENT_X (NES_CONTENT_X / 8u)
 #define FIX_CONTENT_COLUMNS 32u
-#define FIX_HUD_ROWS 3u
-#define FIX_NES_TILE_BASE 1u
-#define FIX_BLANK_TILE 513u
+#define FIX_BLANK_TILE NEOGEO_HUD_FIX_BLANK_TILE
 #define FIX_SOLID_TILE 514u
 #define FIX_BORDER_PALETTE 15u
 
@@ -80,7 +78,16 @@
 #define NEO_BACKDROP_COLOR (*(volatile uint16_t *)0x401ffe)
 
 #define RENDER_PALETTE_COUNT 12u
-#define HUD_ENTRY_COUNT (FIX_HUD_ROWS * FIX_CONTENT_COLUMNS)
+#define HUD_ENTRY_COUNT NEOGEO_HUD_ENTRY_COUNT
+
+_Static_assert(
+    FIX_CONTENT_X == NEOGEO_HUD_FIX_CONTENT_X,
+    "HUD FIX-map X origin must match the renderer crop"
+);
+_Static_assert(
+    ADDR_FIXMAP == NEOGEO_HUD_FIXMAP_BASE,
+    "HUD FIX-map base must match ngdevkit"
+);
 
 typedef struct {
     uint16_t tile;
@@ -132,14 +139,7 @@ static uint8_t next_background_driver_count;
 static uint16_t next_background_y_word;
 static uint16_t next_background_x_word[BACKGROUND_MAX_DRIVERS];
 
-static uint16_t desired_hud[HUD_ENTRY_COUNT];
-static uint16_t cached_hud[HUD_ENTRY_COUNT];
-static uint32_t built_hud_generation;
-static uint16_t built_hud_config;
-static uint8_t hud_upload_pending;
-static uint8_t hud_changed_count;
-static uint8_t hud_upload_cursor;
-static uint8_t hud_changed_indices[HUD_ENTRY_COUNT];
+static NeoGeoHudState hud_state;
 static uint16_t desired_palettes[24][4];
 static uint16_t cached_palettes[24][4];
 static uint16_t desired_backdrop;
@@ -230,12 +230,13 @@ void neogeo_video_benchmark_invalidate(void) {
     palette_upload_pending = 0u;
     palette_changed_count = 0u;
 
-    memset(cached_hud, 0xff, sizeof(cached_hud));
-    built_hud_generation = 0xffffffffu;
-    built_hud_config = 0xffffu;
-    hud_upload_pending = 0u;
-    hud_changed_count = 0u;
-    hud_upload_cursor = 0u;
+    memset(hud_state.cached, 0xff, sizeof(hud_state.cached));
+    hud_state.built_generation = 0xffffffffu;
+    hud_state.built_config = 0xffffu;
+    hud_state.upload_pending = 0u;
+    hud_state.changed_count = 0u;
+    hud_state.upload_cursor = 0u;
+    neogeo_ppu_hud_dirty_invalidate();
 }
 #endif
 
@@ -958,91 +959,51 @@ static void build_oam_sprites(uint8_t set) {
 
 static void build_hud(uint8_t show_hud) {
     uint16_t pattern_base = (ppu_ctrl & 0x10u) ? 256u : 0u;
-    uint16_t render_config =
-        (uint16_t)(pattern_base | (show_hud != 0u ? 1u : 0u));
-    uint8_t row;
-
-    if (
-        built_hud_generation == neogeo_ppu_hud_generation &&
-        built_hud_config == render_config
-    ) {
-        return;
-    }
 
     /*
      * NES tile row 0 is overscan.  Rows 1..3 become the three visible FIX
      * rows, keeping the status bar stationary while SCB strips scroll below.
      */
-    hud_changed_count = 0;
-    for (row = 0; row < FIX_HUD_ROWS; ++row) {
-        uint8_t source_y = (uint8_t)(row + 1u);
-        uint8_t column;
-
-        for (column = 0; column < FIX_CONTENT_COLUMNS; ++column) {
-            uint16_t index =
-                (uint16_t)row * FIX_CONTENT_COLUMNS + column;
-            uint16_t entry = FIX_BLANK_TILE;
-
-            if (show_hud != 0u) {
-                uint8_t tile =
-                    nametable[(uint16_t)source_y * 32u + column];
-                uint8_t palette_number =
-                    background_palette_index(0, column, source_y);
-
-                entry = (uint16_t)(
-                    ((uint16_t)palette_number << 12) +
-                    FIX_NES_TILE_BASE +
-                    pattern_base +
-                    tile
-                );
-            }
-            desired_hud[index] = entry;
-            if (cached_hud[index] != entry) {
-                hud_changed_indices[hud_changed_count] = (uint8_t)index;
-                ++hud_changed_count;
-            }
-        }
-    }
-    built_hud_generation = neogeo_ppu_hud_generation;
-    built_hud_config = render_config;
-    hud_upload_cursor = 0;
-    hud_upload_pending = (uint8_t)(hud_changed_count != 0u);
+    (void)neogeo_hud_build(
+        &hud_state,
+        nametable,
+        neogeo_ppu_hud_generation,
+        neogeo_ppu_hud_dirty_rows,
+        &neogeo_ppu_hud_dirty_tracking_valid,
+        pattern_base,
+        show_hud
+    );
 }
 
 static void upload_hud_chunk(void) {
     uint8_t chunk_end;
 
-    if (hud_upload_pending == 0u) {
+    if (hud_state.upload_pending == 0u) {
         return;
     }
     chunk_end = (uint8_t)(
-        hud_upload_cursor +
+        hud_state.upload_cursor +
         neogeo_vblank_hud_chunk(
-            (uint16_t)(hud_changed_count - hud_upload_cursor)
+            (uint16_t)(
+                hud_state.changed_count - hud_state.upload_cursor
+            )
         )
     );
     write_vram_mod(1);
-    while (hud_upload_cursor < chunk_end) {
-        uint16_t index = hud_changed_indices[hud_upload_cursor];
-        uint16_t value = desired_hud[index];
+    while (hud_state.upload_cursor < chunk_end) {
+        uint16_t index =
+            hud_state.changed_indices[hud_state.upload_cursor];
+        uint16_t value = hud_state.desired[index];
 
-        uint8_t row = (uint8_t)(index >> 5);
-        uint8_t column = (uint8_t)(index & 31u);
-
-        write_vram_address((uint16_t)(
-            ADDR_FIXMAP +
-            ((FIX_CONTENT_X + column) << 5) +
-            FIX_VISIBLE_Y +
-            row
-        ));
+        write_vram_address(neogeo_hud_fixmap_address((uint8_t)index));
         write_vram_data(value);
-        cached_hud[index] = value;
-        ++hud_upload_cursor;
+        hud_state.cached[index] = value;
+        ++hud_state.upload_cursor;
     }
-    if (hud_upload_cursor == hud_changed_count) {
-        hud_upload_pending = 0;
-        hud_changed_count = 0;
-        hud_upload_cursor = 0;
+    if (hud_state.upload_cursor == hud_state.changed_count) {
+        hud_state.upload_pending = 0;
+        hud_state.changed_count = 0;
+        hud_state.upload_cursor = 0;
     }
 }
 
@@ -1208,15 +1169,16 @@ void neogeo_video_init(void) {
     built_palette_generation = 0xffffffffu;
     palette_upload_pending = 0;
     palette_changed_count = 0;
-    built_hud_generation = 0xffffffffu;
-    built_hud_config = 0xffffu;
-    hud_upload_pending = 0;
-    hud_changed_count = 0;
-    hud_upload_cursor = 0;
+    hud_state.built_generation = 0xffffffffu;
+    hud_state.built_config = 0xffffu;
+    hud_state.upload_pending = 0;
+    hud_state.changed_count = 0;
+    hud_state.upload_cursor = 0;
+    neogeo_ppu_hud_dirty_invalidate();
 
     for (i = 0; i < HUD_ENTRY_COUNT; ++i) {
-        desired_hud[i] = FIX_BLANK_TILE;
-        cached_hud[i] = FIX_BLANK_TILE;
+        hud_state.desired[i] = FIX_BLANK_TILE;
+        hud_state.cached[i] = FIX_BLANK_TILE;
     }
 
     build_palette_state();
@@ -1257,7 +1219,7 @@ void neogeo_video_render(void) {
     commit_phase = neogeo_vblank_choose_commit_phase(
         1u,
         palette_changed_count,
-        hud_changed_count
+        hud_state.changed_count
     );
     share_live_with_swap = (uint8_t)(
         commit_phase == NEO_VBLANK_COMMIT_SHARED_LIVE_AND_SCB
@@ -1276,7 +1238,7 @@ void neogeo_video_render(void) {
     while (
         (palette_upload_pending != 0u &&
             share_live_with_swap == 0u) ||
-        (hud_upload_pending != 0u && share_live_with_swap == 0u)
+        (hud_state.upload_pending != 0u && share_live_with_swap == 0u)
     ) {
         wait_for_next_vblank();
         upload_palette_changes();
