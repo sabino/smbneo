@@ -1,4 +1,7 @@
 #include "code.h"
+#if defined(SMB_NEOGEO_FAST_CORE)
+#include "core_fast_paths.h"
+#endif
 
 void Start(void) {
   sei(); // pretty standard 6502 type init here
@@ -6034,6 +6037,9 @@ KillBB:
 }
 
 void EnemyGfxHandler(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemy_gfx_handler()) { return; }
+  #endif
   lda_zpx(Enemy_Y_Position); // get enemy object vertical position
   ram[0x2] = a;
   lda_abs(Enemy_Rel_XPos); // get enemy object horizontal position

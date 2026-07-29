@@ -27,6 +27,7 @@ BLOCK_BUFFER_COLLISION_TEST := $(BUILD)/test_block_buffer_collision
 DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
 MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
 SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
+CORE_FAST_PATHS_TEST := $(BUILD)/test_neogeo_core_fast_paths
 READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
 OFFSCREEN_BITS_TEST := $(BUILD)/test_offscreen_bits
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
@@ -84,7 +85,8 @@ LDFLAGS := \
 	-Wl,--defsym=rom_NGH_ID=0x$(SMBNEO_NGH)
 
 ENGINE_SOURCES := \
-	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
+	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c \
+	core_fast_paths.c
 CORE_NAMES := instructions code data cpu
 ENGINE_OBJECTS := \
 	$(ENGINE_SOURCES:%.c=$(BUILD)/%.o) \
@@ -485,6 +487,29 @@ $(SPRITE_SHUFFLER_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(CORE_FAST_PATHS_TEST): \
+		$(ROOT)/tools/test_neogeo_core_fast_paths.c \
+		core_fast_paths.c core_fast_paths.h \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I. -I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_neogeo_core_fast_paths.c \
+		core_fast_paths.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(READ_PORT_BITS_TEST): \
 		$(ROOT)/tools/test_read_port_bits.c \
 		$(ROOT)/codegen/lib/code.c \
@@ -605,7 +630,7 @@ test: \
 		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) \
 		$(BLOCK_BUFFER_COLLISION_TEST) \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
-		$(SPRITE_SHUFFLER_TEST) \
+		$(SPRITE_SHUFFLER_TEST) $(CORE_FAST_PATHS_TEST) \
 		$(READ_PORT_BITS_TEST) $(OFFSCREEN_BITS_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
@@ -623,6 +648,7 @@ test: \
 	$(DRAW_SPRITE_OBJECT_TEST)
 	$(MOVE_SPRITES_OFFSCREEN_TEST)
 	$(SPRITE_SHUFFLER_TEST)
+	$(CORE_FAST_PATHS_TEST)
 	$(READ_PORT_BITS_TEST)
 	$(OFFSCREEN_BITS_TEST)
 	$(ROM_FALLTHROUGH_TEST)

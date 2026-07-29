@@ -12,6 +12,10 @@ Completed:
 - Pure C target; no C++ runtime or desktop framework in the Neo Geo link.
 - MC68000 code generation (`-m68000 -mlra`) with `-O3`, LTO, and measured
   inlining of the translated core's hot instruction helpers.
+- A guarded semantic direct-C enemy graphics path for normal Goomba, piranha
+  plant, Lakitu, and spiny states. It emits the three OAM rows directly and
+  falls back to the generated instruction-equivalent handler for every other
+  identity, state, or global mode.
 - Direct background, OAM sprite, palette, FIX HUD, and input backends.
 - Two 33-strip background banks with generation-tracked columns, sparse
   changed-row uploads, and one or two sticky chain drivers per hidden bank.

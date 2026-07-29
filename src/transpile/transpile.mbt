@@ -519,6 +519,127 @@ fn flat_subroutine_structure(items : Array[@lower.AsmItem]) -> String {
 }
 
 ///|
+fn reviewed_typed_expr_structure(expr : @lower.TypedExpr) -> String {
+  match expr {
+    Const(base~, value~, size~, ty~) =>
+      "const|\{Show::to_string(base)}|\{value}|\{Show::to_string(size)}|\{Show::to_string(ty)}"
+    Ident(name~, ty~) =>
+      "ident|\{name.length()}|\{name}|\{Show::to_string(ty)}"
+    Unary(op~, expr~, ty~) =>
+      "unary|\{Show::to_string(op)}|\{Show::to_string(ty)}(|\{reviewed_typed_expr_structure(expr)})"
+    Binary(op~, lhs~, rhs~, ty~) =>
+      "binary|\{Show::to_string(op)}|\{Show::to_string(ty)}(|\{reviewed_typed_expr_structure(lhs)})(|\{reviewed_typed_expr_structure(rhs)})"
+  }
+}
+
+///|
+fn reviewed_addressing_mode_structure(
+  mode : @lower.AsmAddressingMode,
+) -> String {
+  match mode {
+    Accumulator => "acc"
+    Implied => "imp"
+    Immediate(expr) => "imm|\{reviewed_typed_expr_structure(expr)}"
+    Relative(expr) => "rel|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPage(expr) => "zp|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPageX(expr) => "zpx|\{reviewed_typed_expr_structure(expr)}"
+    ZeroPageY(expr) => "zpy|\{reviewed_typed_expr_structure(expr)}"
+    Absolute(expr) => "abs|\{reviewed_typed_expr_structure(expr)}"
+    AbsoluteX(expr) => "absx|\{reviewed_typed_expr_structure(expr)}"
+    AbsoluteY(expr) => "absy|\{reviewed_typed_expr_structure(expr)}"
+    Indirect(expr) => "ind|\{reviewed_typed_expr_structure(expr)}"
+    IndexedIndirect(expr) =>
+      "indx|\{reviewed_typed_expr_structure(expr)}"
+    IndirectIndexed(expr) =>
+      "indy|\{reviewed_typed_expr_structure(expr)}"
+  }
+}
+
+///|
+fn append_reviewed_flat_items_structure(
+  structure : StringBuilder,
+  items : Array[@lower.AsmItem],
+) -> Int {
+  let mut count = 0
+
+  for item in items {
+    match item {
+      Label(name) => {
+        structure.write_string("label|\{name.length()}|\{name}\n")
+        count += 1
+      }
+      Inst(op~, mode~, comment=_) => {
+        structure.write_string(
+          "inst|\{Show::to_string(op)}|\{reviewed_addressing_mode_structure(mode)}\n",
+        )
+        count += 1
+      }
+      JumpEngine(jump_table~) => {
+        structure.write_string("jump-engine|\{jump_table.length()}\n")
+        for target in jump_table {
+          structure.write_string(
+            "target|\{target.length()}|\{target}\n",
+          )
+        }
+        count += 1
+      }
+      If(cond~, then~, otherwise~, comment=_) => {
+        structure.write_string("if|\{Show::to_string(cond)}\n")
+        count += 1
+        count += append_reviewed_flat_items_structure(structure, then)
+        match otherwise {
+          Some(otherwise) => {
+            structure.write_string("else\n")
+            count += append_reviewed_flat_items_structure(structure, otherwise)
+          }
+          None => structure.write_string("no-else\n")
+        }
+        structure.write_string("end-if\n")
+      }
+      Comment(_) => ()
+    }
+  }
+  count
+}
+
+///|
+fn reviewed_flat_subroutine_fingerprint(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> (Int, Int, String) {
+  let structure = StringBuilder::new()
+  let count = append_reviewed_flat_items_structure(
+    structure,
+    subroutine.items,
+  )
+  let structure = structure.to_string()
+  let digest = @crypto.bytes_to_hex_string(
+    @crypto.sha256(@encoding.encode(UTF8, structure)),
+  )
+
+  (count, structure.length(), digest)
+}
+
+///|
+fn is_reviewed_enemy_gfx_handler(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemyGfxHandler" {
+    return false
+  }
+
+  // The helper directly implements several paths through a much larger
+  // routine. Its hook is safe only while every executable lowered item,
+  // nested branch, operand type, label, and jump target has the reviewed
+  // shape. Comments are deliberately excluded from the semantic fingerprint.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    390,
+    19475,
+    "ea456aa396291511a0d552ad86dd35f507fbdce7cdb136792cef75142d29acce",
+  )
+}
+
+///|
 fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "SprObjectCollisionCore" {
     return false
@@ -1663,6 +1784,12 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   self.emit("void \{rename_label(subroutine.name)}(void) {")
   self.indentation = 1
 
+  if is_reviewed_enemy_gfx_handler(subroutine) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_enemy_gfx_handler()) { return; }")
+    self.emit("#endif")
+  }
+
   for item in subroutine.items {
     self.emit_item(item, low)
   }
@@ -1673,6 +1800,9 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
 fn Emitter::emit_code_c(self: Emitter, low: @lower.AsmLowering) -> Unit {
   self.emit("#include \"code.h\"")
+  self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+  self.emit("#include \"core_fast_paths.h\"")
+  self.emit("#endif")
   self.emit("")
 
   for sub in low.flat_subroutines {

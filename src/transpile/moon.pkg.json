@@ -3,6 +3,8 @@
     "import": [
       "nathsou/smb/parse",
       "nathsou/smb/lower",
-      "moonbitlang/x/fs"
+      "moonbitlang/x/fs",
+      "moonbitlang/x/crypto",
+      "moonbitlang/x/encoding"
     ]
   }
