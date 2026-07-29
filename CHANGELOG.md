@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-07-28
+
 - Added a pure-C MC68000 target with direct Neo Geo sprite/FIX/palette output.
 - Added native Z80/YM2610 audio transport and bounded sound-cadence recovery.
 - Restored the large title/menu presentation from locally generated assets.
@@ -25,5 +27,11 @@
   user-supplied game data.
 - Added reproducible `smbneo.neo` generation and independent validation for
   command-line and browser workflows.
+- Hardened AES/MVS video handoff and frame presentation for physical hardware:
+  initialized both palette banks with a valid backdrop entry, forced safe LSPC
+  MMIO access widths, double-buffered background/OAM state, and enforced a
+  measured VBlank budget.
+- Added build-time audits for NeoSD cartridge metadata, unsafe Neo Geo address
+  accesses, and memory-card APIs, vectors, parameter blocks, and address ranges.
 - Focused the active fork branch on Neo Geo and removed the upstream desktop,
   original WebAssembly, and 3DS frontends.
