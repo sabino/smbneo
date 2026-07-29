@@ -746,6 +746,111 @@ fn has_reviewed_subt_enemy_y_pos(low : @lower.AsmLowering) -> Bool {
 }
 
 ///|
+fn is_reviewed_goomba_bg_collision_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "ChkUnderEnemy" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        156,
+        "888f64bc941830ab801f963a5cf7a091fc279a1b85c5ed9ebfc03a74308a04ae",
+      )
+    "BlockBufferChk_Enemy" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        7,
+        154,
+        "3e228109841ed43cb76c3c82398e7f64a908f86891e77bdf22f46948db63a8db",
+      )
+    "BBChk_E" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        151,
+        "de27535c535d8b44b0b1abf271539ec0e54681009e30e25e96af140a3a598215",
+      )
+    "BlockBufferCollision" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        37,
+        1425,
+        "035f74da3dfd3e14dfa2b4351f481586b27b94ca77cad693e7b1d6f457506876",
+      )
+    "GetBlockBufferAddr" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        13,
+        424,
+        "e60681deea0a9db19321cc2abddcf5a8683b1f0e81e47d68b46440f044feb865",
+      )
+    "ChkForNonSolids" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        10,
+        440,
+        "2254054f60506fecaee94cbba8daf6d819a0d73c72638314c6f1fc2528903b1d",
+      )
+    "LandEnemyProperly__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        71,
+        2922,
+        "735e18602f717697d1b11788ba010539fec088487982e1441cc865ff621a85b4",
+      )
+    "ChkForRedKoopa" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        18,
+        642,
+        "6231c43c7a8a4c87f5eeeaccb9d6c379308a51c390422f73d2fb5f9869b362bf",
+      )
+    "DoEnemySideCheck" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        21,
+        845,
+        "bac217bb5f0237959dcef9fea01c2c9e43cfdf8fcd9c8ada011acbb2747a1135",
+      )
+    _ => false
+  }
+}
+
+fn has_reviewed_goomba_bg_collision_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut under = false
+  let mut wrapper = false
+  let mut bb_check = false
+  let mut block = false
+  let mut address = false
+  let mut non_solid = false
+  let mut land = false
+  let mut red_koopa = false
+  let mut side = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_goomba_bg_collision_dependency(subroutine) {
+      match subroutine.name {
+        "ChkUnderEnemy" => under = true
+        "BlockBufferChk_Enemy" => wrapper = true
+        "BBChk_E" => bb_check = true
+        "BlockBufferCollision" => block = true
+        "GetBlockBufferAddr" => address = true
+        "ChkForNonSolids" => non_solid = true
+        "LandEnemyProperly__sub" => land = true
+        "ChkForRedKoopa" => red_koopa = true
+        "DoEnemySideCheck" => side = true
+        _ => ()
+      }
+    }
+  }
+  under && wrapper && bb_check && block && address && non_solid && land &&
+  red_koopa && side && has_reviewed_block_buffer_addr_table(low)
+}
+
+///|
 fn is_relative_enemy_position(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -2955,7 +3060,8 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   }
 
   if is_reviewed_enemy_to_bg_collision_det(subroutine) &&
-    has_reviewed_subt_enemy_y_pos(low) {
+    has_reviewed_subt_enemy_y_pos(low) &&
+    has_reviewed_goomba_bg_collision_dependencies(low) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit(
       "if (smb_core_fast_enemy_to_bg_collision_det()) { return; }",

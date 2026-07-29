@@ -78,20 +78,122 @@ static void fast_erase_enemy_object(uint8_t slot) {
 typedef enum {
     FAST_ENEMY_BG_NONE = 0,
     FAST_ENEMY_BG_EARLY_EXIT,
+    FAST_ENEMY_BG_GOOMBA_GROUND,
 } FastEnemyBgPolicy;
 
 /*
  * State-zero Piranha Plants and Lakitu always leave the translated routine
- * after its vertical-range test and ID checks. A zero policy deliberately
+ * after its vertical-range test and ID checks. State-zero Goombas use the
+ * reviewed ground/side collision policy below. A zero policy deliberately
  * sends every other ID through the complete translated collision logic.
  */
 static const uint8_t fast_enemy_bg_policy[Lakitu + 1u] = {
+    [Goomba] = FAST_ENEMY_BG_GOOMBA_GROUND,
     [PiranhaPlant] = FAST_ENEMY_BG_EARLY_EXIT,
     [Lakitu] = FAST_ENEMY_BG_EARLY_EXIT,
 };
 
+/* ChkForNonSolids' exact six accepted metatiles, encoded as a 256-bit map. */
+static const uint8_t fast_non_solid_tile_bits[32] = {
+    [0x00u >> 3] = 0x01u,
+    [0x26u >> 3] = 0x40u,
+    [0x5fu >> 3] = 0x80u,
+    [0x60u >> 3] = 0x01u,
+    [0xc2u >> 3] = 0x0cu,
+};
+
+typedef struct {
+    uint16_t block_address;
+    uint8_t adder_index;
+    uint8_t adjusted_x;
+    uint8_t adjusted_y;
+    uint8_t block_column;
+    uint8_t coordinate;
+    uint8_t tile;
+} FastEnemyBlockProbe;
+
 static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
+}
+
+static inline __attribute__((always_inline)) FastEnemyBlockProbe
+fast_probe_enemy_block(
+    uint8_t slot,
+    uint8_t adder_index,
+    uint8_t return_horizontal
+) {
+    FastEnemyBlockProbe probe;
+    const uint8_t object_index = (uint8_t)(slot + 1u);
+    uint16_t coordinate_sum;
+    uint16_t block_base;
+    uint8_t block_bank;
+
+    coordinate_sum = (uint16_t)rom_byte((uint16_t)(
+        BlockBuffer_X_Adder + adder_index
+    )) + ram[(uint8_t)(SprObject_X_Position + object_index)];
+    probe.adjusted_x = (uint8_t)coordinate_sum;
+    coordinate_sum = (uint16_t)ram[(uint8_t)(
+        SprObject_PageLoc + object_index
+    )] + (coordinate_sum > 0xffu ? 1u : 0u);
+    probe.block_column = (uint8_t)(
+        (((uint8_t)coordinate_sum & 1u) << 4) |
+        (probe.adjusted_x >> 4)
+    );
+    block_bank = (uint8_t)(probe.block_column >> 4);
+    block_base = block_bank == 0u ? Block_Buffer_1 : Block_Buffer_2;
+    probe.block_address = (uint16_t)(
+        block_base + (probe.block_column & 0x0fu)
+    );
+    coordinate_sum = (uint16_t)ram[(uint8_t)(
+        SprObject_Y_Position + object_index
+    )] + rom_byte((uint16_t)(BlockBuffer_Y_Adder + adder_index));
+    probe.adjusted_y = (uint8_t)(
+        (coordinate_sum & 0xf0u) - 0x20u
+    );
+    probe.tile = ram[(probe.block_address + probe.adjusted_y) &
+        (RAM_SIZE - 1u)];
+    probe.coordinate = (uint8_t)(
+        ram[(uint8_t)((return_horizontal != 0u ?
+            SprObject_X_Position : SprObject_Y_Position) + object_index)] &
+        0x0fu
+    );
+    probe.adder_index = adder_index;
+    return probe;
+}
+
+static inline __attribute__((always_inline)) void fast_apply_enemy_block_probe(
+    const FastEnemyBlockProbe *probe,
+    uint8_t flag
+) {
+    uint16_t block_base = (probe->block_column & 0x10u) != 0u ?
+        Block_Buffer_2 : Block_Buffer_1;
+
+    /*
+     * BlockBufferChk_Enemy and the folded BlockBufferCollision leaf both
+     * push the flag at the same stack address. The address helper then leaves
+     * the column in the next byte. Preserve both otherwise-invisible writes.
+     */
+    ram[0x100u + sp] = flag;
+    ram[0x100u + (uint8_t)(sp - 1u)] = probe->block_column;
+    ram[0x4] = probe->adder_index;
+    ram[0x5] = probe->adjusted_x;
+    ram[0x7] = (uint8_t)(block_base >> 8);
+    ram[0x6] = (uint8_t)probe->block_address;
+    ram[0x2] = probe->adjusted_y;
+    ram[0x3] = probe->tile;
+    ram[0x4] = probe->coordinate;
+    a = probe->tile;
+    x = ram[ObjectOffset];
+    y = probe->adder_index;
+    carry_flag = true; /* BBChk_E ends with CMP #$00. */
+    nz_value = a;
+}
+
+static uint8_t fast_enemy_tile_is_non_solid(uint8_t tile) {
+    return (uint8_t)(
+        fast_non_solid_tile_bits[tile >> 3] &
+        (uint8_t)(1u << (tile & 7u))
+    );
 }
 
 static void draw_three_enemy_rows(
@@ -451,16 +553,22 @@ bool smb_core_fast_enemy_to_bg_collision_det(void) {
     const uint8_t initial_x = x;
     uint8_t enemy_id;
     uint8_t adjusted_y;
+    uint8_t policy;
+    uint8_t moving_direction;
+    uint8_t state_from_ground_check;
+    FastEnemyBlockProbe under;
+    FastEnemyBlockProbe side;
 
     /* Do not alter any emulated state until the policy is fully accepted. */
     if (ram[(uint8_t)(Enemy_State + initial_x)] != 0u) {
         return false;
     }
     enemy_id = ram[(uint8_t)(Enemy_ID + initial_x)];
-    if (
-        enemy_id > Lakitu ||
-        fast_enemy_bg_policy[enemy_id] != FAST_ENEMY_BG_EARLY_EXIT
-    ) {
+    if (enemy_id > Lakitu) {
+        return false;
+    }
+    policy = fast_enemy_bg_policy[enemy_id];
+    if (policy == FAST_ENEMY_BG_NONE) {
         return false;
     }
 
@@ -468,6 +576,85 @@ bool smb_core_fast_enemy_to_bg_collision_det(void) {
     adjusted_y = (uint8_t)(
         ram[(uint8_t)(Enemy_Y_Position + initial_x)] + 0x3eu
     );
+    if (policy == FAST_ENEMY_BG_GOOMBA_GROUND) {
+        if (adjusted_y < 0x44u) {
+            a = adjusted_y;
+            carry_flag = false;
+            nz_value = (uint8_t)(adjusted_y - 0x44u);
+            return true;
+        }
+        /*
+         * The fused path deliberately accepts only a real enemy slot whose
+         * wrapper restores the same ObjectOffset. Probe every later decision
+         * before touching the machine so exceptional block-hit and direction-
+         * reversal paths can use the complete translated implementation.
+         */
+        if (initial_x >= 6u || initial_x != ram[ObjectOffset]) {
+            return false;
+        }
+        under = fast_probe_enemy_block(initial_x, 0x15u, 0u);
+        if (under.tile == 0x23u) {
+            return false;
+        }
+
+        moving_direction = ram[Enemy_MovingDir + initial_x];
+        if (
+            ram[Enemy_Y_Position + initial_x] >= 0x20u &&
+            (moving_direction == 1u || moving_direction == 2u)
+        ) {
+            side = fast_probe_enemy_block(
+                initial_x,
+                moving_direction == 2u ? 0x16u : 0x17u,
+                1u
+            );
+            if (fast_enemy_tile_is_non_solid(side.tile) == 0u) {
+                return false;
+            }
+        }
+
+        /* Fold ChkUnderEnemy and both block-buffer wrapper layers. */
+        fast_apply_enemy_block_probe(&under, 0u);
+        state_from_ground_check = (uint8_t)(
+            fast_enemy_tile_is_non_solid(under.tile) != 0u ||
+            (uint8_t)(under.coordinate - 8u) >= 5u
+        );
+        if (state_from_ground_check != 0u) {
+            y = 0u; /* ChkForRedKoopa's TAY of state zero. */
+            a = rom_byte(EnemyBGCStateData);
+            nz_value = a;
+            ram[Enemy_State + initial_x] = a;
+        } else {
+            /* The state-zero LandEnemyProperly path reaches its second LDA. */
+            a = 0u;
+            carry_flag = false;
+            nz_value = 0u;
+        }
+
+        /* DoEnemySideCheck's status-bar return preserves its incoming Y. */
+        a = ram[Enemy_Y_Position + initial_x];
+        carry_flag = a >= 0x20u;
+        nz_value = (uint8_t)(a - 0x20u);
+        if (!carry_flag) {
+            return true;
+        }
+
+        ram[0xeb] = 2u;
+        if (moving_direction == 2u) {
+            fast_apply_enemy_block_probe(&side, 1u);
+        }
+        ram[0xeb] = 1u;
+        if (moving_direction == 1u) {
+            fast_apply_enemy_block_probe(&side, 1u);
+        } else {
+            a = 1u;
+        }
+        ram[0xeb] = 0u;
+        y = 0x18u;
+        carry_flag = true;
+        nz_value = 0u;
+        return true;
+    }
+
     a = adjusted_y;
     nz_value = (uint8_t)(adjusted_y - 0x44u);
     if (adjusted_y < 0x44u) {

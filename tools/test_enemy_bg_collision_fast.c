@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "core_fast_paths.h"
 #include "cpu.h"
+#include "data.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -23,6 +24,11 @@ typedef struct {
     uint8_t y_position;
     uint8_t count;
 } ObservedYRun;
+
+typedef struct {
+    uint8_t slot;
+    uint8_t count;
+} ObservedSlotRun;
 
 static const uint8_t selected_ids[] = { PiranhaPlant, Lakitu };
 
@@ -52,11 +58,19 @@ static const ObservedYRun observed_w4_lakitu[] = {
     { 0x28u, 120u },
 };
 
+/* W1's exact state-zero Goomba distribution; all used the same hot policy. */
+static const ObservedSlotRun observed_w1_goomba[] = {
+    { 1u, 108u }, { 2u, 116u }, { 3u, 120u },
+};
+
 static unsigned int direct_comparisons;
 static unsigned int direct_carry_clear;
 static unsigned int direct_carry_set;
 static unsigned int fallback_checks;
 static unsigned int observed_entries;
+static unsigned int goomba_direct_comparisons;
+static unsigned int goomba_fallback_checks;
+static unsigned int goomba_observed_entries;
 
 static void save_machine(MachineState *state) {
     memcpy(state->ram, ram, RAM_SIZE);
@@ -315,7 +329,10 @@ static void assert_every_other_policy_falls_back(void) {
 
     for (slot = 0; slot < 256u; ++slot) {
         for (enemy_id = 0; enemy_id < 256u; ++enemy_id) {
-            if (enemy_id == PiranhaPlant || enemy_id == Lakitu) {
+            if (
+                enemy_id == Goomba || enemy_id == PiranhaPlant ||
+                enemy_id == Lakitu
+            ) {
                 continue;
             }
             fill_pattern(
@@ -351,7 +368,346 @@ static void assert_every_other_policy_falls_back(void) {
         }
     }
 
-    assert(fallback_checks == 195584u);
+    assert(fallback_checks == 195328u);
+}
+
+static uint16_t goomba_block_address(
+    const MachineState *state,
+    uint8_t slot,
+    uint8_t adder_index
+) {
+    uint8_t object_index = (uint8_t)(slot + 1u);
+    uint16_t coordinate_sum;
+    uint16_t block_address;
+    uint8_t adjusted_x;
+    uint8_t adjusted_y;
+    uint8_t block_column;
+
+    coordinate_sum = (uint16_t)data[
+        BlockBuffer_X_Adder - 0x8000u + adder_index
+    ] + state->ram[(uint8_t)(SprObject_X_Position + object_index)];
+    adjusted_x = (uint8_t)coordinate_sum;
+    coordinate_sum = (uint16_t)state->ram[(uint8_t)(
+        SprObject_PageLoc + object_index
+    )] + (coordinate_sum > 0xffu ? 1u : 0u);
+    block_column = (uint8_t)(
+        (((uint8_t)coordinate_sum & 1u) << 4) | (adjusted_x >> 4)
+    );
+    block_address = (block_column & 0x10u) != 0u ?
+        Block_Buffer_2 : Block_Buffer_1;
+    block_address = (uint16_t)(
+        block_address + (block_column & 0x0fu)
+    );
+    coordinate_sum = (uint16_t)state->ram[(uint8_t)(
+        SprObject_Y_Position + object_index
+    )] + data[BlockBuffer_Y_Adder - 0x8000u + adder_index];
+    adjusted_y = (uint8_t)((coordinate_sum & 0xf0u) - 0x20u);
+    return (uint16_t)(
+        (block_address + adjusted_y) & (RAM_SIZE - 1u)
+    );
+}
+
+static void set_goomba_block_tile(
+    MachineState *state,
+    uint8_t slot,
+    uint8_t adder_index,
+    uint8_t tile
+) {
+    state->ram[goomba_block_address(state, slot, adder_index)] = tile;
+}
+
+static uint8_t goomba_tile_is_non_solid(uint8_t tile) {
+    return (uint8_t)(
+        tile == 0u || tile == 0x26u || tile == 0xc2u ||
+        tile == 0xc3u || tile == 0x5fu || tile == 0x60u
+    );
+}
+
+static void prepare_goomba_entry(
+    MachineState *entry,
+    uint8_t slot,
+    uint8_t y_position,
+    uint8_t moving_direction,
+    uint32_t seed
+) {
+    uint8_t object_index = (uint8_t)(slot + 1u);
+
+    fill_pattern(entry, seed);
+    entry->x = slot;
+    entry->ram[ObjectOffset] = slot;
+    entry->ram[(uint8_t)(Enemy_ID + slot)] = Goomba;
+    entry->ram[(uint8_t)(Enemy_State + slot)] = 0u;
+    entry->ram[(uint8_t)(Enemy_MovingDir + slot)] = moving_direction;
+    entry->ram[(uint8_t)(SprObject_Y_Position + object_index)] = y_position;
+}
+
+static void compare_goomba_entry(const MachineState *entry) {
+    MachineState translated;
+    MachineState direct;
+
+    load_machine(entry);
+    EnemyToBGCollisionDet();
+    save_machine(&translated);
+
+    load_machine(entry);
+    assert(smb_core_fast_enemy_to_bg_collision_det());
+    save_machine(&direct);
+    assert_machine_equal(&translated, &direct);
+    ++goomba_direct_comparisons;
+}
+
+static void assert_goomba_fallback_untouched(const MachineState *entry) {
+    MachineState actual;
+
+    load_machine(entry);
+    assert(!smb_core_fast_enemy_to_bg_collision_det());
+    save_machine(&actual);
+    assert_machine_equal(entry, &actual);
+    ++goomba_fallback_checks;
+}
+
+static void compare_goomba_slots_and_vertical_positions(void) {
+    MachineState entry;
+    uint16_t slot;
+    uint16_t y_position;
+
+    for (slot = 0; slot < 6u; ++slot) {
+        for (y_position = 0; y_position < 256u; ++y_position) {
+            prepare_goomba_entry(
+                &entry,
+                (uint8_t)slot,
+                (uint8_t)y_position,
+                0u,
+                ((uint32_t)slot << 24) |
+                    ((uint32_t)y_position << 8) | UINT32_C(0x47)
+            );
+            entry.sp = (uint8_t)y_position;
+            set_goomba_block_tile(&entry, (uint8_t)slot, 0x15u,
+                (uint8_t)((y_position & 1u) != 0u ? 0u : 1u));
+            compare_goomba_entry(&entry);
+        }
+    }
+    assert(goomba_direct_comparisons == 1536u);
+}
+
+static void compare_goomba_carry_clear_wrapped_domains(void) {
+    MachineState entry;
+    uint16_t slot;
+    uint16_t y_position;
+    uint16_t incoming_y;
+    unsigned int comparisons_before = goomba_direct_comparisons;
+
+    /* The pre-ground early return is valid for every wrapped zero-page X. */
+    for (slot = 0; slot < 256u; ++slot) {
+        for (y_position = 0; y_position < 256u; ++y_position) {
+            if (!y_position_clears_compare_carry((uint8_t)y_position)) {
+                continue;
+            }
+            prepare_goomba_entry(
+                &entry,
+                (uint8_t)slot,
+                (uint8_t)y_position,
+                (uint8_t)(slot ^ y_position),
+                UINT32_C(0x58000000) |
+                    ((uint32_t)slot << 8) | (uint32_t)y_position
+            );
+            entry.y = (uint8_t)(slot * 29u + y_position);
+            entry.sp = (uint8_t)y_position;
+            compare_goomba_entry(&entry);
+        }
+    }
+
+    /* Also exhaust every incoming Y independently of the compared Y value. */
+    for (y_position = 0; y_position < 256u; ++y_position) {
+        if (!y_position_clears_compare_carry((uint8_t)y_position)) {
+            continue;
+        }
+        for (incoming_y = 0; incoming_y < 256u; ++incoming_y) {
+            prepare_goomba_entry(
+                &entry,
+                0xfeu,
+                (uint8_t)y_position,
+                (uint8_t)incoming_y,
+                UINT32_C(0x59000000) |
+                    ((uint32_t)y_position << 8) | (uint32_t)incoming_y
+            );
+            entry.y = (uint8_t)incoming_y;
+            compare_goomba_entry(&entry);
+        }
+    }
+    assert(goomba_direct_comparisons - comparisons_before == 34816u);
+}
+
+static void compare_goomba_under_tile_domain(void) {
+    MachineState entry;
+    uint16_t tile;
+
+    for (tile = 0; tile < 256u; ++tile) {
+        uint8_t slot = (uint8_t)(tile % 6u);
+
+        prepare_goomba_entry(
+            &entry,
+            slot,
+            0xb8u,
+            0u,
+            UINT32_C(0x61000000) | (uint32_t)tile
+        );
+        entry.sp = (uint8_t)tile;
+        set_goomba_block_tile(&entry, slot, 0x15u, (uint8_t)tile);
+        if (tile == 0x23u) {
+            assert_goomba_fallback_untouched(&entry);
+        } else {
+            compare_goomba_entry(&entry);
+        }
+    }
+}
+
+static void compare_goomba_side_tile_domain(void) {
+    MachineState entry;
+    uint16_t direction;
+    uint16_t tile;
+
+    for (direction = 1u; direction <= 2u; ++direction) {
+        uint8_t adder_index = direction == 2u ? 0x16u : 0x17u;
+
+        for (tile = 0; tile < 256u; ++tile) {
+            uint8_t slot = (uint8_t)((tile + direction) % 6u);
+
+            prepare_goomba_entry(
+                &entry,
+                slot,
+                0xb8u,
+                (uint8_t)direction,
+                UINT32_C(0x72000000) |
+                    ((uint32_t)direction << 16) | (uint32_t)tile
+            );
+            set_goomba_block_tile(&entry, slot, 0x15u, 1u);
+            assert(
+                goomba_block_address(&entry, slot, 0x15u) !=
+                goomba_block_address(&entry, slot, adder_index)
+            );
+            set_goomba_block_tile(
+                &entry,
+                slot,
+                adder_index,
+                (uint8_t)tile
+            );
+            if (goomba_tile_is_non_solid((uint8_t)tile) != 0u) {
+                compare_goomba_entry(&entry);
+            } else {
+                assert_goomba_fallback_untouched(&entry);
+            }
+        }
+    }
+}
+
+static void compare_goomba_direction_and_stack_domains(void) {
+    MachineState entry;
+    uint16_t value;
+
+    for (value = 0; value < 256u; ++value) {
+        uint8_t slot = (uint8_t)(value % 6u);
+        uint8_t direction = (uint8_t)value;
+
+        prepare_goomba_entry(
+            &entry,
+            slot,
+            0xb8u,
+            direction,
+            UINT32_C(0x83000000) | (uint32_t)value
+        );
+        set_goomba_block_tile(&entry, slot, 0x15u, 1u);
+        if (direction == 1u || direction == 2u) {
+            set_goomba_block_tile(
+                &entry,
+                slot,
+                direction == 2u ? 0x16u : 0x17u,
+                0u
+            );
+        }
+        compare_goomba_entry(&entry);
+
+        prepare_goomba_entry(
+            &entry,
+            slot,
+            0xb8u,
+            (uint8_t)((value & 1u) + 1u),
+            UINT32_C(0x94000000) | (uint32_t)value
+        );
+        entry.sp = (uint8_t)value;
+        set_goomba_block_tile(&entry, slot, 0x15u, 1u);
+        set_goomba_block_tile(
+            &entry,
+            slot,
+            (value & 1u) != 0u ? 0x16u : 0x17u,
+            0x26u
+        );
+        compare_goomba_entry(&entry);
+    }
+}
+
+static void assert_goomba_dispatch_fallbacks(void) {
+    MachineState entry;
+    uint16_t slot;
+    uint16_t state;
+
+    for (slot = 0; slot < 256u; ++slot) {
+        prepare_goomba_entry(
+            &entry,
+            (uint8_t)slot,
+            0xb8u,
+            0u,
+            UINT32_C(0xa5000000) | ((uint32_t)slot << 8)
+        );
+        entry.ram[ObjectOffset] = (uint8_t)(slot < 6u ? slot + 1u : slot);
+        assert_goomba_fallback_untouched(&entry);
+    }
+
+    for (slot = 0; slot < 256u; ++slot) {
+        for (state = 1u; state < 256u; ++state) {
+            prepare_goomba_entry(
+                &entry,
+                (uint8_t)slot,
+                0xb8u,
+                0u,
+                UINT32_C(0xb6000000) |
+                    ((uint32_t)slot << 16) | (uint32_t)state
+            );
+            entry.ram[(uint8_t)(Enemy_State + slot)] = (uint8_t)state;
+            assert_goomba_fallback_untouched(&entry);
+        }
+    }
+}
+
+static void replay_observed_goomba_entries(void) {
+    MachineState entry;
+    size_t run_index;
+    uint16_t repetition;
+
+    for (run_index = 0;
+         run_index < sizeof(observed_w1_goomba) /
+            sizeof(observed_w1_goomba[0]);
+         ++run_index) {
+        for (repetition = 0;
+             repetition < observed_w1_goomba[run_index].count;
+             ++repetition) {
+            uint8_t slot = observed_w1_goomba[run_index].slot;
+
+            prepare_goomba_entry(
+                &entry,
+                slot,
+                0xb8u,
+                2u,
+                UINT32_C(0xc7000000) | goomba_observed_entries
+            );
+            /* Captured W1 calls all saw solid $54 below and blank on the left. */
+            set_goomba_block_tile(&entry, slot, 0x15u, 0x54u);
+            set_goomba_block_tile(&entry, slot, 0x16u, 0u);
+            compare_goomba_entry(&entry);
+            ++goomba_observed_entries;
+        }
+    }
+    assert(goomba_observed_entries == 344u);
 }
 
 static void replay_observed_runs(
@@ -414,16 +770,29 @@ int main(void) {
     compare_all_slots_and_vertical_positions();
     compare_every_preserved_y_on_clear_return();
     assert_every_other_policy_falls_back();
+    compare_goomba_slots_and_vertical_positions();
+    compare_goomba_carry_clear_wrapped_domains();
+    compare_goomba_under_tile_domain();
+    compare_goomba_side_tile_domain();
+    compare_goomba_direction_and_stack_domains();
+    assert_goomba_dispatch_fallbacks();
+    replay_observed_goomba_entries();
+    assert(goomba_direct_comparisons == 37475u);
+    assert(goomba_fallback_checks == 66037u);
     replay_all_observed_entries();
     printf(
         "Enemy background collision policy: OK "
         "(%u direct: %u carry-clear, %u carry-set; "
-        "%u observed; %u untouched fallbacks)\n",
+        "%u Goomba direct (%u observed); %u early-exit observed; "
+        "%u + %u untouched fallbacks)\n",
         direct_comparisons,
         direct_carry_clear,
         direct_carry_set,
+        goomba_direct_comparisons,
+        goomba_observed_entries,
         observed_entries,
-        fallback_checks
+        fallback_checks,
+        goomba_fallback_checks
     );
     return 0;
 }
