@@ -7316,52 +7316,72 @@ void MovePlayerHorizontally(void) {
   }
 }
 
+static __attribute__((noinline, cold)) void MoveObjectHorizontallyAliasExact(void) {
+  const uint8_t object_offset = x;
+  const uint8_t speed_address = (uint8_t)(SprObject_X_Speed + object_offset);
+  const uint8_t position_address = (uint8_t)(SprObject_X_Position + object_offset);
+  const uint8_t page_address = (uint8_t)(SprObject_PageLoc + object_offset);
+  uint8_t speed = ram[speed_address];
+  uint8_t high_nibble;
+  uint8_t pixel_delta;
+  uint8_t page_delta;
+  uint8_t force_carry;
+  uint16_t sum;
+  ram[0x1] = (uint8_t)(speed << 4);
+  speed = ram[speed_address];
+  high_nibble = (uint8_t)(speed >> 4);
+  pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);
+  ram[0x0] = pixel_delta;
+  page_delta = (uint8_t)-(pixel_delta >> 7);
+  y = page_delta;
+  ram[0x2] = page_delta;
+  sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + ram[0x1];
+  ram[SprObject_X_MoveForce + object_offset] = (uint8_t)sum;
+  force_carry = sum > 0xffu ? 1u : 0u;
+  ram[0x100u + sp] = force_carry;
+  sum = (uint16_t)ram[position_address] + ram[0x0] + force_carry;
+  ram[position_address] = (uint8_t)sum;
+  sum = (uint16_t)ram[page_address] + ram[0x2] + (sum > 0xffu ? 1u : 0u);
+  ram[page_address] = (uint8_t)sum;
+  const uint8_t stacked_carry = ram[0x100u + sp];
+  const uint8_t final_delta = ram[0x0];
+  a = (uint8_t)(stacked_carry + final_delta);
+  carry_flag = stacked_carry != 0u && final_delta == 0xffu;
+  nz_value = a;
+}
+
 void MoveObjectHorizontally(void) {
-  lda_zpx(SprObject_X_Speed); // get currently saved value (horizontal
-  asl_acc(); // speed, secondary counter, whatever)
-  asl_acc(); // and move low nybble to high
-  asl_acc();
-  asl_acc();
-  ram[0x1] = a; // store result here
-  lda_zpx(SprObject_X_Speed); // get saved value again
-  lsr_acc(); // move high nybble to low
-  lsr_acc();
-  lsr_acc();
-  lsr_acc();
-  cmp_imm(0x8); // if < 8, branch, do not change
-  if (carry_flag) {
-    ora_imm(0b11110000); // otherwise alter high nybble
+  // Reviewed horizontal-motion specialization; guarded by the exact lowered structure.
+  const uint8_t object_offset = x;
+  if (object_offset > 6u) {
+    MoveObjectHorizontallyAliasExact();
+    return;
   }
-  // SaveXSpd:
-  ram[0x0] = a; // save result here
-  ldy_imm(0x0); // load default Y value here
-  cmp_imm(0x0); // if result positive, leave Y alone
-  if (neg_flag) {
-    dey(); // otherwise decrement Y
-  }
-  // UseAdder:
-  ram[0x2] = y; // save Y here
-  lda_absx(SprObject_X_MoveForce); // get whatever number's here
-  carry_flag = false;
-  adc_zp(0x1); // add low nybble moved to high
-  ram[SprObject_X_MoveForce + x] = a; // store result here
-  lda_imm(0x0); // init A
-  rol_acc(); // rotate carry into d0
-  pha(); // push onto stack
-  ror_acc(); // rotate d0 back onto carry
-  lda_zpx(SprObject_X_Position);
-  adc_zp(0x0); // add carry plus saved value (high nybble moved to low
-  ram[SprObject_X_Position + x] = a; // plus $f0 if necessary) to object's horizontal position
-  lda_zpx(SprObject_PageLoc);
-  adc_zp(0x2); // add carry plus other saved value to the
-  ram[SprObject_PageLoc + x] = a; // object's page location and save
-  pla();
-  carry_flag = false; // pull old carry from stack and add
-  adc_zp(0x0); // to high nybble moved to low
-  // -------------------------------------------------------------------------------------
-  // $00 - used for downward force
-  // $01 - used for upward force
-  // $02 - used for maximum vertical speed
+  const uint8_t speed = ram[SprObject_X_Speed + object_offset];
+  const uint8_t fraction = (uint8_t)(speed << 4);
+  const uint8_t high_nibble = (uint8_t)(speed >> 4);
+  const uint8_t pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);
+  const uint8_t page_delta = (uint8_t)-(pixel_delta >> 7);
+  uint16_t force_sum;
+  uint16_t position_sum;
+  uint16_t page_sum;
+  uint8_t force_carry;
+  ram[0x1] = fraction;
+  ram[0x0] = pixel_delta;
+  y = page_delta;
+  ram[0x2] = page_delta;
+  force_sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + fraction;
+  ram[SprObject_X_MoveForce + object_offset] = (uint8_t)force_sum;
+  force_carry = force_sum > 0xffu ? 1u : 0u;
+  ram[0x100u + sp] = force_carry;
+  position_sum = (uint16_t)ram[SprObject_X_Position + object_offset] + pixel_delta + force_carry;
+  ram[SprObject_X_Position + object_offset] = (uint8_t)position_sum;
+  page_sum = (uint16_t)ram[SprObject_PageLoc + object_offset] + page_delta + (position_sum > 0xffu ? 1u : 0u);
+  ram[SprObject_PageLoc + object_offset] = (uint8_t)page_sum;
+  const uint8_t stacked_carry = ram[0x100u + sp];
+  a = (uint8_t)(stacked_carry + pixel_delta);
+  carry_flag = stacked_carry != 0u && pixel_delta == 0xffu;
+  nz_value = a;
 }
 
 void MovePlayerVertically(void) {

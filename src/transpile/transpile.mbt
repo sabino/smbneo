@@ -882,6 +882,61 @@ fn is_bounding_box_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
 }
 
 ///|
+fn is_move_object_horizontally(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveObjectHorizontally" {
+    return false
+  }
+
+  // Complete allowlist for the motion integrator. Scratch bytes, zero-page
+  // wrapping, stack traffic, and final flags are observable, including for
+  // unsupported X values where addresses can alias the scratch bytes.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:zpx:SprObject_X_Speed
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:STA:zp:0x1
+    #|I:LDA:zpx:SprObject_X_Speed
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:CMP:imm:0x8
+    #|IF:BCS
+    #|I:ORA:imm:0b11110000
+    #|END_IF
+    #|I:STA:zp:0x0
+    #|I:LDY:imm:0x0
+    #|I:CMP:imm:0x0
+    #|IF:BMI
+    #|I:DEY:imp
+    #|END_IF
+    #|I:STY:zp:0x2
+    #|I:LDA:absx:SprObject_X_MoveForce
+    #|I:CLC:imp
+    #|I:ADC:zp:0x1
+    #|I:STA:absx:SprObject_X_MoveForce
+    #|I:LDA:imm:0x0
+    #|I:ROL:acc
+    #|I:PHA:imp
+    #|I:ROR:acc
+    #|I:LDA:zpx:SprObject_X_Position
+    #|I:ADC:zp:0x0
+    #|I:STA:zpx:SprObject_X_Position
+    #|I:LDA:zpx:SprObject_PageLoc
+    #|I:ADC:zp:0x2
+    #|I:STA:zpx:SprObject_PageLoc
+    #|I:PLA:imp
+    #|I:CLC:imp
+    #|I:ADC:zp:0x0
+    #|
+  )
+}
+
+///|
 fn is_draw_sprite_object(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "DrawSpriteObject" {
     return false
@@ -1258,6 +1313,86 @@ fn Emitter::emit_bounding_box_core(self : Emitter) -> Unit {
   self.emit("x = object_offset;")
   self.emit("carry_flag = sum > 0xffu;")
   self.emit("nz_value = object_offset;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_move_object_horizontally(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("static __attribute__((noinline, cold)) void MoveObjectHorizontallyAliasExact(void) {")
+  self.indentation = 1
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("const uint8_t speed_address = (uint8_t)(SprObject_X_Speed + object_offset);")
+  self.emit("const uint8_t position_address = (uint8_t)(SprObject_X_Position + object_offset);")
+  self.emit("const uint8_t page_address = (uint8_t)(SprObject_PageLoc + object_offset);")
+  self.emit("uint8_t speed = ram[speed_address];")
+  self.emit("uint8_t high_nibble;")
+  self.emit("uint8_t pixel_delta;")
+  self.emit("uint8_t page_delta;")
+  self.emit("uint8_t force_carry;")
+  self.emit("uint16_t sum;")
+  self.emit("ram[0x1] = (uint8_t)(speed << 4);")
+  self.emit("speed = ram[speed_address];")
+  self.emit("high_nibble = (uint8_t)(speed >> 4);")
+  self.emit("pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);")
+  self.emit("ram[0x0] = pixel_delta;")
+  self.emit("page_delta = (uint8_t)-(pixel_delta >> 7);")
+  self.emit("y = page_delta;")
+  self.emit("ram[0x2] = page_delta;")
+  self.emit("sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + ram[0x1];")
+  self.emit("ram[SprObject_X_MoveForce + object_offset] = (uint8_t)sum;")
+  self.emit("force_carry = sum > 0xffu ? 1u : 0u;")
+  self.emit("ram[0x100u + sp] = force_carry;")
+  self.emit("sum = (uint16_t)ram[position_address] + ram[0x0] + force_carry;")
+  self.emit("ram[position_address] = (uint8_t)sum;")
+  self.emit("sum = (uint16_t)ram[page_address] + ram[0x2] + (sum > 0xffu ? 1u : 0u);")
+  self.emit("ram[page_address] = (uint8_t)sum;")
+  self.emit("const uint8_t stacked_carry = ram[0x100u + sp];")
+  self.emit("const uint8_t final_delta = ram[0x0];")
+  self.emit("a = (uint8_t)(stacked_carry + final_delta);")
+  self.emit("carry_flag = stacked_carry != 0u && final_delta == 0xffu;")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+
+  self.emit("void MoveObjectHorizontally(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed horizontal-motion specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t object_offset = x;")
+  self.emit("if (object_offset > 6u) {")
+  self.indentation += 1
+  self.emit("MoveObjectHorizontallyAliasExact();")
+  self.emit("return;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("const uint8_t speed = ram[SprObject_X_Speed + object_offset];")
+  self.emit("const uint8_t fraction = (uint8_t)(speed << 4);")
+  self.emit("const uint8_t high_nibble = (uint8_t)(speed >> 4);")
+  self.emit("const uint8_t pixel_delta = (uint8_t)((high_nibble ^ 8u) - 8u);")
+  self.emit("const uint8_t page_delta = (uint8_t)-(pixel_delta >> 7);")
+  self.emit("uint16_t force_sum;")
+  self.emit("uint16_t position_sum;")
+  self.emit("uint16_t page_sum;")
+  self.emit("uint8_t force_carry;")
+  self.emit("ram[0x1] = fraction;")
+  self.emit("ram[0x0] = pixel_delta;")
+  self.emit("y = page_delta;")
+  self.emit("ram[0x2] = page_delta;")
+  self.emit("force_sum = (uint16_t)ram[SprObject_X_MoveForce + object_offset] + fraction;")
+  self.emit("ram[SprObject_X_MoveForce + object_offset] = (uint8_t)force_sum;")
+  self.emit("force_carry = force_sum > 0xffu ? 1u : 0u;")
+  self.emit("ram[0x100u + sp] = force_carry;")
+  self.emit("position_sum = (uint16_t)ram[SprObject_X_Position + object_offset] + pixel_delta + force_carry;")
+  self.emit("ram[SprObject_X_Position + object_offset] = (uint8_t)position_sum;")
+  self.emit("page_sum = (uint16_t)ram[SprObject_PageLoc + object_offset] + page_delta + (position_sum > 0xffu ? 1u : 0u);")
+  self.emit("ram[SprObject_PageLoc + object_offset] = (uint8_t)page_sum;")
+  self.emit("const uint8_t stacked_carry = ram[0x100u + sp];")
+  self.emit("a = (uint8_t)(stacked_carry + pixel_delta);")
+  self.emit("carry_flag = stacked_carry != 0u && pixel_delta == 0xffu;")
+  self.emit("nz_value = a;")
   self.indentation = 0
   self.emit("}\n")
 }
@@ -1975,6 +2110,11 @@ fn Emitter::emit_top_score_check(self : Emitter) -> Unit {
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
   if is_bounding_box_core(subroutine) {
     self.emit_bounding_box_core()
+    return
+  }
+
+  if is_move_object_horizontally(subroutine) {
+    self.emit_move_object_horizontally()
     return
   }
 
