@@ -660,6 +660,25 @@ fn is_reviewed_move_normal_enemy(
 }
 
 ///|
+fn is_reviewed_spr_object_offscr_chk(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "SprObjectOffscrChk" {
+    return false
+  }
+
+  // The fast helper folds the complete low-mask path, including every
+  // stack/register side effect around the two column-helper calls. Keep the
+  // generic instruction emitter unless the entire executable shape matches.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    44,
+    1355,
+    "fc404481ad9ba1b704bf95bfc97b68607219c7fd61534a0a9fea709efe07ffa4",
+  )
+}
+
+///|
 fn is_relative_enemy_position(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -704,6 +723,29 @@ fn is_relative_enemy_position_dependency(
   }
 }
 
+///|
+fn is_reviewed_spr_object_offscr_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "MoveESprColOffscreen" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        5,
+        244,
+        "8f7b4c78c0a0bc1dd6e2d8bea1deb5819a6e326ad42a6437fd71ca26e929d7db",
+      )
+    "MoveColOffscreen" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        3,
+        228,
+        "792779870267b8082c288ce145374a6a3b4541ad80de74f5c9843a73618e16df",
+      )
+    _ => false
+  }
+}
+
 fn has_reviewed_relative_enemy_position_dependencies(
   low : @lower.AsmLowering,
 ) -> Bool {
@@ -720,6 +762,25 @@ fn has_reviewed_relative_enemy_position_dependencies(
     }
   }
   variable && relative
+}
+
+///|
+fn has_reviewed_spr_object_offscr_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut column = false
+  let mut move_column = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_spr_object_offscr_dependency(subroutine) {
+      if subroutine.name == "MoveESprColOffscreen" {
+        column = true
+      } else if subroutine.name == "MoveColOffscreen" {
+        move_column = true
+      }
+    }
+  }
+  column && move_column
 }
 
 ///|
@@ -2294,7 +2355,12 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   self.emit("void \{rename_label(subroutine.name)}(void) {")
   self.indentation = 1
 
-  if is_reviewed_enemy_gfx_handler(subroutine) {
+  // The direct enemy renderer now folds the reviewed low-row portion of
+  // SprObjectOffscrChk at its tail. If that routine or either column helper
+  // changes, retain the complete translated EnemyGfxHandler as well.
+  if is_reviewed_enemy_gfx_handler(subroutine) &&
+    has_reviewed_spr_object_offscr_dependencies(low) &&
+    low.flat_subroutines.any(is_reviewed_spr_object_offscr_chk) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_enemy_gfx_handler()) { return; }")
     self.emit("#endif")
@@ -2303,6 +2369,13 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   if is_reviewed_move_normal_enemy(subroutine) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_move_normal_enemy()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_spr_object_offscr_chk(subroutine) &&
+    has_reviewed_spr_object_offscr_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_spr_object_offscr_chk()) { return; }")
     self.emit("#endif")
   }
 

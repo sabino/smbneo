@@ -34,6 +34,29 @@ test "mutated EnemyGfxHandler shape omits the guarded fast hook" {
 }
 
 ///|
+test "mutated folded sprite-offscreen dependency omits enemy fast hook" {
+  let source = try! @fs.read_file_to_string("src/smb.asm")
+  let mutated = source.replace(
+    old=(
+      #|SprObjectOffscrChk:
+      #|         ldx ObjectOffset          ;get enemy buffer offset
+    ),
+    new=(
+      #|SprObjectOffscrChk:
+      #|         ldy ObjectOffset          ;get enemy buffer offset
+    ),
+  )
+
+  inspect(mutated == source, content="false")
+  let transpiler = transpile_test_source(mutated)
+  let code_c = transpiler.files[4].contents
+  inspect(
+    code_c.contains("if (smb_core_fast_enemy_gfx_handler()) { return; }"),
+    content="false",
+  )
+}
+
+///|
 test "reviewed EnemyGfxHandler fingerprint is stable" {
   let source = try! @fs.read_file_to_string("src/smb.asm")
   let tokens = try! @parse.Lexer::new(source).tokenize()

@@ -27,6 +27,13 @@ static const uint8_t fast_enemy_policy[Spiny + 1u] = {
     [Spiny] = FAST_ENEMY_SPINY,
 };
 
+const uint8_t smb_core_enemy_column_actions[4] = {
+    0u,
+    HIDE_ENEMY_RIGHT_COLUMN,
+    HIDE_ENEMY_LEFT_COLUMN,
+    HIDE_ENEMY_RIGHT_COLUMN | HIDE_ENEMY_LEFT_COLUMN,
+};
+
 static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
 }
@@ -216,7 +223,9 @@ bool smb_core_fast_enemy_gfx_handler(void) {
     }
 
     y = sprite_offset;
-    SprObjectOffscrChk();
+    if (!smb_core_fast_spr_object_offscr_known_safe(slot, sprite_offset)) {
+        SprObjectOffscrChk();
+    }
     return true;
 }
 

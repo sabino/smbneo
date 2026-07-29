@@ -6529,6 +6529,9 @@ CheckToMirrorJSpring:
 }
 
 void SprObjectOffscrChk(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_spr_object_offscr_chk()) { return; }
+  #endif
   ldx_zp(ObjectOffset); // get enemy buffer offset
   lda_abs(Enemy_OffscreenBits); // check offscreen information
   lsr_acc();
