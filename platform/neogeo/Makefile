@@ -29,6 +29,7 @@ READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
+APU_FRAME_UNITS_TEST := $(BUILD)/test_neogeo_apu_frame_units
 AUDIO_PACKET_TEST := $(BUILD)/test_neogeo_audio_packet
 AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
@@ -477,11 +478,18 @@ $(INPUT_POLICY_TEST): \
 
 $(APU_BRIDGE_TEST): \
 		$(ROOT)/tools/test_neogeo_apu_bridge.c \
-		apu_bridge.c apu_bridge.h | $(BUILD)
+		apu_bridge.c apu_bridge.h apu_frame_units.h | $(BUILD)
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
 		-I. \
 		$(ROOT)/tools/test_neogeo_apu_bridge.c \
 		apu_bridge.c -o $@
+
+$(APU_FRAME_UNITS_TEST): \
+		$(ROOT)/tools/test_neogeo_apu_frame_units.c \
+		apu_frame_units.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_apu_frame_units.c -o $@
 
 $(AUDIO_PACKET_TEST): \
 		$(ROOT)/tools/test_neogeo_audio_packet.c audio_packet.h | $(BUILD)
@@ -532,7 +540,7 @@ test: \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
 		$(READ_PORT_BITS_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
-		$(APU_BRIDGE_TEST) $(AUDIO_PACKET_TEST) \
+		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
 		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
 		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST)
 	$(PYTHON) -m unittest discover \
@@ -549,6 +557,7 @@ test: \
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
 	$(APU_BRIDGE_TEST)
+	$(APU_FRAME_UNITS_TEST)
 	$(AUDIO_PACKET_TEST)
 	$(AUDIO_CADENCE_TEST)
 	$(OAM_VISIBILITY_TEST)

@@ -1,4 +1,5 @@
 #include "apu_bridge.h"
+#include "apu_frame_units.h"
 
 #include <string.h>
 
@@ -148,94 +149,51 @@ static void restart_envelope(
     envelope->divider = (uint8_t)(control & 0x0fu);
 }
 
-static void clock_envelope(
-    NeogeoApuEnvelope *envelope,
-    uint8_t control
-) {
-    if ((control & 0x10u) != 0u) {
-        return;
-    }
-    if (envelope->divider != 0u) {
-        --envelope->divider;
-        return;
-    }
-
-    envelope->divider = (uint8_t)(control & 0x0fu);
-    if (envelope->decay != 0u) {
-        --envelope->decay;
-    } else if ((control & 0x20u) != 0u) {
-        envelope->decay = 0x0fu;
-    }
-}
-
 static void clock_frame_envelopes(NeogeoApuBridge *bridge) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_ENVELOPE_TICKS_PER_FRAME; ++tick) {
-        clock_envelope(
-            &bridge->pulse_envelope[0],
-            bridge->pulse_control[0]
-        );
-        clock_envelope(
-            &bridge->pulse_envelope[1],
-            bridge->pulse_control[1]
-        );
-        clock_envelope(
-            &bridge->noise_envelope,
-            bridge->noise_control
-        );
-    }
+    neogeo_apu_clock_envelope_4(
+        bridge->pulse_control[0],
+        &bridge->pulse_envelope[0].decay,
+        &bridge->pulse_envelope[0].divider
+    );
+    neogeo_apu_clock_envelope_4(
+        bridge->pulse_control[1],
+        &bridge->pulse_envelope[1].decay,
+        &bridge->pulse_envelope[1].divider
+    );
+    neogeo_apu_clock_envelope_4(
+        bridge->noise_control,
+        &bridge->noise_envelope.decay,
+        &bridge->noise_envelope.divider
+    );
 }
 
 static void clock_triangle_linear_counter(
     NeogeoApuBridge *bridge
 ) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_LINEAR_TICKS_PER_FRAME; ++tick) {
-        if (bridge->triangle_linear_reload != 0u) {
-            bridge->triangle_linear_counter =
-                (uint8_t)(bridge->triangle_control & 0x7fu);
-        } else if (bridge->triangle_linear_counter != 0u) {
-            --bridge->triangle_linear_counter;
-        }
-
-        if ((bridge->triangle_control & 0x80u) == 0u) {
-            bridge->triangle_linear_reload = 0;
-        }
-    }
-}
-
-static void clock_length_counter(
-    uint8_t *counter,
-    uint8_t halted
-) {
-    if (halted == 0u && *counter != 0u) {
-        --*counter;
-    }
+    neogeo_apu_clock_triangle_linear_4(
+        bridge->triangle_control,
+        &bridge->triangle_linear_counter,
+        &bridge->triangle_linear_reload
+    );
 }
 
 static void clock_frame_length_counters(NeogeoApuBridge *bridge) {
-    uint8_t tick;
-
-    for (tick = 0; tick < NES_LENGTH_TICKS_PER_FRAME; ++tick) {
-        clock_length_counter(
-            &bridge->pulse_length[0],
-            (uint8_t)(bridge->pulse_control[0] & 0x20u)
-        );
-        clock_length_counter(
-            &bridge->pulse_length[1],
-            (uint8_t)(bridge->pulse_control[1] & 0x20u)
-        );
-        clock_length_counter(
-            &bridge->triangle_length,
-            (uint8_t)(bridge->triangle_control & 0x80u)
-        );
-        clock_length_counter(
-            &bridge->noise_length,
-            (uint8_t)(bridge->noise_control & 0x20u)
-        );
-    }
+    neogeo_apu_clock_length_2(
+        &bridge->pulse_length[0],
+        (uint8_t)(bridge->pulse_control[0] & 0x20u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->pulse_length[1],
+        (uint8_t)(bridge->pulse_control[1] & 0x20u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->triangle_length,
+        (uint8_t)(bridge->triangle_control & 0x80u)
+    );
+    neogeo_apu_clock_length_2(
+        &bridge->noise_length,
+        (uint8_t)(bridge->noise_control & 0x20u)
+    );
 }
 
 static uint16_t pulse_sweep_target_period(
