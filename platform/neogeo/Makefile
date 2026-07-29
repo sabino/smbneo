@@ -29,7 +29,10 @@ AUDIO_PACKET_TEST := $(BUILD)/test_neogeo_audio_packet
 AUDIO_CADENCE_TEST := $(BUILD)/test_neogeo_audio_cadence
 OAM_VISIBILITY_TEST := $(BUILD)/test_neogeo_oam_visibility
 OAM_TILES_TEST := $(BUILD)/test_neogeo_oam_tiles
+PALETTE_POLICY_TEST := $(BUILD)/test_neogeo_palette_policy
+VBLANK_BUDGET_TEST := $(BUILD)/test_neogeo_vblank_budget
 GAMEROM := smbneo
+SMBNEO_NGH := 2026
 
 CC := m68k-neogeo-elf-gcc
 HOST_CC ?= cc
@@ -70,7 +73,7 @@ CFLAGS := \
 LDFLAGS := \
 	$(ARCH_FLAGS) $(OPT_FLAGS) $(TUNE_FLAGS) $(LTO_FLAGS) \
 	-Wl,--defsym=rom_eye_catcher_mode=2 \
-	-Wl,--defsym=rom_NGH_ID=0x534d
+	-Wl,--defsym=rom_NGH_ID=0x$(SMBNEO_NGH)
 
 ENGINE_SOURCES := \
 	video.c ppu_direct.c apu_bridge.c apu_neogeo.c audio_cadence.c
@@ -377,13 +380,28 @@ $(OAM_TILES_TEST): \
 		-I. \
 		$(ROOT)/tools/test_neogeo_oam_tiles.c -o $@
 
+$(PALETTE_POLICY_TEST): \
+		$(ROOT)/tools/test_neogeo_palette_policy.c \
+		palette_policy.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_palette_policy.c -o $@
+
+$(VBLANK_BUDGET_TEST): \
+		$(ROOT)/tools/test_neogeo_vblank_budget.c \
+		vblank_budget.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_vblank_budget.c -o $@
+
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(AUDIO_PACKET_TEST) \
-		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST)
+		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
+		$(PALETTE_POLICY_TEST) $(VBLANK_BUDGET_TEST)
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
@@ -398,6 +416,8 @@ test: \
 	$(AUDIO_CADENCE_TEST)
 	$(OAM_VISIBILITY_TEST)
 	$(OAM_TILES_TEST)
+	$(PALETTE_POLICY_TEST)
+	$(VBLANK_BUDGET_TEST)
 
 verify-codegen:
 	$(PYTHON) $(ROOT)/tools/check_codegen_consistency.py \
@@ -482,7 +502,7 @@ neosd-cart: native-roms $(NEOSD_BUILDER)
 		-v $(VROM1) -s $(SROM1) -m $(MROM1) \
 		-n $(GAMEROM) -l "Super Mario Bros. Neo" \
 		-y 2026 --publisher "Community port" \
-		-x neo.genre=Platformer neo.ngh=534d \
+		-x neo.genre=Platformer neo.ngh=$(SMBNEO_NGH) \
 		-o $(NEOSD_CART)
 	$(PYTHON) $(NEOSD_BUILDER) \
 		--rom-dir $(ROMDIR) --validate $(NEOSD_CART)

@@ -22,7 +22,7 @@ MANUFACTURER = "Community port"
 YEAR = 2026
 GENRE_PLATFORMER = 5
 SCREENSHOT = 0
-NGH = 0x534D
+NGH = 0x2026
 
 REGION_FILENAMES = {
     "p": "smbneo-p1.p1",
@@ -85,6 +85,17 @@ def _uint32(value: int, label: str) -> int:
     if type(value) is not int or value < 0 or value > 0xFFFFFFFF:
         raise NeoSdError(f"{label} must be an unsigned 32-bit integer")
     return value
+
+
+def validate_packed_bcd_ngh(value: int) -> int:
+    """Return a valid four-digit packed-BCD Neo Geo game number."""
+
+    ngh = _uint32(value, "NGH")
+    if ngh > 0xFFFF or any(((ngh >> shift) & 0xF) > 9 for shift in (0, 4, 8, 12)):
+        raise NeoSdError(
+            f"NGH 0x{ngh:x} must be a four-digit packed-BCD value"
+        )
+    return ngh
 
 
 def _text_field(value: str, width: int, label: str) -> bytes:
@@ -187,7 +198,7 @@ def build_image(
         _uint32(year, "year"),
         _uint32(genre, "genre"),
         _uint32(screenshot, "screenshot"),
-        _uint32(ngh, "NGH"),
+        validate_packed_bcd_ngh(ngh),
     )
     header[0x2C:0x4D] = _text_field(name, 33, "game name")
     header[0x4D:0x5E] = _text_field(manufacturer, 17, "manufacturer")
@@ -206,6 +217,7 @@ def parse_header(image_input: bytes | bytearray | memoryview) -> NeoSdHeader:
 
     sizes = struct.unpack_from("<6I", image, 0x04)
     year, genre, screenshot, ngh = struct.unpack_from("<4I", image, 0x1C)
+    validate_packed_bcd_ngh(ngh)
     return NeoSdHeader(
         *sizes,
         year,
@@ -266,7 +278,7 @@ def validate_image(
             header.screenshot,
             _uint32(screenshot, "screenshot"),
         ),
-        ("NGH", header.ngh, _uint32(ngh, "NGH")),
+        ("NGH", header.ngh, validate_packed_bcd_ngh(ngh)),
     )
     for label, actual, wanted in expected_metadata:
         if actual != wanted:

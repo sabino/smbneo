@@ -20,6 +20,7 @@ import {
   forceTailCrc32,
   parseNeoSdHeader,
   patchTemplateProm,
+  validatePackedBcdNgh,
 } from "../web/compat.mjs";
 
 const CART_SIZES = {
@@ -297,7 +298,7 @@ test("canonical cartridge becomes a valid NeoSD v1 image", () => {
   assert.equal(header.year, 2026);
   assert.equal(header.genre, 5);
   assert.equal(header.screenshot, 0);
-  assert.equal(header.ngh, 0x534d);
+  assert.equal(header.ngh, 0x2026);
   assert.deepEqual(
     [...neo.slice(header.sections.p.start, header.sections.p.start + 6)],
     [0x4e, 0xf9, 0x00, 0xc0, 0x00, 0x80],
@@ -307,6 +308,32 @@ test("canonical cartridge becomes a valid NeoSD v1 image", () => {
     [0x01, 0x81, 0x02, 0x82, 0x03, 0x83, 0x04, 0x84],
   );
   assert.ok(neo.slice(0x5e, 0x1000).every((value) => value === 0));
+});
+
+test("NeoSD NGH metadata must be four-digit packed BCD", () => {
+  assert.equal(validatePackedBcdNgh(0x2026), 0x2026);
+  assert.throws(() => validatePackedBcdNgh(0x534d), /packed-BCD/);
+
+  const cartridge = {
+    p: new Uint8Array(CART_SIZES.p),
+    m: new Uint8Array(CART_SIZES.m),
+    v: new Uint8Array(CART_SIZES.v),
+    s: new Uint8Array(CART_SIZES.s),
+    c1: new Uint8Array(CART_SIZES.c1),
+    c2: new Uint8Array(CART_SIZES.c2),
+  };
+  assert.throws(
+    () => buildNeoSdFile(cartridge, { ngh: 0x534d }),
+    /packed-BCD/,
+  );
+
+  const neo = buildNeoSdFile(cartridge);
+  new DataView(neo.buffer, neo.byteOffset, neo.byteLength).setUint32(
+    0x28,
+    0x534d,
+    true,
+  );
+  assert.throws(() => parseNeoSdHeader(neo), /packed-BCD/);
 });
 
 test("browser NeoSD output is byte-identical to the native reference packer", async () => {

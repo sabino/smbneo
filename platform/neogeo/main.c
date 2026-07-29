@@ -5,9 +5,17 @@
 #include "ppu.h"
 #include "video.h"
 
+/*
+ * ngdevkit clears BSS in complete 32-byte blocks before restoring .data.
+ * Keep enough initialized data immediately after BSS so that the complete
+ * startup over-clear is restored inside this cartridge's own work-RAM image.
+ */
+static volatile uint8_t ngdevkit_bss_restore_guard[32] = {0xa5u};
+
 int main(void) {
     uint16_t audio_vblank;
 
+    (void)ngdevkit_bss_restore_guard[0];
     neogeo_video_init();
 
     cpu_init();

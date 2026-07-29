@@ -13,11 +13,10 @@ Completed:
 - MC68000 code generation (`-m68000 -mlra`) with `-O3`, LTO, and measured
   inlining of the translated core's hot instruction helpers.
 - Direct background, OAM sprite, palette, FIX HUD, and input backends.
-- One persistent 33-strip background ring with generation-tracked columns,
-  sparse changed-row uploads, a 64-row bulk-rebuild threshold, and one or two
-  sticky chain drivers.
-- Double-buffered OAM around that persistent background, sparse FIX/palette
-  updates, and next-VBlank live-state swaps.
+- Two 33-strip background banks with generation-tracked columns, sparse
+  changed-row uploads, and one or two sticky chain drivers per hidden bank.
+- Double-buffered background and OAM state, bounded FIX/palette phases, and an
+  independent next-VBlank SCB3 reveal.
 - Local, asset-clean CHR-to-C-ROM/S-ROM converter with unit tests.
 - Full P/M/V/S/C ROM packaging and ngdevkit-gngeo boot.
 - Byte-for-byte reproducible cartridge checker using two isolated builds.
@@ -94,10 +93,10 @@ At runtime:
   the LSPC's 32-tile full-height mode; HUD-visible playfields are padded by
   three transparent physical rows so whole-chain `$7f` shrink preserves the
   intended 8-pixel row geometry.
-- One persistent circular strip bank keeps the world-column/generation cache.
+- Each hidden circular strip bank keeps its own world-column/generation cache.
   Fine scrolling only changes one or two chain-driver SCB4 words, and crossing
-  an eight-pixel boundary normally rebuilds one entering strip instead of all
-  33.
+  an eight-pixel boundary normally rebuilds one entering strip in that bank
+  instead of all 33.
 - The stationary three-row SMB status bar uses FIX tiles.
 - NES OAM entries use one-tile Neo Geo sprites.
 - OAM priority-behind-background sprites are below the background strips;
@@ -114,7 +113,12 @@ The Neo Geo global backdrop supplies NES background color zero. Because C-ROM
 pen zero is transparent, a behind-background sprite naturally appears through
 transparent NES background pixels and disappears under opaque ones.
 
-## Object double buffering with a persistent background
+Palette RAM word zero is not used for that visible color: it is the LSPC's
+analog black reference and is fixed to `$8000` in both physical palette banks.
+The independently addressed backdrop register retains the requested NES
+universal background color.
+
+## Background and object double buffering
 
 The physical hardware layout is:
 
@@ -122,21 +126,23 @@ The physical hardware layout is:
 | --- | ---: |
 | Behind-background OAM bank A | 64 |
 | Behind-background OAM bank B | 64 |
-| Persistent scrolling background | 33 |
+| Scrolling background bank A | 33 |
+| Scrolling background bank B | 33 |
 | Front OAM bank A | 64 |
 | Front OAM bank B | 64 |
-| Total | 289 of 381 |
+| Total | 322 of 381 |
 
-Only OAM is double-buffered. The 33 background strips remain resident and
-form one circular sticky chain, split into two chains only when the ring wraps
-around its physical slot zero. Its one or two driver SCB3 words briefly hide
-the bank while changed SCB1 rows and SCB4 positions are committed, then reveal
-it again in the same VBlank.
+The complete background and OAM scene is double-buffered. Each background bank
+forms one circular sticky chain, split into two chains only when its ring wraps
+around physical slot zero. SCB1 tiles, sticky follower words, and SCB4 positions
+are built only in the hidden bank. Its prospective one or two driver words are
+explicitly cleared first, preventing stale sticky state from chaining across a
+bank boundary.
 
 The next OAM bank's SCB1 and SCB4 state is prepared while its SCB3 entries are
 hidden. The renderer stages its live SCB3 words in work RAM, then hides only
 the old bank's active entries and reveals only the new bank's in-range/live
-entries. SCB2 zoom values are initialized once for all 289 slots. Hidden-bank
+entries. SCB2 zoom values are initialized once for all 322 slots. Hidden-bank
 SCB1/SCB4 data is written directly instead of compared against a work-RAM OAM
 cache, and descending same-plane SCB3 runs share one address setup.
 
@@ -146,12 +152,22 @@ for the following one rather than writing live state during active display.
 The wait uses an atomic 16-bit signal while separate 32-bit counters retain
 long-running cadence evidence.
 
-Palette, sparse FIX changes, sparse background rows, OAM SCB3 state, and
-background driver movement begin only after that fresh interrupt. A large
-screen/configuration change affecting more than 64 background rows uses a
-bounded bulk path: hide the background, upload it while invisible, wait for
-one more VBlank, and then reveal it. The repeated display frame is preferable
-to writing a visible strip during active scanout.
+Background work may span display periods because it cannot affect the visible
+bank. Palette changes and at most 32 sparse FIX entries are committed in one
+fresh VBlank under a conservative 20,000-cycle accounting ceiling. Additional
+FIX entries continue in later chunks. Small measured palette/FIX deltas may
+share the old/new background-and-OAM SCB3 swap only when their combined
+worst-case accounting leaves at least 1,024 modeled cycles below the same
+ceiling; larger live changes complete first. The render generation advances
+only after the atomic reveal.
+
+Every LSPC address, data, and modifier write is emitted as an absolute-long
+`move.w` to `$3c0000`, `$3c0002`, or `$3c0004`. The instruction takes 16
+cycles, satisfying the LSPC's minimum 12-cycle spacing without relying on
+optimizer-sensitive address-register loops. Final-ELF verification rejects
+known-pointer indirect stores, direct non-word/odd-address stores, and a
+missing absolute-long register class. The current linked image has 29
+address, 36 data, and 12 modifier writes, all in the required form.
 
 The following table belongs to the older, pre-audio, double-background
 renderer milestone ELF (SHA-256
@@ -167,11 +183,13 @@ VBlank-poll iteration:
 | Split phase 1: all palette words plus all 96 HUD cells | 22,782 |
 | Split phase 2: maximum SCB swap | 18,344 |
 
-All paths stay below the 25,000-cycle post-handler working ceiling. A raw
+Those historical paths stayed below the 25,000-cycle post-handler working
+ceiling. A raw
 NTSC VBlank is approximately 30,720 68000 cycles, so the ceiling reserves
 more than 5,700 cycles for interrupt/BIOS work, recognition latency, and
-hardware wait-state uncertainty. It does not characterize the current
-persistent renderer or its enemy-heavy cadence.
+hardware wait-state uncertainty. The current implementation instead uses the
+20,000-cycle phase policy described above, reserving a larger margin for BIOS
+work and hardware wait-state uncertainty.
 
 ## Native reference cadence and crowd behavior
 
@@ -245,17 +263,27 @@ The cacheless all-sprite renderer was then measured over the exact
 | Persistent-background baseline with software culling | 120 / 226 | 106 |
 | All in-range sprites with the old OAM cache | 120 / 203 | 83 |
 | Cacheless all-sprite renderer with batched SCB3 runs | 120 / 177 | 57 |
-| Current integrated renderer and flattened collision scan | 120 / 174 | 54 |
+| Previous persistent renderer plus flattened collision scan | 120 / 174 | 54 |
 
 The endpoint screenshot was byte-identical in all four runs, and the
-translated game/RAM endpoint matched. The integrated result removes 52 of the
-baseline's 106 missed display periods in this window. With the established
-53-hold source
+translated game/RAM endpoint matched. That previous integrated result removed
+52 of the baseline's 106 missed display periods in this window. With the
+established 53-hold source
 schedule, the CSV header and all 67,677 non-comment state rows also matched
 byte-for-byte between baseline and all-sprite builds; the complete files
 differ only in scheduling metadata. The new policy deliberately restores
 sprites that the source PPU would reject on overflow frames while leaving the
 translated gameplay state unchanged.
+
+The current double-background hardware-safety renderer was also exercised in
+MAME 0.264 with the same deterministic active World 1-1 input schedule. The
+frame-720-through-1080 window produced 360 game ticks in 360 VBlanks with no
+counter jump or stalled palette/FIX phase, and an independent fresh-state run
+repeated that result exactly. An intermediate safety build that always split
+two-word palette animation updates produced only 332 ticks; counting actual
+palette writes and sharing that bounded update recovered all 28 ticks without
+raising the 20,000-cycle policy ceiling. This ordinary-scene result does not
+replace the enemy-heavy replay gates or physical hardware validation.
 
 A field-major SCB1/SCB4 prototype reduced the modeled OAM register-store count
 from 25,895 to 20,762 over this window but regressed real stock-clock cadence
@@ -448,12 +476,12 @@ or electrical/timing validation on physical AES/MVS-compatible hardware.
 
 | Measurement | Bytes |
 | --- | ---: |
-| MC68000 text + read-only data | 181,086 |
-| Initialized work RAM (`.data`) | 4 |
-| Zeroed work RAM (`.bss`) | 14,100 |
-| Static user work RAM total | 14,104 |
+| MC68000 text + read-only data | 182,394 |
+| Initialized work RAM (`.data`) | 36 |
+| Zeroed work RAM (`.bss`) | 14,176 |
+| Static user work RAM total | 14,212 |
 | User-RAM limit below `$10f300` | 62,208 |
-| Remaining stack/heap headroom | 48,104 |
+| Remaining stack/heap headroom | 47,996 |
 
 For comparison, the unmodified desktop link's measured BSS was 545,556 bytes.
 Most of that was its RGB framebuffer, opacity mask, decoded-tile cache, audio
@@ -467,7 +495,20 @@ The verifier fails if:
   optimized out;
 - the ROM image is implausibly small;
 - static user work RAM exceeds 48 KiB;
+- ngdevkit startup BSS/data write envelopes leave cartridge work RAM or are
+  not restored by the initialized guard block;
+- the cartridge NGH is not the project-selected packed-BCD `$2026`;
+- final linked code contains a known-pointer indirect or a direct
+  non-word/odd-address LSPC register write;
+- both physical palette banks are not initialized with `$8000` at word zero;
+- a memory-card API or direct BIOS/control/raw card write is linked;
 - framebuffer, CHR-copy, desktop, or software-float symbols are linked.
+
+The game implements no save or memory-card path. The final-ELF audit rejects
+ngdevkit memory-card APIs, the BIOS card vectors and parameter block, card
+unlock/bank controls, and direct writes anywhere in the mirrored
+`$800000..$bfffff` card window. The standard zero-size backup-data header
+symbols are metadata, not a card operation.
 
 The 48 KiB guard is intentionally below the linker limit, preserving more
 than 13 KiB for stack and future runtime state even if the port grows.
@@ -501,7 +542,8 @@ The canonical build also generates `gngeo_data.zip` with one custom
 filenames, destinations, and CRCs against the native ROM files. The ordinary
 `make run` path therefore launches the project as `smbneo`, not through a
 donor database entry. The cartridge header also uses the project-specific
-unofficial NGH value `0x534d` instead of ngdevkit's generic default.
+packed-BCD NGH value `0x2026` instead of ngdevkit's generic
+default. Both the command-line and browser packers reject non-BCD identifiers.
 
 `make mame-cart` pairs `smbneo.zip` with a generated
 `build/mame/hash/neogeo.xml` containing the unique `smbneo` software entry,
@@ -742,7 +784,7 @@ live sprite/FIX/palette state, the renderer increments a 16-bit generation;
 the following VBlank callback latches it as presented, and screenshot traps
 wait for equality without advancing the translated core or renderer frame.
 Those two shared words and one 16-bit callback copy also exist in normal
-cartridges and are included in the measured 14,100-byte BSS above.
+cartridges and are included in the measured 14,176-byte BSS above.
 
 Immediately before invoking `scrot`, the host also applies a bounded display
 settling allowance: 50 milliseconds by default, configurable from 0 through

@@ -7,8 +7,9 @@ MC68000 and replaces the desktop PPU/APU modules with:
   register behavior without full CHR/framebuffer storage. Cartridge builds
   retain only the 314-byte CHR read window used to construct the title menu.
 - `video.c`: direct C-ROM/S-ROM, palette RAM, FIX-map, and SCB1-4 writes with
-  one persistent 33-strip background ring, two 64-entry OAM banks on each
-  priority plane, generation caches, sparse uploads, and next-VBlank swaps.
+  two hidden-built 33-strip background banks, two 64-entry OAM banks on each
+  priority plane, generation caches, sparse uploads, bounded live updates,
+  and atomic next-VBlank swaps.
 - `apu_bridge.c`: NES APU register shadowing, envelope/sweep/length/linear
   state, and changed-register coalescing for YM2610 SSG plus ADPCM-B.
 - `apu_neogeo.c`: acknowledged MC68000-to-Z80 transport, startup recovery, and

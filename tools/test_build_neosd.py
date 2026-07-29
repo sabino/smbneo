@@ -47,7 +47,7 @@ class NeoSdBuilderTests(unittest.TestCase):
         self.assertEqual(header.manufacturer, "Community port")
         self.assertEqual(header.year, 2026)
         self.assertEqual(header.genre, 5)
-        self.assertEqual(header.ngh, 0x534D)
+        self.assertEqual(header.ngh, 0x2026)
         self.assertTrue(all(value == 0 for value in image[0x5E:0x1000]))
 
         offsets = neosd.section_offsets(header)
@@ -89,6 +89,18 @@ class NeoSdBuilderTests(unittest.TestCase):
             neosd.build_image(small_regions(), name="x" * 33)
         with self.assertRaisesRegex(neosd.NeoSdError, "limit is 16"):
             neosd.build_image(small_regions(), manufacturer="x" * 17)
+
+    def test_ngh_must_be_four_digit_packed_bcd(self) -> None:
+        self.assertEqual(neosd.validate_packed_bcd_ngh(0x2026), 0x2026)
+        with self.assertRaisesRegex(neosd.NeoSdError, "packed-BCD"):
+            neosd.validate_packed_bcd_ngh(0x534D)
+        with self.assertRaisesRegex(neosd.NeoSdError, "packed-BCD"):
+            neosd.build_image(small_regions(), ngh=0x534D)
+
+        invalid_header = bytearray(neosd.build_image(small_regions()))
+        struct.pack_into("<I", invalid_header, 0x28, 0x534D)
+        with self.assertRaisesRegex(neosd.NeoSdError, "packed-BCD"):
+            neosd.parse_header(invalid_header)
 
     def test_validation_rejects_reserved_data_truncation_and_payload_changes(self) -> None:
         regions = small_regions()
@@ -184,7 +196,7 @@ class NeoSdBuilderTests(unittest.TestCase):
                     neosd.MANUFACTURER,
                     "-x",
                     "neo.genre=Platformer",
-                    "neo.ngh=534d",
+                    "neo.ngh=2026",
                     "-o",
                     str(output),
                 ],
