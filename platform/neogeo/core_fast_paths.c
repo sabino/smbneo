@@ -22,6 +22,7 @@ typedef enum {
     FAST_OFFSCREEN_RIGHT_IMMUNE = 1u << 2,
     FAST_OFFSCREEN_STATE_5 = 1u << 3,
     FAST_OFFSCREEN_PLAIN = 1u << 4,
+    FAST_OFFSCREEN_ANY_STATE = 1u << 5,
 } FastOffscreenPolicy;
 
 /*
@@ -50,7 +51,7 @@ const uint8_t smb_core_enemy_column_actions[4] = {
  * margin adjustment because the original routine chains that carry through
  * all four boundary bytes.
  */
-static const uint8_t fast_offscreen_policy[Spiny + 1u] = {
+static const uint8_t fast_offscreen_policy[0x2bu] = {
     [Goomba] = FAST_OFFSCREEN_PLAIN,
     [PiranhaPlant] =
         FAST_OFFSCREEN_LEFT_CARRY |
@@ -60,6 +61,41 @@ static const uint8_t fast_offscreen_policy[Spiny + 1u] = {
     [Spiny] =
         FAST_OFFSCREEN_LEFT_CARRY |
         FAST_OFFSCREEN_STATE_5,
+    [0x24u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x25u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x26u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x27u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x28u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x29u] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
+    [0x2au] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5 |
+        FAST_OFFSCREEN_PLAIN |
+        FAST_OFFSCREEN_ANY_STATE,
 };
 
 static void fast_erase_enemy_object(uint8_t slot) {
@@ -623,7 +659,7 @@ bool smb_core_fast_offscreen_bounds_check(void) {
         return false;
     }
     enemy_id = ram[Enemy_ID + slot];
-    if (enemy_id > Spiny) {
+    if (enemy_id >= sizeof(fast_offscreen_policy)) {
         return false;
     }
     policy = fast_offscreen_policy[enemy_id];
@@ -632,6 +668,7 @@ bool smb_core_fast_offscreen_bounds_check(void) {
     }
     enemy_state = ram[Enemy_State + slot];
     if (
+        (policy & FAST_OFFSCREEN_ANY_STATE) == 0u &&
         enemy_state != 0u &&
         (enemy_state != 5u ||
             (policy & FAST_OFFSCREEN_STATE_5) == 0u)

@@ -32,6 +32,21 @@ static const EnemyCase enemy_cases[] = {
     { Spiny, 5u },
 };
 
+static const EnemyCase bounds_enemy_cases[] = {
+    { Goomba, 0u },
+    { PiranhaPlant, 0u },
+    { Lakitu, 0u },
+    { Spiny, 0u },
+    { Spiny, 5u },
+    { 0x24u, 0u },
+    { 0x25u, 1u },
+    { 0x26u, 5u },
+    { 0x27u, 0x7fu },
+    { 0x28u, 0x80u },
+    { 0x29u, 0xfeu },
+    { 0x2au, 0xffu },
+};
+
 static const EnemyCase move_enemy_cases[] = {
     { Goomba, 0u },
     { Spiny, 0u },
@@ -659,7 +674,8 @@ static void compare_bounds_boundary_cross_product(void) {
     size_t enemy_page_index;
 
     for (case_index = 0;
-         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         case_index <
+            sizeof(bounds_enemy_cases) / sizeof(bounds_enemy_cases[0]);
          ++case_index) {
         for (screen_x_index = 0;
              screen_x_index < sizeof(x_values) / sizeof(x_values[0]);
@@ -682,7 +698,7 @@ static void compare_bounds_boundary_cross_product(void) {
                         /* Exhaust the left compare, borrow, sign, and wrap. */
                         prepare_bounds_case(
                             2u,
-                            &enemy_cases[case_index],
+                            &bounds_enemy_cases[case_index],
                             seed
                         );
                         ram[ScreenLeft_X_Pos] = x_values[screen_x_index];
@@ -701,7 +717,7 @@ static void compare_bounds_boundary_cross_product(void) {
                         /* Keep the left edge local while exhausting the right. */
                         prepare_bounds_case(
                             2u,
-                            &enemy_cases[case_index],
+                            &bounds_enemy_cases[case_index],
                             seed ^ UINT32_C(0xa5a5a5a5)
                         );
                         ram[ScreenLeft_X_Pos] =
@@ -728,9 +744,10 @@ static void compare_bounds_every_read_byte(void) {
     uint16_t value;
 
     for (case_index = 0;
-         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         case_index <
+            sizeof(bounds_enemy_cases) / sizeof(bounds_enemy_cases[0]);
          ++case_index) {
-        const EnemyCase *enemy = &enemy_cases[case_index];
+        const EnemyCase *enemy = &bounds_enemy_cases[case_index];
 
         for (value = 0; value < 256u; ++value) {
 #define COMPARE_BOUNDS_RAM_BYTE(address) \
@@ -795,13 +812,14 @@ static void compare_bounds_patterned_full_state(void) {
     uint8_t slot;
 
     for (case_index = 0;
-         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         case_index <
+            sizeof(bounds_enemy_cases) / sizeof(bounds_enemy_cases[0]);
          ++case_index) {
         for (slot = 0; slot < 6u; ++slot) {
             for (seed = 0; seed < 256u; ++seed) {
                 prepare_bounds_case(
                     slot,
-                    &enemy_cases[case_index],
+                    &bounds_enemy_cases[case_index],
                     UINT32_C(0x85ebca6b) * (seed + 1u) + slot
                 );
                 (void)prepared_bounds_case_erases();
@@ -880,12 +898,65 @@ static void compare_bounds_explicit_paths(void) {
     assert(!prepared_bounds_case_erases());
 }
 
+static void compare_bounds_platform_all_states(void) {
+    EnemyCase enemy;
+    uint16_t enemy_id;
+    uint16_t enemy_state;
+
+    for (enemy_id = 0x24u; enemy_id <= 0x2au; ++enemy_id) {
+        for (enemy_state = 0u; enemy_state < 256u; ++enemy_state) {
+            enemy.enemy_id = (uint8_t)enemy_id;
+            enemy.enemy_state = (uint8_t)enemy_state;
+
+            prepare_bounds_case(
+                2u,
+                &enemy,
+                ((uint32_t)enemy_id << 24) |
+                    ((uint32_t)enemy_state << 8) | UINT32_C(0x35)
+            );
+            set_typical_visible_bounds(2u);
+            assert(!prepared_bounds_case_erases());
+
+            prepare_bounds_case(
+                2u,
+                &enemy,
+                ((uint32_t)enemy_id << 24) |
+                    ((uint32_t)enemy_state << 8) | UINT32_C(0x6a)
+            );
+            ram[ScreenLeft_PageLoc] = 0x06u;
+            ram[ScreenLeft_X_Pos] = 0x44u;
+            ram[Enemy_PageLoc + 2u] = 0x05u;
+            ram[Enemy_X_Position + 2u] = 0xf9u;
+            ram[ScreenRight_PageLoc] = 0x08u;
+            ram[ScreenRight_X_Pos] = 0x80u;
+            assert(prepared_bounds_case_erases());
+
+            prepare_bounds_case(
+                2u,
+                &enemy,
+                ((uint32_t)enemy_id << 24) |
+                    ((uint32_t)enemy_state << 8) | UINT32_C(0xa5)
+            );
+            ram[ScreenLeft_PageLoc] = 0x05u;
+            ram[ScreenLeft_X_Pos] = 0x00u;
+            ram[ScreenRight_PageLoc] = 0x05u;
+            ram[ScreenRight_X_Pos] = 0x00u;
+            ram[Enemy_PageLoc + 2u] = 0x06u;
+            ram[Enemy_X_Position + 2u] = 0x00u;
+            assert(
+                prepared_bounds_case_erases() == (enemy_state != 5u)
+            );
+        }
+    }
+}
+
 static bool bounds_case_is_supported(uint8_t enemy_id, uint8_t enemy_state) {
     return
         ((enemy_id == Goomba || enemy_id == PiranhaPlant ||
             enemy_id == Lakitu) && enemy_state == 0u) ||
         (enemy_id == Spiny &&
-            (enemy_state == 0u || enemy_state == 5u));
+            (enemy_state == 0u || enemy_state == 5u)) ||
+        (enemy_id >= 0x24u && enemy_id <= 0x2au);
 }
 
 static void assert_bounds_fallback_preserves_entry(void) {
@@ -953,6 +1024,7 @@ int main(void) {
     compare_bounds_every_read_byte();
     compare_bounds_patterned_full_state();
     compare_bounds_explicit_paths();
+    compare_bounds_platform_all_states();
     assert_bounds_fallback_preserves_entry();
     printf(
         "Neo Geo core fast-path differential tests: OK "
