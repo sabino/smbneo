@@ -659,6 +659,62 @@ fn is_move_sprites_offscreen_skip(
   )
 }
 
+fn is_sprite_shuffler(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "SpriteShuffler" {
+    return false
+  }
+
+  // The shuffler is a fixed transformation over fifteen sprite offsets and
+  // three derived misc-object groups. Keep the ordinary emitter as a fallback
+  // unless every executable instruction and internal label still matches the
+  // reviewed source routine.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:abs:AreaType
+    #|I:LDA:imm:0x28
+    #|I:STA:zp:0x0
+    #|I:LDX:imm:0xe
+    #|L:ShuffleLoop
+    #|I:LDA:absx:SprDataOffset
+    #|I:CMP:zp:0x0
+    #|IF:BCS
+    #|I:LDY:abs:SprShuffleAmtOffset
+    #|I:CLC:imp
+    #|I:ADC:absy:SprShuffleAmt
+    #|IF:BCS
+    #|I:CLC:imp
+    #|I:ADC:zp:0x0
+    #|END_IF
+    #|I:STA:absx:SprDataOffset
+    #|END_IF
+    #|I:DEX:imp
+    #|I:BPL:rel:ShuffleLoop
+    #|I:LDX:abs:SprShuffleAmtOffset
+    #|I:INX:imp
+    #|I:CPX:imm:0x3
+    #|IF:BEQ
+    #|I:LDX:imm:0x0
+    #|END_IF
+    #|I:STX:abs:SprShuffleAmtOffset
+    #|I:LDX:imm:0x8
+    #|I:LDY:imm:0x2
+    #|L:SetMiscOffset
+    #|I:LDA:absy:SprDataOffset + 5
+    #|I:STA:absx:Misc_SprDataOffset - 2
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absx:Misc_SprDataOffset - 1
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absx:Misc_SprDataOffset
+    #|I:DEX:imp
+    #|I:DEX:imp
+    #|I:DEX:imp
+    #|I:DEY:imp
+    #|I:BPL:rel:SetMiscOffset
+    #|
+  )
+}
+
 fn is_read_port_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "ReadPortBits" {
     return false
@@ -891,6 +947,64 @@ fn Emitter::emit_move_sprites_offscreen_skip(self : Emitter) -> Unit {
   self.emit("}\n")
 }
 
+fn Emitter::emit_sprite_shuffler(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void SpriteShuffler(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed fixed-table specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t shuffle_index = ram[SprShuffleAmtOffset];")
+  self.emit("uint8_t sprite_index;")
+  self.emit("ram[0x0] = 0x28u;")
+  self.emit("for (sprite_index = 15u; sprite_index-- != 0u;) {")
+  self.indentation += 1
+  self.emit("uint8_t value = ram[SprDataOffset + sprite_index];")
+  self.emit("if (value >= 0x28u) {")
+  self.indentation += 1
+  // Reload the selected byte for exactness even for out-of-contract indices
+  // that alias the sprite-offset array. Runtime indices 0..2 select the three
+  // intended table entries and cannot alias these writes.
+  self.emit("const uint8_t shuffle_amount = ram[SprShuffleAmt + shuffle_index];")
+  self.emit("const uint16_t first_sum = (uint16_t)value + shuffle_amount;")
+  self.emit("value = (uint8_t)first_sum;")
+  self.emit("if (first_sum > 0xffu) {")
+  self.indentation += 1
+  self.emit("value = (uint8_t)(value + 0x28u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[SprDataOffset + sprite_index] = value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("sprite_index = (uint8_t)(shuffle_index + 1u);")
+  self.emit("if (sprite_index == 3u) {")
+  self.indentation += 1
+  self.emit("sprite_index = 0u;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[SprShuffleAmtOffset] = sprite_index;")
+  self.emit("for (sprite_index = 0u; sprite_index < 3u; sprite_index++) {")
+  self.indentation += 1
+  self.emit("const uint8_t base = ram[SprDataOffset + 5u + sprite_index];")
+  self.emit("const uint16_t misc_offset = (uint16_t)Misc_SprDataOffset + (uint16_t)sprite_index * 3u;")
+  self.emit("ram[misc_offset] = base;")
+  self.emit("ram[misc_offset + 1u] = (uint8_t)(base + 8u);")
+  self.emit("ram[misc_offset + 2u] = (uint8_t)(base + 16u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = (uint8_t)(ram[SprDataOffset + 5u] + 16u);")
+  self.emit(
+    "carry_flag = ram[SprDataOffset + 5u] >= 0xf0u && ram[SprDataOffset + 5u] < 0xf8u;",
+  )
+  self.emit("x = 0xffu;")
+  self.emit("y = 0xffu;")
+  self.emit("nz_value = 0xffu;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
 fn Emitter::emit_read_port_bits(self : Emitter) -> Unit {
   self.indentation = 0
   self.emit("void ReadPortBits(void) {")
@@ -1021,6 +1135,11 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
   if is_move_sprites_offscreen_skip(subroutine) {
     self.emit_move_sprites_offscreen_skip()
+    return
+  }
+
+  if is_sprite_shuffler(subroutine) {
+    self.emit_sprite_shuffler()
     return
   }
 

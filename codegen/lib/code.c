@@ -236,57 +236,39 @@ SetPause:
 }
 
 void SpriteShuffler(void) {
-  ldy_abs(AreaType); // load level type, likely residual code
-  lda_imm(0x28); // load preset value which will put it at
-  ram[0x0] = a; // sprite #10
-  ldx_imm(0xe); // start at the end of OAM data offsets
-  
-ShuffleLoop:
-  lda_absx(SprDataOffset); // check for offset value against
-  cmp_zp(0x0); // the preset value
-  // if less, skip this part
-  if (carry_flag) {
-    ldy_abs(SprShuffleAmtOffset); // get current offset to preset value we want to add
-    carry_flag = false;
-    adc_absy(SprShuffleAmt); // get shuffle amount, add to current sprite offset
-    // if not exceeded $ff, skip second add
-    if (carry_flag) {
-      carry_flag = false;
-      adc_zp(0x0); // otherwise add preset value $28 to offset
+  // Reviewed fixed-table specialization; guarded by the exact lowered structure.
+  const uint8_t shuffle_index = ram[SprShuffleAmtOffset];
+  uint8_t sprite_index;
+  ram[0x0] = 0x28u;
+  for (sprite_index = 15u; sprite_index-- != 0u;) {
+    uint8_t value = ram[SprDataOffset + sprite_index];
+    if (value >= 0x28u) {
+      const uint8_t shuffle_amount = ram[SprShuffleAmt + shuffle_index];
+      const uint16_t first_sum = (uint16_t)value + shuffle_amount;
+      value = (uint8_t)first_sum;
+      if (first_sum > 0xffu) {
+        value = (uint8_t)(value + 0x28u);
+      }
+      ram[SprDataOffset + sprite_index] = value;
     }
-    // StrSprOffset:
-    ram[SprDataOffset + x] = a; // store new offset here or old one if branched to here
   }
-  // NextSprOffset:
-  dex(); // move backwards to next one
-  if (!neg_flag) { goto ShuffleLoop; }
-  ldx_abs(SprShuffleAmtOffset); // load offset
-  inx();
-  cpx_imm(0x3); // check if offset + 1 goes to 3
-  // if offset + 1 not 3, store
-  if (zero_flag) {
-    ldx_imm(0x0); // otherwise, init to 0
+  sprite_index = (uint8_t)(shuffle_index + 1u);
+  if (sprite_index == 3u) {
+    sprite_index = 0u;
   }
-  // SetAmtOffset:
-  ram[SprShuffleAmtOffset] = x;
-  ldx_imm(0x8); // load offsets for values and storage
-  ldy_imm(0x2);
-  
-SetMiscOffset:
-  lda_absy(SprDataOffset + 5); // load one of three OAM data offsets
-  ram[Misc_SprDataOffset - 2 + x] = a; // store first one unmodified, but
-  carry_flag = false; // add eight to the second and eight
-  adc_imm(0x8); // more to the third one
-  ram[Misc_SprDataOffset - 1 + x] = a; // note that due to the way X is set up,
-  carry_flag = false; // this code loads into the misc sprite offsets
-  adc_imm(0x8);
-  ram[Misc_SprDataOffset + x] = a;
-  dex();
-  dex();
-  dex();
-  dey();
-  if (!neg_flag) { goto SetMiscOffset; } // do this until all misc spr offsets are loaded
-  // -------------------------------------------------------------------------------------
+  ram[SprShuffleAmtOffset] = sprite_index;
+  for (sprite_index = 0u; sprite_index < 3u; sprite_index++) {
+    const uint8_t base = ram[SprDataOffset + 5u + sprite_index];
+    const uint16_t misc_offset = (uint16_t)Misc_SprDataOffset + (uint16_t)sprite_index * 3u;
+    ram[misc_offset] = base;
+    ram[misc_offset + 1u] = (uint8_t)(base + 8u);
+    ram[misc_offset + 2u] = (uint8_t)(base + 16u);
+  }
+  a = (uint8_t)(ram[SprDataOffset + 5u] + 16u);
+  carry_flag = ram[SprDataOffset + 5u] >= 0xf0u && ram[SprDataOffset + 5u] < 0xf8u;
+  x = 0xffu;
+  y = 0xffu;
+  nz_value = 0xffu;
 }
 
 void OperModeExecutionTree(void) {

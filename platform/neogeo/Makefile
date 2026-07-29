@@ -25,6 +25,7 @@ JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
 COLLISION_CORE_TEST := $(BUILD)/test_collision_core
 DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
 MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
+SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
 READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
@@ -440,6 +441,27 @@ $(MOVE_SPRITES_OFFSCREEN_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(SPRITE_SHUFFLER_TEST): \
+		$(ROOT)/tools/test_sprite_shuffler.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_sprite_shuffler.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(READ_PORT_BITS_TEST): \
 		$(ROOT)/tools/test_read_port_bits.c \
 		$(ROOT)/codegen/lib/code.c \
@@ -538,6 +560,7 @@ test: \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
+		$(SPRITE_SHUFFLER_TEST) \
 		$(READ_PORT_BITS_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
@@ -553,6 +576,7 @@ test: \
 	$(COLLISION_CORE_TEST)
 	$(DRAW_SPRITE_OBJECT_TEST)
 	$(MOVE_SPRITES_OFFSCREEN_TEST)
+	$(SPRITE_SHUFFLER_TEST)
 	$(READ_PORT_BITS_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
