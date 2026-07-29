@@ -219,3 +219,48 @@ bool smb_core_fast_enemy_gfx_handler(void) {
     SprObjectOffscrChk();
     return true;
 }
+
+bool smb_core_fast_move_normal_enemy(void) {
+    uint8_t slot = x;
+    uint8_t enemy_id;
+    uint8_t enemy_state;
+    uint8_t speed;
+
+    /* Do not change emulated state until every dispatch guard has passed. */
+    if (
+        slot >= 6u || slot != ram[ObjectOffset] ||
+        ram[TimerControl] != 0u
+    ) {
+        return false;
+    }
+    enemy_id = ram[Enemy_ID + slot];
+    enemy_state = ram[Enemy_State + slot];
+    if (
+        (enemy_id != Goomba || enemy_state != 0u) &&
+        (enemy_id != Spiny ||
+            (enemy_state != 0u && enemy_state != 5u))
+    ) {
+        return false;
+    }
+
+    if (enemy_state == 5u) {
+        MoveD_EnemyVertically();
+    }
+
+    /*
+     * Both accepted states reach SteadM with Y selecting one of the two zero
+     * entries in XSpeedAdderData. Preserve the observable 6502 stack write,
+     * temporary speed store, nested movement call, and final PLA state while
+     * avoiding the interpreted state tests and bytewise speed-table setup.
+     */
+    speed = ram[Enemy_X_Speed + slot];
+    ram[0x100u + sp] = speed;
+    --sp;
+    ram[Enemy_X_Speed + slot] = speed;
+    MoveEnemyHorizontally();
+    ++sp;
+    a = ram[0x100u + sp];
+    nz_value = a;
+    ram[Enemy_X_Speed + x] = a;
+    return true;
+}

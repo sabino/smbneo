@@ -16,6 +16,10 @@ Completed:
   plant, Lakitu, and spiny states. It emits the three OAM rows directly and
   falls back to the generated instruction-equivalent handler for every other
   identity, state, or global mode.
+- A guarded direct-C movement path for normal Goombas and the normal and egg
+  states of Spinies. It preserves the original fixed-point movement, emulated
+  stack effects, registers, and flags, with the complete generated state
+  machine retained as the fallback.
 - Direct background, OAM sprite, palette, FIX HUD, and input backends.
 - Two 33-strip background banks with generation-tracked columns, sparse
   changed-row uploads, and one or two sticky chain drivers per hidden bank.

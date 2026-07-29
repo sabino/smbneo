@@ -32,12 +32,20 @@ static const EnemyCase enemy_cases[] = {
     { Spiny, 5u },
 };
 
+static const EnemyCase move_enemy_cases[] = {
+    { Goomba, 0u },
+    { Spiny, 0u },
+    { Spiny, 5u },
+};
+
 static const uint8_t offscreen_cases[] = {
     0x00u, 0x04u, 0x08u, 0x20u,
     0x40u, 0x80u, 0xfcu, 0xffu,
 };
 
 static unsigned int direct_comparisons;
+static unsigned int move_direct_comparisons;
+static unsigned int move_fallback_checks;
 
 static void save_machine(MachineState *state) {
     memcpy(state->ram, ram, RAM_SIZE);
@@ -322,13 +330,281 @@ static void assert_fallback_preserves_entry(void) {
     }
 }
 
+static void fill_move_pattern(uint32_t seed) {
+    uint32_t state = seed | 1u;
+    uint16_t address;
+
+    for (address = 0; address < RAM_SIZE; ++address) {
+        state = state * UINT32_C(1664525) + UINT32_C(1013904223);
+        ram[address] = (uint8_t)(state >> 24);
+    }
+    a = (uint8_t)(seed >> 24);
+    x = (uint8_t)(seed >> 16);
+    y = (uint8_t)(seed >> 8);
+    sp = (uint8_t)seed;
+    carry_flag = (seed & 1u) != 0u;
+    nz_value = (uint8_t)(seed ^ (seed >> 8));
+}
+
+static void prepare_move_case(
+    uint8_t slot,
+    const EnemyCase *enemy,
+    uint32_t seed
+) {
+    fill_move_pattern(seed);
+    x = slot;
+    ram[ObjectOffset] = slot;
+    ram[TimerControl] = 0u;
+    ram[Enemy_ID + slot] = enemy->enemy_id;
+    ram[Enemy_State + slot] = enemy->enemy_state;
+}
+
+static void compare_prepared_move_case(void) {
+    MachineState entry;
+    MachineState expected;
+    MachineState actual;
+
+    save_machine(&entry);
+    MoveNormalEnemy();
+    save_machine(&expected);
+
+    load_machine(&entry);
+    assert(smb_core_fast_move_normal_enemy());
+    save_machine(&actual);
+    assert_machine_equal(&expected, &actual);
+    ++move_direct_comparisons;
+}
+
+static void compare_move_boundary_cross_product(void) {
+    static const uint8_t speed_values[] = {
+        0x00u, 0x01u, 0x07u, 0x08u, 0x0fu, 0x10u,
+        0x7fu, 0x80u, 0xefu, 0xf0u, 0xf8u, 0xffu,
+    };
+    static const uint8_t force_values[] = {
+        0x00u, 0x01u, 0x7fu, 0x80u, 0xffu,
+    };
+    static const uint8_t position_values[] = {
+        0x00u, 0x01u, 0x7fu, 0xfeu, 0xffu,
+    };
+    static const uint8_t page_values[] = {
+        0x00u, 0x01u, 0xfeu, 0xffu,
+    };
+    size_t case_index;
+    size_t speed_index;
+    size_t force_index;
+    size_t position_index;
+    size_t page_index;
+    uint8_t slot;
+
+    for (case_index = 0;
+         case_index < sizeof(move_enemy_cases) / sizeof(move_enemy_cases[0]);
+         ++case_index) {
+        for (slot = 0; slot < 6u; ++slot) {
+            for (speed_index = 0;
+                 speed_index < sizeof(speed_values) / sizeof(speed_values[0]);
+                 ++speed_index) {
+                for (force_index = 0;
+                     force_index <
+                        sizeof(force_values) / sizeof(force_values[0]);
+                     ++force_index) {
+                    for (position_index = 0;
+                         position_index <
+                            sizeof(position_values) /
+                                sizeof(position_values[0]);
+                         ++position_index) {
+                        for (page_index = 0;
+                             page_index <
+                                sizeof(page_values) / sizeof(page_values[0]);
+                             ++page_index) {
+                            prepare_move_case(
+                                slot,
+                                &move_enemy_cases[case_index],
+                                (uint32_t)(
+                                    UINT32_C(0x9e3779b9) *
+                                    (move_direct_comparisons + 1u)
+                                )
+                            );
+                            ram[Enemy_X_Speed + slot] =
+                                speed_values[speed_index];
+                            ram[Enemy_X_MoveForce + slot] =
+                                force_values[force_index];
+                            ram[Enemy_X_Position + slot] =
+                                position_values[position_index];
+                            ram[Enemy_PageLoc + slot] =
+                                page_values[page_index];
+                            compare_prepared_move_case();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void compare_move_every_read_byte(void) {
+    size_t case_index;
+    uint16_t value;
+
+    for (case_index = 0;
+         case_index < sizeof(move_enemy_cases) / sizeof(move_enemy_cases[0]);
+         ++case_index) {
+        const EnemyCase *enemy = &move_enemy_cases[case_index];
+
+        for (value = 0; value < 256u; ++value) {
+#define COMPARE_MOVE_RAM_BYTE(address) \
+            do { \
+                prepare_move_case(2u, enemy, UINT32_C(0x6d2b79f5) + value); \
+                ram[(address)] = (uint8_t)value; \
+                compare_prepared_move_case(); \
+            } while (0)
+
+            COMPARE_MOVE_RAM_BYTE(Enemy_X_Speed + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_X_MoveForce + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_X_Position + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_PageLoc + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_YMF_Dummy + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_Y_MoveForce + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_Y_Speed + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_Y_Position + 2u);
+            COMPARE_MOVE_RAM_BYTE(Enemy_Y_HighPos + 2u);
+            COMPARE_MOVE_RAM_BYTE(0x0u);
+            COMPARE_MOVE_RAM_BYTE(0x1u);
+            COMPARE_MOVE_RAM_BYTE(0x2u);
+            COMPARE_MOVE_RAM_BYTE(0x7u);
+
+#undef COMPARE_MOVE_RAM_BYTE
+
+            prepare_move_case(2u, enemy, UINT32_C(0xa511e9b3) + value);
+            a = (uint8_t)value;
+            compare_prepared_move_case();
+
+            prepare_move_case(2u, enemy, UINT32_C(0x63d83595) + value);
+            y = (uint8_t)value;
+            compare_prepared_move_case();
+
+            prepare_move_case(2u, enemy, UINT32_C(0x243f6a88) + value);
+            sp = (uint8_t)value;
+            compare_prepared_move_case();
+
+            prepare_move_case(2u, enemy, UINT32_C(0xb7e15162) + value);
+            nz_value = (uint8_t)value;
+            carry_flag = false;
+            compare_prepared_move_case();
+
+            prepare_move_case(2u, enemy, UINT32_C(0x8aed2a6b) + value);
+            nz_value = (uint8_t)value;
+            carry_flag = true;
+            compare_prepared_move_case();
+        }
+    }
+}
+
+static void compare_move_patterned_full_ram(void) {
+    size_t case_index;
+    uint16_t seed;
+    uint8_t slot;
+
+    for (case_index = 0;
+         case_index < sizeof(move_enemy_cases) / sizeof(move_enemy_cases[0]);
+         ++case_index) {
+        for (slot = 0; slot < 6u; ++slot) {
+            for (seed = 0; seed < 512u; ++seed) {
+                prepare_move_case(
+                    slot,
+                    &move_enemy_cases[case_index],
+                    UINT32_C(0x85ebca6b) * (seed + 1u) + slot
+                );
+                compare_prepared_move_case();
+            }
+        }
+    }
+}
+
+static bool move_case_is_supported(uint8_t enemy_id, uint8_t enemy_state) {
+    return
+        (enemy_id == Goomba && enemy_state == 0u) ||
+        (enemy_id == Spiny &&
+            (enemy_state == 0u || enemy_state == 5u));
+}
+
+static void assert_move_fallback_preserves_entry(void) {
+    static const EnemyCase base_enemy = { Goomba, 0u };
+    MachineState entry;
+    MachineState actual;
+    uint16_t enemy_id;
+    uint16_t enemy_state;
+    uint16_t value;
+
+    for (enemy_id = 0; enemy_id < 256u; ++enemy_id) {
+        for (enemy_state = 0; enemy_state < 256u; ++enemy_state) {
+            if (move_case_is_supported(
+                    (uint8_t)enemy_id,
+                    (uint8_t)enemy_state)) {
+                continue;
+            }
+            prepare_move_case(
+                2u,
+                &base_enemy,
+                ((uint32_t)enemy_id << 24) |
+                    ((uint32_t)enemy_state << 8) | UINT32_C(0x5a)
+            );
+            ram[Enemy_ID + 2u] = (uint8_t)enemy_id;
+            ram[Enemy_State + 2u] = (uint8_t)enemy_state;
+            save_machine(&entry);
+            assert(!smb_core_fast_move_normal_enemy());
+            save_machine(&actual);
+            assert_machine_equal(&entry, &actual);
+            ++move_fallback_checks;
+        }
+    }
+
+    for (value = 0; value < 256u; ++value) {
+        prepare_move_case(2u, &base_enemy, UINT32_C(0xc2b2ae35) + value);
+        ram[ObjectOffset] = (uint8_t)value;
+        if (value == 2u) {
+            ram[ObjectOffset] = 3u;
+        }
+        save_machine(&entry);
+        assert(!smb_core_fast_move_normal_enemy());
+        save_machine(&actual);
+        assert_machine_equal(&entry, &actual);
+        ++move_fallback_checks;
+
+        prepare_move_case(2u, &base_enemy, UINT32_C(0x27d4eb2f) + value);
+        ram[TimerControl] = (uint8_t)(value == 0u ? 1u : value);
+        save_machine(&entry);
+        assert(!smb_core_fast_move_normal_enemy());
+        save_machine(&actual);
+        assert_machine_equal(&entry, &actual);
+        ++move_fallback_checks;
+
+        prepare_move_case(2u, &base_enemy, UINT32_C(0x165667b1) + value);
+        x = (uint8_t)value;
+        if (x < 6u) {
+            x = 6u;
+        }
+        save_machine(&entry);
+        assert(!smb_core_fast_move_normal_enemy());
+        save_machine(&actual);
+        assert_machine_equal(&entry, &actual);
+        ++move_fallback_checks;
+    }
+}
+
 int main(void) {
     compare_direct_and_translated();
     compare_every_read_byte();
     assert_fallback_preserves_entry();
+    compare_move_boundary_cross_product();
+    compare_move_every_read_byte();
+    compare_move_patterned_full_ram();
+    assert_move_fallback_preserves_entry();
     printf(
-        "Neo Geo core fast-path differential tests: OK (%u cases)\n",
-        direct_comparisons
+        "Neo Geo core fast-path differential tests: OK "
+        "(%u graphics, %u movement, %u untouched fallbacks)\n",
+        direct_comparisons,
+        move_direct_comparisons,
+        move_fallback_checks
     );
     return 0;
 }

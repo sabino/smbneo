@@ -9659,6 +9659,9 @@ void MoveHammerBroXDir(void) {
 }
 
 void MoveNormalEnemy(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_move_normal_enemy()) { return; }
+  #endif
   ldy_imm(0x0); // init Y to leave horizontal movement as-is
   lda_zpx(Enemy_State);
   and_imm(0b01000000); // check enemy state for d6 set, if set skip

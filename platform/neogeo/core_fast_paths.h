@@ -9,5 +9,6 @@
  * body as the exact fallback.
  */
 bool smb_core_fast_enemy_gfx_handler(void);
+bool smb_core_fast_move_normal_enemy(void);
 
 #endif

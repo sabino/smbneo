@@ -640,6 +640,26 @@ fn is_reviewed_enemy_gfx_handler(
 }
 
 ///|
+fn is_reviewed_move_normal_enemy(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveNormalEnemy" {
+    return false
+  }
+
+  // The direct helper implements only an explicitly guarded subset of this
+  // state machine. Keep the translated body as the fallback unless every
+  // executable item, nested branch, operand type, label, and jump target has
+  // exactly the reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    66,
+    2406,
+    "793acbe5404009d34891d7ac022eefe7e6e86fdc784a8a953d62fc2bb20bbc37",
+  )
+}
+
+///|
 fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "SprObjectCollisionCore" {
     return false
@@ -2177,6 +2197,12 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   if is_reviewed_enemy_gfx_handler(subroutine) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_enemy_gfx_handler()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_move_normal_enemy(subroutine) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_move_normal_enemy()) { return; }")
     self.emit("#endif")
   }
 
