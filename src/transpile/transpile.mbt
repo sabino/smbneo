@@ -585,6 +585,133 @@ fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
 }
 
 ///|
+fn is_get_block_buffer_addr(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetBlockBufferAddr" {
+    return false
+  }
+
+  // BlockBufferCollision inlines this leaf. Keep the complete executable
+  // shape in the allowlist so either routine falls back when the dependency
+  // no longer matches the reviewed address calculation.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:PHA:imp
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:TAY:imp
+    #|I:LDA:absy:BlockBufferAddr + 2
+    #|I:STA:zp:0x7
+    #|I:PLA:imp
+    #|I:AND:imm:0b00001111
+    #|I:CLC:imp
+    #|I:ADC:absy:BlockBufferAddr
+    #|I:STA:zp:0x6
+    #|
+  )
+}
+
+fn has_reviewed_get_block_buffer_addr(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_get_block_buffer_addr(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+fn has_reviewed_block_buffer_addr_table(low : @lower.AsmLowering) -> Bool {
+  match low.defines.get("Block_Buffer_1") {
+    Some(value) =>
+      if show_expr(value) != "0x500" {
+        return false
+      }
+    None => return false
+  }
+  match low.defines.get("Block_Buffer_2") {
+    Some(value) =>
+      if show_expr(value) != "0x5d0" {
+        return false
+      }
+    None => return false
+  }
+
+  match low.tables_by_label.get("BlockBufferAddr") {
+    None => false
+    Some(table) => {
+      if table.name != "BlockBufferAddr" || table.size != 4 ||
+        table.storage_size != 4 {
+        return false
+      }
+
+      let entries : Array[String] = []
+      for line in table.lines {
+        match line {
+          Data(data~, comment=_) =>
+            for entry in data {
+              entries.push(show_expr(entry))
+            }
+          RomFallthrough(..) => return false
+          Comment(_) => ()
+        }
+      }
+      entries.join("|") == (
+        "LOW_BYTE(Block_Buffer_1)|LOW_BYTE(Block_Buffer_2)|" +
+        "HIGH_BYTE(Block_Buffer_1)|HIGH_BYTE(Block_Buffer_2)"
+      )
+    }
+  }
+}
+
+fn is_block_buffer_collision(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "BlockBufferCollision" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:PHA:imp
+    #|I:STY:zp:0x4
+    #|I:LDA:absy:BlockBuffer_X_Adder
+    #|I:CLC:imp
+    #|I:ADC:zpx:SprObject_X_Position
+    #|I:STA:zp:0x5
+    #|I:LDA:zpx:SprObject_PageLoc
+    #|I:ADC:imm:0x0
+    #|I:AND:imm:0x1
+    #|I:LSR:acc
+    #|I:ORA:zp:0x5
+    #|I:ROR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:JSR:abs:GetBlockBufferAddr
+    #|I:LDY:zp:0x4
+    #|I:LDA:zpx:SprObject_Y_Position
+    #|I:CLC:imp
+    #|I:ADC:absy:BlockBuffer_Y_Adder
+    #|I:AND:imm:0b11110000
+    #|I:SEC:imp
+    #|I:SBC:imm:0x20
+    #|I:STA:zp:0x2
+    #|I:TAY:imp
+    #|I:LDA:indy:0x6
+    #|I:STA:zp:0x3
+    #|I:LDY:zp:0x4
+    #|I:PLA:imp
+    #|IF:BEQ
+    #|I:LDA:zpx:SprObject_Y_Position
+    #|I:JMP:abs:RetYC
+    #|END_IF
+    #|I:LDA:zpx:SprObject_X_Position
+    #|L:RetYC
+    #|I:AND:imm:0b00001111
+    #|I:STA:zp:0x4
+    #|I:LDA:zp:0x3
+    #|
+  )
+}
+
+///|
 fn is_draw_sprite_object(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "DrawSpriteObject" {
     return false
@@ -869,6 +996,92 @@ fn Emitter::emit_spr_object_collision_core(self : Emitter) -> Unit {
   self.emit("}\n")
 }
 
+fn Emitter::emit_block_buffer_collision(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void BlockBufferCollision(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed block-buffer specialization; guarded with its address leaf.",
+  )
+  self.emit(
+    "// Exact BlockBufferAddr table is extracted into direct RAM addressing.",
+  )
+  self.emit("const uint8_t local_x = x;")
+  self.emit("const uint8_t local_y = y;")
+  self.emit("uint16_t coordinate_sum;")
+  self.emit("uint16_t block_address;")
+  self.emit("uint8_t adjusted_x;")
+  self.emit("uint8_t adjusted_y;")
+  self.emit("uint8_t block_column;")
+  self.emit("uint8_t block_bank;")
+  self.emit("uint8_t restored_y;")
+  self.emit("uint8_t return_coordinate;")
+  self.emit("ram[0x100u + sp] = a;")
+  self.emit("sp = (uint8_t)(sp - 1u);")
+  self.emit("ram[0x4] = local_y;")
+  self.emit(
+    "coordinate_sum = (uint16_t)data[BlockBuffer_X_Adder - 0x8000u + local_y] +",
+  )
+  self.indentation += 1
+  self.emit("ram[(uint8_t)(SprObject_X_Position + local_x)];")
+  self.indentation -= 1
+  self.emit("adjusted_x = (uint8_t)coordinate_sum;")
+  self.emit("ram[0x5] = adjusted_x;")
+  self.emit(
+    "coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_PageLoc + local_x)] +",
+  )
+  self.indentation += 1
+  self.emit("(coordinate_sum > 0xffu ? 1u : 0u);")
+  self.indentation -= 1
+  self.emit(
+    "block_column = (uint8_t)((((uint8_t)coordinate_sum & 1u) << 4) |",
+  )
+  self.indentation += 1
+  self.emit("(adjusted_x >> 4));")
+  self.indentation -= 1
+  self.emit("ram[0x100u + sp] = block_column;")
+  self.emit("sp = (uint8_t)(sp - 1u);")
+  self.emit("block_bank = (uint8_t)(block_column >> 4);")
+  self.emit(
+    "block_address = block_bank == 0u ? Block_Buffer_1 : Block_Buffer_2;",
+  )
+  self.emit("ram[0x7] = (uint8_t)(block_address >> 8);")
+  self.emit("sp = (uint8_t)(sp + 1u);")
+  self.emit("block_column = ram[0x100u + sp];")
+  self.emit(
+    "block_address = (uint16_t)(block_address + (block_column & 0x0fu));",
+  )
+  self.emit("ram[0x6] = (uint8_t)block_address;")
+  self.emit("restored_y = ram[0x4];")
+  self.emit(
+    "coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_Y_Position + local_x)] +",
+  )
+  self.indentation += 1
+  self.emit("data[BlockBuffer_Y_Adder - 0x8000u + restored_y];")
+  self.indentation -= 1
+  self.emit("adjusted_y = (uint8_t)((coordinate_sum & 0xf0u) - 0x20u);")
+  self.emit("ram[0x2] = adjusted_y;")
+  self.emit(
+    "ram[0x3] = ram[(block_address + adjusted_y) & (RAM_SIZE - 1u)];",
+  )
+  self.emit("y = restored_y;")
+  self.emit("sp = (uint8_t)(sp + 1u);")
+  self.emit("a = ram[0x100u + sp];")
+  self.emit(
+    "return_coordinate = a == 0u",
+  )
+  self.indentation += 1
+  self.emit("? ram[(uint8_t)(SprObject_Y_Position + local_x)]")
+  self.emit(": ram[(uint8_t)(SprObject_X_Position + local_x)];")
+  self.indentation -= 1
+  self.emit("ram[0x4] = (uint8_t)(return_coordinate & 0x0fu);")
+  self.emit("a = ram[0x3];")
+  self.emit("carry_flag = (coordinate_sum & 0xf0u) >= 0x20u;")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
 ///|
 fn Emitter::emit_draw_sprite_object(self : Emitter) -> Unit {
   self.indentation = 0
@@ -1125,6 +1338,13 @@ fn Emitter::emit_read_joypads(self : Emitter) -> Unit {
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
   if is_spr_object_collision_core(subroutine) {
     self.emit_spr_object_collision_core()
+    return
+  }
+
+  if is_block_buffer_collision(subroutine) &&
+    has_reviewed_get_block_buffer_addr(low) &&
+    has_reviewed_block_buffer_addr_table(low) {
+    self.emit_block_buffer_collision()
     return
   }
 

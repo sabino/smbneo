@@ -13349,53 +13349,54 @@ void BlockBufferColli_SideSkip(void) {
 }
 
 void BlockBufferCollision(void) {
-  pha(); // save contents of A to stack
-  ram[0x4] = y; // save contents of Y here
-  lda_absy(BlockBuffer_X_Adder); // add horizontal coordinate
-  carry_flag = false; // of object to value obtained using Y as offset
-  adc_zpx(SprObject_X_Position);
-  ram[0x5] = a; // store here
-  lda_zpx(SprObject_PageLoc);
-  adc_imm(0x0); // add carry to page location
-  and_imm(0x1); // get LSB, mask out all other bits
-  lsr_acc(); // move to carry
-  ora_zp(0x5); // get stored value
-  ror_acc(); // rotate carry to MSB of A
-  lsr_acc(); // and effectively move high nybble to
-  lsr_acc(); // lower, LSB which became MSB will be
-  lsr_acc(); // d4 at this point
-  GetBlockBufferAddr(); // get address of block buffer into $06, $07
-  ldy_zp(0x4); // get old contents of Y
-  lda_zpx(SprObject_Y_Position); // get vertical coordinate of object
-  carry_flag = false;
-  adc_absy(BlockBuffer_Y_Adder); // add it to value obtained using Y as offset
-  and_imm(0b11110000); // mask out low nybble
-  carry_flag = true;
-  sbc_imm(0x20); // subtract 32 pixels for the status bar
-  ram[0x2] = a; // store result here
-  tay(); // use as offset for block buffer
-  lda_indy(0x6); // check current content of block buffer
-  ram[0x3] = a; // and store here
-  ldy_zp(0x4); // get old contents of Y again
-  pla(); // pull A from stack
-  // if A = 1, branch
-  if (zero_flag) {
-    lda_zpx(SprObject_Y_Position); // if A = 0, load vertical coordinate
-    goto RetYC; // and jump
-  }
-  // RetXC:
-  lda_zpx(SprObject_X_Position); // otherwise load horizontal coordinate
-  
-RetYC:
-  and_imm(0b00001111); // and mask out high nybble
-  ram[0x4] = a; // store masked out result here
-  lda_zp(0x3); // get saved content of block buffer
-  // -------------------------------------------------------------------------------------
-  // unused byte
-  //       .db $ff
-  // -------------------------------------------------------------------------------------
-  // $00 - offset to vine Y coordinate adder
-  // $02 - offset to sprite data
+  // Reviewed block-buffer specialization; guarded with its address leaf.
+  // Exact BlockBufferAddr table is extracted into direct RAM addressing.
+  const uint8_t local_x = x;
+  const uint8_t local_y = y;
+  uint16_t coordinate_sum;
+  uint16_t block_address;
+  uint8_t adjusted_x;
+  uint8_t adjusted_y;
+  uint8_t block_column;
+  uint8_t block_bank;
+  uint8_t restored_y;
+  uint8_t return_coordinate;
+  ram[0x100u + sp] = a;
+  sp = (uint8_t)(sp - 1u);
+  ram[0x4] = local_y;
+  coordinate_sum = (uint16_t)data[BlockBuffer_X_Adder - 0x8000u + local_y] +
+    ram[(uint8_t)(SprObject_X_Position + local_x)];
+  adjusted_x = (uint8_t)coordinate_sum;
+  ram[0x5] = adjusted_x;
+  coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_PageLoc + local_x)] +
+    (coordinate_sum > 0xffu ? 1u : 0u);
+  block_column = (uint8_t)((((uint8_t)coordinate_sum & 1u) << 4) |
+    (adjusted_x >> 4));
+  ram[0x100u + sp] = block_column;
+  sp = (uint8_t)(sp - 1u);
+  block_bank = (uint8_t)(block_column >> 4);
+  block_address = block_bank == 0u ? Block_Buffer_1 : Block_Buffer_2;
+  ram[0x7] = (uint8_t)(block_address >> 8);
+  sp = (uint8_t)(sp + 1u);
+  block_column = ram[0x100u + sp];
+  block_address = (uint16_t)(block_address + (block_column & 0x0fu));
+  ram[0x6] = (uint8_t)block_address;
+  restored_y = ram[0x4];
+  coordinate_sum = (uint16_t)ram[(uint8_t)(SprObject_Y_Position + local_x)] +
+    data[BlockBuffer_Y_Adder - 0x8000u + restored_y];
+  adjusted_y = (uint8_t)((coordinate_sum & 0xf0u) - 0x20u);
+  ram[0x2] = adjusted_y;
+  ram[0x3] = ram[(block_address + adjusted_y) & (RAM_SIZE - 1u)];
+  y = restored_y;
+  sp = (uint8_t)(sp + 1u);
+  a = ram[0x100u + sp];
+  return_coordinate = a == 0u
+    ? ram[(uint8_t)(SprObject_Y_Position + local_x)]
+    : ram[(uint8_t)(SprObject_X_Position + local_x)];
+  ram[0x4] = (uint8_t)(return_coordinate & 0x0fu);
+  a = ram[0x3];
+  carry_flag = (coordinate_sum & 0xf0u) >= 0x20u;
+  nz_value = a;
 }
 
 void DrawVine(void) {
