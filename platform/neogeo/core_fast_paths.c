@@ -81,6 +81,17 @@ typedef enum {
     FAST_ENEMY_BG_GOOMBA_GROUND,
 } FastEnemyBgPolicy;
 
+typedef enum {
+    FAST_ENEMY_COLLISION_NONE = 0,
+    FAST_ENEMY_COLLISION_SCAN,
+} FastEnemyCollisionPolicy;
+
+typedef enum {
+    FAST_PAIR_SKIP = 0,
+    FAST_PAIR_HORIZONTAL_SEPARATION,
+    FAST_PAIR_VERTICAL_SEPARATION,
+} FastPairPolicy;
+
 /*
  * State-zero Piranha Plants and Lakitu always leave the translated routine
  * after its vertical-range test and ID checks. State-zero Goombas use the
@@ -111,6 +122,33 @@ typedef struct {
     uint8_t coordinate;
     uint8_t tile;
 } FastEnemyBlockProbe;
+
+/*
+ * EnemiesCollision accepts every ID below $15 except the two explicit source
+ * exclusions. Keep that semantic allowlist visible and table-driven: zero is
+ * always an exact translated fallback.
+ */
+static const uint8_t fast_enemy_collision_policy[0x15u] = {
+    [0x00u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x01u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x02u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x03u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x04u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x05u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x06u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x07u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x08u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x09u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x0au] = FAST_ENEMY_COLLISION_SCAN,
+    [0x0bu] = FAST_ENEMY_COLLISION_SCAN,
+    [0x0cu] = FAST_ENEMY_COLLISION_SCAN,
+    [0x0eu] = FAST_ENEMY_COLLISION_SCAN,
+    [0x0fu] = FAST_ENEMY_COLLISION_SCAN,
+    [0x10u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x12u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x13u] = FAST_ENEMY_COLLISION_SCAN,
+    [0x14u] = FAST_ENEMY_COLLISION_SCAN,
+};
 
 static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
@@ -283,6 +321,46 @@ bool smb_core_fast_draw_large_platform(void) {
     }
 
     return true;
+}
+
+static FastEnemyCollisionPolicy fast_enemy_collision_id_policy(
+    uint8_t enemy_id
+) {
+    if (enemy_id >= sizeof(fast_enemy_collision_policy)) {
+        return FAST_ENEMY_COLLISION_NONE;
+    }
+    return (FastEnemyCollisionPolicy)fast_enemy_collision_policy[enemy_id];
+}
+
+static FastPairPolicy fast_pair_policy(
+    uint8_t first_box,
+    uint8_t second_box
+) {
+    const uint8_t first_left = ram[BoundingBox_UL_Corner + first_box];
+    const uint8_t first_top = ram[BoundingBox_UL_Corner + first_box + 1u];
+    const uint8_t first_right = ram[BoundingBox_LR_Corner + first_box];
+    const uint8_t first_bottom =
+        ram[BoundingBox_LR_Corner + first_box + 1u];
+    const uint8_t second_left = ram[BoundingBox_UL_Corner + second_box];
+    const uint8_t second_top = ram[BoundingBox_UL_Corner + second_box + 1u];
+    const uint8_t second_right = ram[BoundingBox_LR_Corner + second_box];
+    const uint8_t second_bottom =
+        ram[BoundingBox_LR_Corner + second_box + 1u];
+
+    /* Wrapped/offscreen boxes retain the complete translated collision core. */
+    if (
+        first_left > first_right || first_top > first_bottom ||
+        second_left > second_right || second_top > second_bottom
+    ) {
+        return FAST_PAIR_SKIP;
+    }
+    if (first_right < second_left || first_left > second_right) {
+        return FAST_PAIR_HORIZONTAL_SEPARATION;
+    }
+    if (first_bottom < second_top || first_top > second_bottom) {
+        return FAST_PAIR_VERTICAL_SEPARATION;
+    }
+    return FAST_PAIR_SKIP;
 }
 
 static void draw_three_enemy_rows(
@@ -759,4 +837,144 @@ bool smb_core_fast_enemy_to_bg_collision_det(void) {
     carry_flag = true;
     nz_value = (uint8_t)(enemy_id - 0x07u);
     return true;
+}
+
+bool smb_core_fast_enemies_collision(void) {
+    const uint8_t slot = x;
+    const uint8_t frame_counter = ram[FrameCounter];
+
+    /*
+     * Fold the source's cheap exits completely. Besides recovering their
+     * instruction cost, these assignments preserve the exact observable
+     * accumulator, X, Y, carry, and N/Z state at each exit.
+     */
+    if ((frame_counter & 1u) == 0u) {
+        a = (uint8_t)(frame_counter >> 1);
+        carry_flag = false;
+        nz_value = a;
+        return true;
+    }
+    if (ram[AreaType] == 0u) {
+        a = 0u;
+        carry_flag = true;
+        nz_value = 0u;
+        return true;
+    }
+
+    {
+        /* Enemy_ID is zero page: preserve the source's indexed wrap. */
+        const uint8_t enemy_id = ram[(uint8_t)(Enemy_ID + slot)];
+        const uint8_t masked_offscreen =
+            ram[EnemyOffscrBitsMasked + slot];
+
+        if (
+            enemy_id >= 0x15u || enemy_id == Lakitu ||
+            enemy_id == PiranhaPlant
+        ) {
+            a = enemy_id;
+            x = ram[ObjectOffset];
+            carry_flag = true;
+            nz_value = x;
+            return true;
+        }
+        if (masked_offscreen != 0u) {
+            a = masked_offscreen;
+            x = ram[ObjectOffset];
+            carry_flag = enemy_id >= PiranhaPlant;
+            nz_value = x;
+            return true;
+        }
+    }
+
+    {
+        const uint8_t object_offset = ram[ObjectOffset];
+        const uint8_t first_box =
+            (uint8_t)(object_offset * 4u + 4u);
+        uint8_t ignored_pairs = 0u;
+        uint8_t separated_pairs = 0u;
+        uint8_t horizontal_pairs = 0u;
+        uint8_t candidate;
+        uint8_t final_carry;
+
+        if (((uint8_t)(slot - 1u) & 0x80u) != 0u) {
+            a = (uint8_t)(ram[Enemy_OffscreenBits] & 0x0fu);
+            x = object_offset;
+            y = first_box;
+            carry_flag = a >= 0x0fu;
+            nz_value = x;
+            return true;
+        }
+
+        /*
+         * Preflight every pair before the first emulated write. Noncanonical
+         * aliases, wrapped boxes, offscreen candidates, and actual overlaps
+         * keep the complete generated routine as a mutation-free fallback.
+         */
+        if (slot >= 6u || slot != object_offset) {
+            return false;
+        }
+
+        candidate = slot;
+        while (candidate != 0u) {
+            const uint8_t pair_bit = (uint8_t)(1u << (candidate - 1u));
+            uint8_t second_box;
+            FastPairPolicy policy;
+
+            --candidate;
+            if (ram[Enemy_Flag + candidate] == 0u) {
+                continue;
+            }
+            if (
+                fast_enemy_collision_id_policy(ram[Enemy_ID + candidate]) ==
+                    FAST_ENEMY_COLLISION_NONE
+            ) {
+                ignored_pairs |= pair_bit;
+                continue;
+            }
+            if (ram[EnemyOffscrBitsMasked + candidate] != 0u) {
+                return false;
+            }
+            second_box = (uint8_t)(candidate * 4u + 4u);
+            policy = fast_pair_policy(first_box, second_box);
+            if (policy == FAST_PAIR_SKIP) {
+                return false;
+            }
+            separated_pairs |= pair_bit;
+            if (policy == FAST_PAIR_HORIZONTAL_SEPARATION) {
+                horizontal_pairs |= pair_bit;
+            }
+        }
+
+        /* GetEnemyBoundBoxOfs ends CMP #$0f; inactive slots preserve it. */
+        final_carry =
+            (uint8_t)((ram[Enemy_OffscreenBits] & 0x0fu) >= 0x0fu);
+        candidate = slot;
+        while (candidate != 0u) {
+            const uint8_t pair_bit = (uint8_t)(1u << (candidate - 1u));
+
+            --candidate;
+            ram[0x1] = candidate;
+
+            /* ECLoop's balanced PHA/PLA overwrites the invisible byte. */
+            ram[0x100u + sp] = first_box;
+            if ((ignored_pairs & pair_bit) != 0u) {
+                final_carry = 1u;
+            } else if ((separated_pairs & pair_bit) != 0u) {
+                ram[0x6] = first_box;
+                ram[0x7] = (uint8_t)(
+                    (horizontal_pairs & pair_bit) != 0u
+                );
+                ram[Enemy_CollisionBits + candidate] &=
+                    rom_byte((uint16_t)(ClearBitsMask + slot));
+                final_carry = 0u;
+            }
+        }
+
+        a = first_box;
+        x = slot;
+        y = first_box;
+        carry_flag = final_carry != 0u;
+        nz_value = slot;
+        return true;
+    }
 }

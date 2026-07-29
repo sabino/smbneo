@@ -11721,6 +11721,9 @@ void SetupFloateyNumber(void) {
 }
 
 void EnemiesCollision(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_enemies_collision()) { return; }
+  #endif
   lda_zp(FrameCounter); // check counter for d0 set
   lsr_acc();
   if (!carry_flag) { return; } // if d0 not set, leave

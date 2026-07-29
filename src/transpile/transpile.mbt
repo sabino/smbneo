@@ -1074,6 +1074,85 @@ fn has_reviewed_erase_enemy_object(low : @lower.AsmLowering) -> Bool {
 }
 
 ///|
+fn is_reviewed_enemies_collision(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EnemiesCollision" {
+    return false
+  }
+
+  // The direct helper folds the complete no-overlap path through the pair
+  // loop. Keep the translated body unless every executable parent item and
+  // branch target still has the exact reviewed shape.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    19,
+    802,
+    "115f4bbe901738cef2465b58e2fae2edca25664c0f4b6cb24f7e99652cf78608",
+  )
+}
+
+///|
+fn is_reviewed_enemies_collision_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  match subroutine.name {
+    "ECLoop__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        50,
+        1951,
+        "bf17f7430a07b3868342a23f3012b2cb4d08f15533dea3ef8dec6e1240961d4d",
+      )
+    "ExitECRoutine__sub" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        1,
+        48,
+        "21c18c720803c362e169821aa4bf892756a9a83ea9d90cc3452ee72f6ad07b66",
+      )
+    "GetEnemyBoundBoxOfs" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        2,
+        101,
+        "d125603a5f78556dfc01f924f9ea0ffc6394bd624d78f002df4b3dfc327db2e3",
+      )
+    "SprObjectCollisionCore" =>
+      reviewed_flat_subroutine_fingerprint(subroutine) ==
+      (
+        50,
+        2193,
+        "47604e934f85083753b365240adf36bc6883afb325fb214b794a9126f45ebf02",
+      )
+    _ => false
+  }
+}
+
+///|
+fn has_reviewed_enemies_collision_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut pair_loop = false
+  let mut exit = false
+  let mut box_offset = false
+  let mut collision_core = false
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_enemies_collision_dependency(subroutine) {
+      match subroutine.name {
+        "ECLoop__sub" => pair_loop = true
+        "ExitECRoutine__sub" => exit = true
+        "GetEnemyBoundBoxOfs" => box_offset = true
+        "SprObjectCollisionCore" => collision_core = true
+        _ => ()
+      }
+    }
+  }
+  pair_loop && exit && box_offset && collision_core
+}
+
+///|
 fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   if subroutine.name != "SprObjectCollisionCore" {
     return false
@@ -3164,6 +3243,13 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
     self.emit(
       "if (smb_core_fast_enemy_to_bg_collision_det()) { return; }",
     )
+    self.emit("#endif")
+  }
+
+  if is_reviewed_enemies_collision(subroutine) &&
+    has_reviewed_enemies_collision_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_enemies_collision()) { return; }")
     self.emit("#endif")
   }
 
