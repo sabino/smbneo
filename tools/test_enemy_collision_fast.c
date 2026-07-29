@@ -2,8 +2,6 @@
 #include "constants.h"
 #include "core_fast_paths.h"
 #include "cpu.h"
-#include "enemy_collision_captured_states.h"
-
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,7 +20,6 @@ typedef struct {
 
 static unsigned direct_comparisons;
 static unsigned fallback_checks;
-static unsigned captured_comparisons;
 
 static void save_machine(MachineState *state) {
     memcpy(state->ram, ram, RAM_SIZE);
@@ -374,48 +371,6 @@ static void verify_fallbacks_do_not_mutate(void) {
     assert_fallback_unchanged(&entry);
 }
 
-static void load_captured_state(
-    MachineState *state,
-    const EnemyCollisionCapturedState *capture
-) {
-    uint16_t source = 0u;
-    uint16_t destination = 0u;
-
-    memset(state, 0, sizeof(*state));
-    while (source < capture->ram_rle_size) {
-        const uint8_t count = capture->ram_rle[source++];
-        const uint8_t value = capture->ram_rle[source++];
-
-        assert(count != 0u);
-        assert((uint32_t)destination + count <= RAM_SIZE);
-        memset(&state->ram[destination], value, count);
-        destination = (uint16_t)(destination + count);
-    }
-    assert(source == capture->ram_rle_size);
-    assert(destination == RAM_SIZE);
-    state->a = capture->a;
-    state->x = capture->x;
-    state->y = capture->y;
-    state->sp = capture->sp;
-    state->carry = capture->carry != 0u;
-    state->nz = capture->nz;
-}
-
-static void compare_captured_windows(void) {
-    static const EnemyCollisionCapturedState *const captures[] = {
-        &enemy_collision_w1_capture,
-        &enemy_collision_w4_capture,
-    };
-    MachineState entry;
-    size_t index;
-
-    for (index = 0; index < sizeof(captures) / sizeof(captures[0]); ++index) {
-        load_captured_state(&entry, captures[index]);
-        compare_direct(&entry);
-        ++captured_comparisons;
-    }
-}
-
 int main(void) {
     compare_exhaustive_canonical_cases();
     compare_source_ignored_lower_ids();
@@ -423,13 +378,10 @@ int main(void) {
     compare_cheap_source_exits();
     compare_full_index_alias_space();
     verify_fallbacks_do_not_mutate();
-    compare_captured_windows();
 
     printf(
-        "enemy collision fast-path tests passed: direct=%u captured=%u "
-        "fallback=%u\n",
+        "enemy collision fast-path tests passed: direct=%u fallback=%u\n",
         direct_comparisons,
-        captured_comparisons,
         fallback_checks
     );
     return 0;

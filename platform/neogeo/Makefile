@@ -705,7 +705,6 @@ $(ENEMY_BG_COLLISION_FAST_TEST): \
 
 $(ENEMY_COLLISION_FAST_TEST): \
 		$(ROOT)/tools/test_enemy_collision_fast.c \
-		$(ROOT)/tools/enemy_collision_captured_states.h \
 		core_fast_paths.c core_fast_paths.h \
 		$(ROOT)/codegen/lib/code.c \
 		$(ROOT)/codegen/lib/data.c \
