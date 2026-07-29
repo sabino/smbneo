@@ -9427,6 +9427,9 @@ void DelayToAreaEnd(void) {
 }
 
 void OffscreenBoundsCheck(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_offscreen_bounds_check()) { return; }
+  #endif
   lda_zpx(Enemy_ID); // check for cheep-cheep object
   cmp_imm(FlyingCheepCheep); // branch to leave if found
   if (zero_flag) { return; }

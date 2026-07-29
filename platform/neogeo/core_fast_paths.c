@@ -15,6 +15,15 @@ typedef enum {
     FAST_ENEMY_SPINY,
 } FastEnemyPolicy;
 
+typedef enum {
+    FAST_OFFSCREEN_NONE = 0,
+    FAST_OFFSCREEN_LEFT_CARRY = 1u << 0,
+    FAST_OFFSCREEN_LEFT_ADD_38 = 1u << 1,
+    FAST_OFFSCREEN_RIGHT_IMMUNE = 1u << 2,
+    FAST_OFFSCREEN_STATE_5 = 1u << 3,
+    FAST_OFFSCREEN_PLAIN = 1u << 4,
+} FastOffscreenPolicy;
+
 /*
  * EnemyGfxTableOffsets and EnemyAttributeData remain the shared canonical
  * descriptors. This sparse table adds only the behavior needed by the four
@@ -33,6 +42,38 @@ const uint8_t smb_core_enemy_column_actions[4] = {
     HIDE_ENEMY_LEFT_COLUMN,
     HIDE_ENEMY_RIGHT_COLUMN | HIDE_ENEMY_LEFT_COLUMN,
 };
+
+/*
+ * These bits encode the ID-dependent flag flow in OffscreenBoundsCheck.
+ * In particular, LEFT_CARRY is the carry produced by CPY #PiranhaPlant;
+ * it is deliberately kept separate from the optional HammerBro/Piranha
+ * margin adjustment because the original routine chains that carry through
+ * all four boundary bytes.
+ */
+static const uint8_t fast_offscreen_policy[Spiny + 1u] = {
+    [Goomba] = FAST_OFFSCREEN_PLAIN,
+    [PiranhaPlant] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_LEFT_ADD_38 |
+        FAST_OFFSCREEN_RIGHT_IMMUNE,
+    [Lakitu] = FAST_OFFSCREEN_LEFT_CARRY,
+    [Spiny] =
+        FAST_OFFSCREEN_LEFT_CARRY |
+        FAST_OFFSCREEN_STATE_5,
+};
+
+static void fast_erase_enemy_object(uint8_t slot) {
+    a = 0u;
+    nz_value = 0u;
+    ram[Enemy_Flag + slot] = 0u;
+    ram[Enemy_ID + slot] = 0u;
+    ram[Enemy_State + slot] = 0u;
+    ram[FloateyNum_Control + slot] = 0u;
+    ram[EnemyIntervalTimer + slot] = 0u;
+    ram[ShellChainCounter + slot] = 0u;
+    ram[Enemy_SprAttrib + slot] = 0u;
+    ram[EnemyFrameTimer + slot] = 0u;
+}
 
 static uint8_t rom_byte(uint16_t address) {
     return data[address - 0x8000u];
@@ -271,5 +312,122 @@ bool smb_core_fast_move_normal_enemy(void) {
     a = ram[0x100u + sp];
     nz_value = a;
     ram[Enemy_X_Speed + x] = a;
+    return true;
+}
+
+bool smb_core_fast_offscreen_bounds_check(void) {
+    uint8_t slot = x;
+    uint8_t enemy_id;
+    uint8_t enemy_state;
+    uint8_t policy;
+    uint8_t value;
+    uint8_t left_low;
+    uint8_t left_page;
+    uint8_t right_low;
+    uint8_t right_page;
+    uint16_t chain;
+    uint16_t carry;
+    uint16_t screen_position;
+    uint16_t subtrahend;
+    uint16_t enemy_position;
+    uint16_t boundary;
+    uint16_t difference;
+    volatile uint8_t *scratch = ram;
+
+    /* Every rejected dispatch must leave the complete emulated machine alone. */
+    if (slot >= 6u || slot != ram[ObjectOffset]) {
+        return false;
+    }
+    enemy_id = ram[Enemy_ID + slot];
+    if (enemy_id > Spiny) {
+        return false;
+    }
+    policy = fast_offscreen_policy[enemy_id];
+    if (policy == FAST_OFFSCREEN_NONE) {
+        return false;
+    }
+    enemy_state = ram[Enemy_State + slot];
+    if (
+        enemy_state != 0u &&
+        (enemy_state != 5u ||
+            (policy & FAST_OFFSCREEN_STATE_5) == 0u)
+    ) {
+        return false;
+    }
+
+    y = enemy_id;
+    carry = (uint16_t)(policy & FAST_OFFSCREEN_LEFT_CARRY);
+    value = ram[ScreenLeft_X_Pos];
+    if ((policy & FAST_OFFSCREEN_LEFT_ADD_38) != 0u) {
+        chain = (uint16_t)value + 0x38u + carry;
+        value = (uint8_t)chain;
+        carry = chain >> 8;
+    }
+    /*
+     * SBC low followed by SBC page is one exact 16-bit subtraction once the
+     * optional low-byte-only Piranha ADC has produced its carry. Keep that ADC
+     * separate; folding it into the page would change wrap behavior.
+     */
+    screen_position = (uint16_t)(
+        ((uint16_t)ram[ScreenLeft_PageLoc] << 8) | value
+    );
+    subtrahend = (uint16_t)(0x48u + (carry == 0u));
+    boundary = (uint16_t)(screen_position - subtrahend);
+    carry = screen_position >= subtrahend;
+    left_low = (uint8_t)boundary;
+    left_page = (uint8_t)(boundary >> 8);
+    scratch[0x1] = left_low;
+    scratch[0x0] = left_page;
+    screen_position = (uint16_t)(
+        ((uint16_t)ram[ScreenRight_PageLoc] << 8) |
+        ram[ScreenRight_X_Pos]
+    );
+    boundary = (uint16_t)(screen_position + 0x48u + carry);
+    right_low = (uint8_t)boundary;
+    right_page = (uint8_t)(boundary >> 8);
+    scratch[0x3] = right_low;
+    scratch[0x2] = right_page;
+
+    enemy_position = (uint16_t)(
+        ((uint16_t)ram[Enemy_PageLoc + slot] << 8) |
+        ram[Enemy_X_Position + slot]
+    );
+    boundary = (uint16_t)(((uint16_t)left_page << 8) | left_low);
+    difference = (uint16_t)(enemy_position - boundary);
+    value = (uint8_t)(difference >> 8);
+    carry = enemy_position >= boundary;
+    if ((value & 0x80u) != 0u) {
+        carry_flag = carry != 0u;
+        fast_erase_enemy_object(slot);
+        return true;
+    }
+
+    boundary = (uint16_t)(((uint16_t)right_page << 8) | right_low);
+    difference = (uint16_t)(enemy_position - boundary);
+    value = (uint8_t)(difference >> 8);
+    carry = enemy_position >= boundary;
+    if ((value & 0x80u) != 0u) {
+        a = value;
+        carry_flag = carry != 0u;
+        nz_value = value;
+        return true;
+    }
+
+    if (enemy_state == 5u) {
+        a = enemy_state;
+        carry_flag = true;
+        nz_value = 0u;
+        return true;
+    }
+    if ((policy & FAST_OFFSCREEN_RIGHT_IMMUNE) != 0u) {
+        a = enemy_state;
+        carry_flag = true;
+        nz_value = 0u;
+        return true;
+    }
+
+    /* The final failed CPY #JumpspringObject leaves carry clear. */
+    carry_flag = false;
+    fast_erase_enemy_object(slot);
     return true;
 }

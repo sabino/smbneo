@@ -679,6 +679,25 @@ fn is_reviewed_spr_object_offscr_chk(
 }
 
 ///|
+fn is_reviewed_offscreen_bounds_check(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "OffscreenBoundsCheck" {
+    return false
+  }
+
+  // This helper reproduces the complete flag chain for an allowlisted subset
+  // of enemy IDs and states. Any executable source-shape change must retain
+  // the generated instruction body as the only implementation.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    47,
+    2124,
+    "43d6a841106e9f64fa858df9f60c3eaaecf7b8417a2714e5ef90009f0e579c24",
+  )
+}
+
+///|
 fn is_relative_enemy_position(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -781,6 +800,33 @@ fn has_reviewed_spr_object_offscr_dependencies(
     }
   }
   column && move_column
+}
+
+///|
+fn is_reviewed_erase_enemy_object(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "EraseEnemyObject" {
+    return false
+  }
+
+  // OffscreenBoundsCheck folds this leaf into its direct helper, including
+  // every store and the final observable register/flag state.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    9,
+    464,
+    "ba9a7785c5e66cf654038a209fe0122077eb5653225d965be6c159d35a708cef",
+  )
+}
+
+fn has_reviewed_erase_enemy_object(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_erase_enemy_object(subroutine) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -2668,6 +2714,13 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
     has_reviewed_spr_object_offscr_dependencies(low) {
     self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
     self.emit("if (smb_core_fast_spr_object_offscr_chk()) { return; }")
+    self.emit("#endif")
+  }
+
+  if is_reviewed_offscreen_bounds_check(subroutine) &&
+    has_reviewed_erase_enemy_object(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_offscreen_bounds_check()) { return; }")
     self.emit("#endif")
   }
 

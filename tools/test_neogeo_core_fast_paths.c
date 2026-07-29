@@ -46,6 +46,8 @@ static const uint8_t offscreen_cases[] = {
 static unsigned int direct_comparisons;
 static unsigned int move_direct_comparisons;
 static unsigned int move_fallback_checks;
+static unsigned int bounds_direct_comparisons;
+static unsigned int bounds_fallback_checks;
 
 static void save_machine(MachineState *state) {
     memcpy(state->ram, ram, RAM_SIZE);
@@ -591,6 +593,354 @@ static void assert_move_fallback_preserves_entry(void) {
     }
 }
 
+static void prepare_bounds_case(
+    uint8_t slot,
+    const EnemyCase *enemy,
+    uint32_t seed
+) {
+    fill_move_pattern(seed);
+    x = slot;
+    ram[ObjectOffset] = slot;
+    ram[Enemy_ID + slot] = enemy->enemy_id;
+    ram[Enemy_State + slot] = enemy->enemy_state;
+
+    /* Make every folded erase store observable in full-machine comparisons. */
+    ram[Enemy_Flag + slot] = 0xa1u;
+    ram[FloateyNum_Control + slot] = 0xa2u;
+    ram[EnemyIntervalTimer + slot] = 0xa3u;
+    ram[ShellChainCounter + slot] = 0xa4u;
+    ram[Enemy_SprAttrib + slot] = 0xa5u;
+    ram[EnemyFrameTimer + slot] = 0xa6u;
+}
+
+static bool prepared_bounds_case_erases(void) {
+    MachineState entry;
+    MachineState expected;
+    MachineState actual;
+    bool erased;
+
+    save_machine(&entry);
+    OffscreenBoundsCheck();
+    save_machine(&expected);
+    erased =
+        entry.ram[Enemy_Flag + entry.x] != 0u &&
+        expected.ram[Enemy_Flag + entry.x] == 0u;
+
+    load_machine(&entry);
+    assert(smb_core_fast_offscreen_bounds_check());
+    save_machine(&actual);
+    assert_machine_equal(&expected, &actual);
+    ++bounds_direct_comparisons;
+    return erased;
+}
+
+static void set_typical_visible_bounds(uint8_t slot) {
+    ram[ScreenLeft_X_Pos] = 0x20u;
+    ram[ScreenLeft_PageLoc] = 0x05u;
+    ram[ScreenRight_X_Pos] = 0xe0u;
+    ram[ScreenRight_PageLoc] = 0x05u;
+    ram[Enemy_X_Position + slot] = 0x80u;
+    ram[Enemy_PageLoc + slot] = 0x05u;
+}
+
+static void compare_bounds_boundary_cross_product(void) {
+    static const uint8_t x_values[] = {
+        0x00u, 0x01u, 0x0fu, 0x37u, 0x38u, 0x39u,
+        0x47u, 0x48u, 0x49u, 0x7fu, 0x80u,
+        0xb7u, 0xb8u, 0xb9u, 0xfeu, 0xffu,
+    };
+    static const uint8_t page_values[] = {
+        0x00u, 0x01u, 0x7fu, 0x80u, 0xfeu, 0xffu,
+    };
+    size_t case_index;
+    size_t screen_x_index;
+    size_t screen_page_index;
+    size_t enemy_x_index;
+    size_t enemy_page_index;
+
+    for (case_index = 0;
+         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         ++case_index) {
+        for (screen_x_index = 0;
+             screen_x_index < sizeof(x_values) / sizeof(x_values[0]);
+             ++screen_x_index) {
+            for (screen_page_index = 0;
+                 screen_page_index <
+                    sizeof(page_values) / sizeof(page_values[0]);
+                 ++screen_page_index) {
+                for (enemy_x_index = 0;
+                     enemy_x_index < sizeof(x_values) / sizeof(x_values[0]);
+                     ++enemy_x_index) {
+                    for (enemy_page_index = 0;
+                         enemy_page_index <
+                            sizeof(page_values) / sizeof(page_values[0]);
+                         ++enemy_page_index) {
+                        uint32_t seed =
+                            UINT32_C(0x9e3779b9) *
+                            (bounds_direct_comparisons + 1u);
+
+                        /* Exhaust the left compare, borrow, sign, and wrap. */
+                        prepare_bounds_case(
+                            2u,
+                            &enemy_cases[case_index],
+                            seed
+                        );
+                        ram[ScreenLeft_X_Pos] = x_values[screen_x_index];
+                        ram[ScreenLeft_PageLoc] =
+                            page_values[screen_page_index];
+                        ram[Enemy_X_Position + 2u] =
+                            x_values[enemy_x_index];
+                        ram[Enemy_PageLoc + 2u] =
+                            page_values[enemy_page_index];
+                        ram[ScreenRight_X_Pos] =
+                            ram[Enemy_X_Position + 2u];
+                        ram[ScreenRight_PageLoc] =
+                            ram[Enemy_PageLoc + 2u];
+                        (void)prepared_bounds_case_erases();
+
+                        /* Keep the left edge local while exhausting the right. */
+                        prepare_bounds_case(
+                            2u,
+                            &enemy_cases[case_index],
+                            seed ^ UINT32_C(0xa5a5a5a5)
+                        );
+                        ram[ScreenLeft_X_Pos] =
+                            x_values[enemy_x_index];
+                        ram[ScreenLeft_PageLoc] =
+                            page_values[enemy_page_index];
+                        ram[ScreenRight_X_Pos] = x_values[screen_x_index];
+                        ram[ScreenRight_PageLoc] =
+                            page_values[screen_page_index];
+                        ram[Enemy_X_Position + 2u] =
+                            x_values[enemy_x_index];
+                        ram[Enemy_PageLoc + 2u] =
+                            page_values[enemy_page_index];
+                        (void)prepared_bounds_case_erases();
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void compare_bounds_every_read_byte(void) {
+    size_t case_index;
+    uint16_t value;
+
+    for (case_index = 0;
+         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         ++case_index) {
+        const EnemyCase *enemy = &enemy_cases[case_index];
+
+        for (value = 0; value < 256u; ++value) {
+#define COMPARE_BOUNDS_RAM_BYTE(address) \
+            do { \
+                prepare_bounds_case( \
+                    2u, \
+                    enemy, \
+                    UINT32_C(0x6d2b79f5) + value + (address) \
+                ); \
+                set_typical_visible_bounds(2u); \
+                ram[(address)] = (uint8_t)value; \
+                (void)prepared_bounds_case_erases(); \
+            } while (0)
+
+            COMPARE_BOUNDS_RAM_BYTE(ScreenLeft_X_Pos);
+            COMPARE_BOUNDS_RAM_BYTE(ScreenLeft_PageLoc);
+            COMPARE_BOUNDS_RAM_BYTE(ScreenRight_X_Pos);
+            COMPARE_BOUNDS_RAM_BYTE(ScreenRight_PageLoc);
+            COMPARE_BOUNDS_RAM_BYTE(Enemy_X_Position + 2u);
+            COMPARE_BOUNDS_RAM_BYTE(Enemy_PageLoc + 2u);
+            COMPARE_BOUNDS_RAM_BYTE(TimerControl);
+            COMPARE_BOUNDS_RAM_BYTE(0x0u);
+            COMPARE_BOUNDS_RAM_BYTE(0x1u);
+            COMPARE_BOUNDS_RAM_BYTE(0x2u);
+            COMPARE_BOUNDS_RAM_BYTE(0x3u);
+
+#undef COMPARE_BOUNDS_RAM_BYTE
+
+            prepare_bounds_case(2u, enemy, UINT32_C(0x243f6a88) + value);
+            set_typical_visible_bounds(2u);
+            a = (uint8_t)value;
+            (void)prepared_bounds_case_erases();
+
+            prepare_bounds_case(2u, enemy, UINT32_C(0xb7e15162) + value);
+            set_typical_visible_bounds(2u);
+            y = (uint8_t)value;
+            (void)prepared_bounds_case_erases();
+
+            prepare_bounds_case(2u, enemy, UINT32_C(0x8aed2a6b) + value);
+            set_typical_visible_bounds(2u);
+            sp = (uint8_t)value;
+            (void)prepared_bounds_case_erases();
+
+            prepare_bounds_case(2u, enemy, UINT32_C(0x165667b1) + value);
+            set_typical_visible_bounds(2u);
+            nz_value = (uint8_t)value;
+            carry_flag = false;
+            (void)prepared_bounds_case_erases();
+
+            prepare_bounds_case(2u, enemy, UINT32_C(0x27d4eb2f) + value);
+            set_typical_visible_bounds(2u);
+            nz_value = (uint8_t)value;
+            carry_flag = true;
+            (void)prepared_bounds_case_erases();
+        }
+    }
+}
+
+static void compare_bounds_patterned_full_state(void) {
+    size_t case_index;
+    uint16_t seed;
+    uint8_t slot;
+
+    for (case_index = 0;
+         case_index < sizeof(enemy_cases) / sizeof(enemy_cases[0]);
+         ++case_index) {
+        for (slot = 0; slot < 6u; ++slot) {
+            for (seed = 0; seed < 256u; ++seed) {
+                prepare_bounds_case(
+                    slot,
+                    &enemy_cases[case_index],
+                    UINT32_C(0x85ebca6b) * (seed + 1u) + slot
+                );
+                (void)prepared_bounds_case_erases();
+            }
+        }
+    }
+}
+
+static void compare_bounds_explicit_paths(void) {
+    static const struct {
+        EnemyCase enemy;
+        uint8_t slot;
+        uint8_t left_page;
+        uint8_t left_x;
+        uint8_t enemy_page;
+        uint8_t enemy_x;
+    } observed_left_erasures[] = {
+        { { Goomba, 0u }, 1u, 0x06u, 0x44u, 0x05u, 0xf9u },
+        { { Goomba, 0u }, 2u, 0x06u, 0x58u, 0x06u, 0x0cu },
+        { { PiranhaPlant, 0u }, 2u, 0x07u, 0x5au, 0x07u, 0x48u },
+        { { Spiny, 0u }, 3u, 0x07u, 0xeeu, 0x07u, 0xa5u },
+    };
+    size_t index;
+
+    for (index = 0;
+         index <
+            sizeof(observed_left_erasures) /
+                sizeof(observed_left_erasures[0]);
+         ++index) {
+        const uint8_t slot = observed_left_erasures[index].slot;
+
+        prepare_bounds_case(
+            slot,
+            &observed_left_erasures[index].enemy,
+            UINT32_C(0xd1b54a32) + index
+        );
+        ram[ScreenLeft_PageLoc] = observed_left_erasures[index].left_page;
+        ram[ScreenLeft_X_Pos] = observed_left_erasures[index].left_x;
+        ram[Enemy_PageLoc + slot] = observed_left_erasures[index].enemy_page;
+        ram[Enemy_X_Position + slot] = observed_left_erasures[index].enemy_x;
+        ram[ScreenRight_PageLoc] = 0x08u;
+        ram[ScreenRight_X_Pos] = 0x80u;
+        assert(prepared_bounds_case_erases());
+    }
+
+    /* Ordinary right-edge objects erase, while both immunity paths return. */
+    prepare_bounds_case(2u, &enemy_cases[0], UINT32_C(0x94d049bb));
+    ram[ScreenLeft_PageLoc] = 5u;
+    ram[ScreenLeft_X_Pos] = 0u;
+    ram[ScreenRight_PageLoc] = 5u;
+    ram[ScreenRight_X_Pos] = 0u;
+    ram[Enemy_PageLoc + 2u] = 6u;
+    ram[Enemy_X_Position + 2u] = 0u;
+    assert(prepared_bounds_case_erases());
+
+    prepare_bounds_case(2u, &enemy_cases[1], UINT32_C(0x369dea0f));
+    ram[ScreenLeft_PageLoc] = 5u;
+    ram[ScreenLeft_X_Pos] = 0u;
+    ram[ScreenRight_PageLoc] = 5u;
+    ram[ScreenRight_X_Pos] = 0u;
+    ram[Enemy_PageLoc + 2u] = 6u;
+    ram[Enemy_X_Position + 2u] = 0u;
+    assert(!prepared_bounds_case_erases());
+
+    prepare_bounds_case(2u, &enemy_cases[4], UINT32_C(0x7f4a7c15));
+    ram[ScreenLeft_PageLoc] = 5u;
+    ram[ScreenLeft_X_Pos] = 0u;
+    ram[ScreenRight_PageLoc] = 5u;
+    ram[ScreenRight_X_Pos] = 0u;
+    ram[Enemy_PageLoc + 2u] = 6u;
+    ram[Enemy_X_Position + 2u] = 0u;
+    assert(!prepared_bounds_case_erases());
+
+    prepare_bounds_case(2u, &enemy_cases[2], UINT32_C(0x2545f491));
+    set_typical_visible_bounds(2u);
+    assert(!prepared_bounds_case_erases());
+}
+
+static bool bounds_case_is_supported(uint8_t enemy_id, uint8_t enemy_state) {
+    return
+        ((enemy_id == Goomba || enemy_id == PiranhaPlant ||
+            enemy_id == Lakitu) && enemy_state == 0u) ||
+        (enemy_id == Spiny &&
+            (enemy_state == 0u || enemy_state == 5u));
+}
+
+static void assert_bounds_fallback_preserves_entry(void) {
+    static const EnemyCase base_enemy = { Goomba, 0u };
+    MachineState entry;
+    MachineState actual;
+    uint16_t enemy_id;
+    uint16_t enemy_state;
+    uint16_t value;
+
+    for (enemy_id = 0; enemy_id < 256u; ++enemy_id) {
+        for (enemy_state = 0; enemy_state < 256u; ++enemy_state) {
+            if (bounds_case_is_supported(
+                    (uint8_t)enemy_id,
+                    (uint8_t)enemy_state)) {
+                continue;
+            }
+            prepare_bounds_case(
+                2u,
+                &base_enemy,
+                ((uint32_t)enemy_id << 24) |
+                    ((uint32_t)enemy_state << 8) | UINT32_C(0x5a)
+            );
+            ram[Enemy_ID + 2u] = (uint8_t)enemy_id;
+            ram[Enemy_State + 2u] = (uint8_t)enemy_state;
+            save_machine(&entry);
+            assert(!smb_core_fast_offscreen_bounds_check());
+            save_machine(&actual);
+            assert_machine_equal(&entry, &actual);
+            ++bounds_fallback_checks;
+        }
+    }
+
+    for (value = 0; value < 256u; ++value) {
+        prepare_bounds_case(2u, &base_enemy, UINT32_C(0xc2b2ae35) + value);
+        ram[ObjectOffset] = (uint8_t)value;
+        if (ram[ObjectOffset] == 2u) {
+            ram[ObjectOffset] = 3u;
+        }
+        save_machine(&entry);
+        assert(!smb_core_fast_offscreen_bounds_check());
+        save_machine(&actual);
+        assert_machine_equal(&entry, &actual);
+        ++bounds_fallback_checks;
+
+        prepare_bounds_case(2u, &base_enemy, UINT32_C(0x27d4eb2f) + value);
+        x = (uint8_t)(value < 6u ? value + 6u : value);
+        save_machine(&entry);
+        assert(!smb_core_fast_offscreen_bounds_check());
+        save_machine(&actual);
+        assert_machine_equal(&entry, &actual);
+        ++bounds_fallback_checks;
+    }
+}
+
 int main(void) {
     compare_direct_and_translated();
     compare_every_read_byte();
@@ -599,12 +949,20 @@ int main(void) {
     compare_move_every_read_byte();
     compare_move_patterned_full_ram();
     assert_move_fallback_preserves_entry();
+    compare_bounds_boundary_cross_product();
+    compare_bounds_every_read_byte();
+    compare_bounds_patterned_full_state();
+    compare_bounds_explicit_paths();
+    assert_bounds_fallback_preserves_entry();
     printf(
         "Neo Geo core fast-path differential tests: OK "
-        "(%u graphics, %u movement, %u untouched fallbacks)\n",
+        "(%u graphics, %u movement, %u bounds, "
+        "%u movement/%u bounds untouched fallbacks)\n",
         direct_comparisons,
         move_direct_comparisons,
-        move_fallback_checks
+        bounds_direct_comparisons,
+        move_fallback_checks,
+        bounds_fallback_checks
     );
     return 0;
 }

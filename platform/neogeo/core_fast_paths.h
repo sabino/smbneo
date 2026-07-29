@@ -28,6 +28,7 @@ extern const uint8_t smb_core_enemy_column_actions[4];
  */
 bool smb_core_fast_enemy_gfx_handler(void);
 bool smb_core_fast_move_normal_enemy(void);
+bool smb_core_fast_offscreen_bounds_check(void);
 
 SMB_CORE_FAST_INLINE bool smb_core_fast_spr_object_offscr_known_safe(
     uint8_t slot,
