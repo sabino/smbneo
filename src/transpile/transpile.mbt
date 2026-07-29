@@ -717,6 +717,97 @@ fn is_reviewed_offscreen_bounds_check(
 }
 
 ///|
+fn is_reviewed_draw_large_platform(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "DrawLargePlatform" {
+    return false
+  }
+
+  // The direct helper folds every OAM write, flag transition, five temporary
+  // stack writes, and the final all-hide branch. Any executable source change
+  // must retain the ordinary translated body as the only implementation.
+  reviewed_flat_subroutine_fingerprint(subroutine) ==
+  (
+    81,
+    3274,
+    "a6cee1a7c99d9894f322fe7cf12b6a008387fd960dbd57c73e1737766a30c688",
+  )
+}
+
+///|
+fn is_reviewed_large_platform_draw_dependency(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  let expected = match subroutine.name {
+    "SixSpriteStacker" =>
+      (
+        12,
+        331,
+        "145a001162a4e864f49548bfad2a7b8e7cff0950ad23fa10386294743610527e",
+      )
+    "MoveSixSpritesOffscreen" =>
+      (
+        2,
+        95,
+        "0db34e6d8b9e5ea87703e42d38d9c476fb0a292c82e94b5e421d49c15f92d170",
+      )
+    "DumpSixSpr" =>
+      (
+        3,
+        270,
+        "c11b7e41aca5fc496efbe4c2a93750ee9b79c22df9c1b9d8d597efb6e1c4ba32",
+      )
+    "DumpFourSpr" =>
+      (
+        2,
+        157,
+        "adf79f43f70729f6968981fecff4198811bfc7724a9753f1c1bd448d862fbb36",
+      )
+    "DumpThreeSpr" =>
+      (
+        2,
+        154,
+        "86fc3691f14a1473837f11288aa4c1587a3b4e1f28df3df4a1e00ddbae95754e",
+      )
+    "DumpTwoSpr" =>
+      (
+        2,
+        162,
+        "43d5bd22124cdd28fae8a1c6561817bac9fcdffb07f2dc33a40a1a2299be45e3",
+      )
+    "GetXOffscreenBits" =>
+      (
+        25,
+        1161,
+        "036387c1bbe23218adc7118f6976358d46af54c8078ce01e8e34e4d6eaf87823",
+      )
+    "DividePDiff" =>
+      (
+        12,
+        404,
+        "11ce08547ce94defbe9e23f7392c7591364fc78c66fb7bef25ac222baae2f28f",
+      )
+    _ => (-1, -1, "")
+  }
+  reviewed_flat_subroutine_fingerprint(subroutine) == expected
+}
+
+///|
+fn has_reviewed_large_platform_draw_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut dependency_count = 0
+
+  for subroutine in low.flat_subroutines {
+    if is_reviewed_large_platform_draw_dependency(subroutine) {
+      dependency_count += 1
+    }
+  }
+  dependency_count == 8 && has_reviewed_offscreen_tables(low)
+}
+
+///|
 fn is_reviewed_subt_enemy_y_pos(
   subroutine : @lower.AsmFlatSubroutine,
 ) -> Bool {
@@ -3027,6 +3118,13 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
   self.indentation = 0
   self.emit("void \{rename_label(subroutine.name)}(void) {")
   self.indentation = 1
+
+  if is_reviewed_draw_large_platform(subroutine) &&
+    has_reviewed_large_platform_draw_dependencies(low) {
+    self.emit("#if defined(SMB_NEOGEO_FAST_CORE)")
+    self.emit("if (smb_core_fast_draw_large_platform()) { return; }")
+    self.emit("#endif")
+  }
 
   // The direct enemy renderer now folds the reviewed low-row portion of
   // SprObjectOffscrChk at its tail. If that routine or either column helper

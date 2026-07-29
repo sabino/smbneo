@@ -13772,6 +13772,9 @@ void DumpTwoSpr(void) {
 }
 
 void DrawLargePlatform(void) {
+  #if defined(SMB_NEOGEO_FAST_CORE)
+  if (smb_core_fast_draw_large_platform()) { return; }
+  #endif
   ldy_absx(Enemy_SprDataOffset); // get OAM data offset
   ram[0x2] = y; // store here
   iny(); // add 3 to it for offset

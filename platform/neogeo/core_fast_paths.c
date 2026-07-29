@@ -196,6 +196,95 @@ static uint8_t fast_enemy_tile_is_non_solid(uint8_t tile) {
     );
 }
 
+bool smb_core_fast_draw_large_platform(void) {
+    const uint8_t slot = x;
+    uint8_t sprite_offset;
+    uint8_t platform_y;
+    uint8_t tile;
+    uint8_t offscreen;
+    uint8_t index;
+
+    /*
+     * The translated stacker uses an eight-bit Y index. Reject layouts whose
+     * six 4-byte OAM records would wrap, plus the unaligned layouts that are
+     * not produced by the reviewed object allocator. Mismatched object
+     * offsets can alias unrelated zero-page object fields, so they retain the
+     * literal translated ordering as well.
+     */
+    if (slot >= 6u || slot != ram[ObjectOffset]) {
+        return false;
+    }
+    sprite_offset = ram[Enemy_SprDataOffset + slot];
+    if ((sprite_offset & 3u) != 0u || sprite_offset > 232u) {
+        return false;
+    }
+
+    ram[0x2] = sprite_offset;
+    for (index = 0u; index < 6u; ++index) {
+        ram[Sprite_X_Position + sprite_offset + index * 4u] =
+            (uint8_t)(ram[Enemy_Rel_XPos] + index * 8u);
+    }
+
+    platform_y = ram[Enemy_Y_Position + slot];
+    for (index = 0u; index < 4u; ++index) {
+        ram[Sprite_Y_Position + sprite_offset + index * 4u] = platform_y;
+    }
+    if (ram[AreaType] == 3u || ram[SecondaryHardMode] != 0u) {
+        platform_y = 0xf8u;
+    }
+    ram[Sprite_Y_Position + sprite_offset + 16u] = platform_y;
+    ram[Sprite_Y_Position + sprite_offset + 20u] = platform_y;
+
+    tile = ram[CloudTypeOverride] != 0u ? 0x75u : 0x5bu;
+    for (index = 0u; index < 6u; ++index) {
+        const uint8_t output_offset =
+            (uint8_t)(sprite_offset + index * 4u);
+
+        ram[Sprite_Tilenumber + output_offset] = tile;
+        ram[Sprite_Attributes + output_offset] = 0x02u;
+    }
+
+    /* Preserve the reviewed GetXOffscreenBits scratch/register semantics. */
+    x = (uint8_t)(slot + 1u);
+    GetXOffscreenBits();
+    offscreen = a;
+    x = slot;
+    y = sprite_offset;
+
+    for (index = 0u; index < 6u; ++index) {
+        if ((offscreen & (uint8_t)(0x80u >> index)) != 0u) {
+            ram[Sprite_Y_Position + sprite_offset + index * 4u] = 0xf8u;
+        }
+    }
+
+    /* Five PHA stages leave this exact final byte at the original SP. */
+    ram[0x100u + sp] = (uint8_t)(offscreen << 5);
+
+    /* Reproduce the sixth ASL and its optional LDA #$f8 side effects. */
+    a = (uint8_t)(offscreen << 6);
+    carry_flag = (offscreen & 0x04u) != 0u;
+    nz_value = a;
+    if (carry_flag) {
+        a = 0xf8u;
+        nz_value = a;
+    }
+
+    /* The source deliberately checks the precomputed absolute enemy mask. */
+    offscreen = ram[Enemy_OffscreenBits];
+    a = (uint8_t)(offscreen << 1);
+    carry_flag = (offscreen & 0x80u) != 0u;
+    nz_value = a;
+    if (carry_flag) {
+        a = 0xf8u;
+        nz_value = a;
+        for (index = 0u; index < 6u; ++index) {
+            ram[Sprite_Y_Position + sprite_offset + index * 4u] = a;
+        }
+    }
+
+    return true;
+}
+
 static void draw_three_enemy_rows(
     uint8_t graphics_offset,
     uint8_t sprite_offset
