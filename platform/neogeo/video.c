@@ -1,6 +1,7 @@
 #include "video.h"
 
 #include "background_chain.h"
+#include "background_update_plan.h"
 #include "constants.h"
 #include "cpu.h"
 #include "external.h"
@@ -89,6 +90,14 @@ _Static_assert(
     ADDR_FIXMAP == NEOGEO_HUD_FIXMAP_BASE,
     "HUD FIX-map base must match ngdevkit"
 );
+_Static_assert(
+    BACKGROUND_STRIPS == NEOGEO_BACKGROUND_VISIBLE_STRIPS,
+    "background update planner must cover every hardware strip"
+);
+_Static_assert(
+    SPRITE_SET_COUNT == NEOGEO_PPU_BACKGROUND_RENDER_BANKS,
+    "PPU dirty tracking must cover every hidden renderer bank"
+);
 
 typedef struct {
     uint16_t tile;
@@ -115,17 +124,12 @@ static volatile uint16_t neogeo_vblank_signal;
 static BackgroundTileCache
     background_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS][BACKGROUND_MAX_ROWS];
 static uint16_t background_x_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint32_t
-    background_generation_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
-static uint8_t
-    background_world_column_cache[SPRITE_SET_COUNT][BACKGROUND_STRIPS];
 static uint16_t background_config_cache[SPRITE_SET_COUNT];
 static uint8_t background_first_column[SPRITE_SET_COUNT];
 static uint8_t background_ring_origin[SPRITE_SET_COUNT];
 static uint8_t background_ring_valid[SPRITE_SET_COUNT];
 static uint8_t background_chain_origin[SPRITE_SET_COUNT];
 static uint8_t background_chain_valid[SPRITE_SET_COUNT];
-static uint32_t background_built_generation[SPRITE_SET_COUNT];
 
 static uint8_t active_oam[SPRITE_SET_COUNT][OAM_SPRITES];
 static uint8_t active_oam_count[SPRITE_SET_COUNT];
@@ -207,24 +211,9 @@ void neogeo_video_wait_for_present(void) {
 void neogeo_video_benchmark_invalidate(void) {
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
-    memset(
-        background_generation_cache,
-        0xff,
-        sizeof(background_generation_cache)
-    );
-    memset(
-        background_world_column_cache,
-        0xff,
-        sizeof(background_world_column_cache)
-    );
     memset(background_config_cache, 0xff, sizeof(background_config_cache));
     memset(background_ring_valid, 0, sizeof(background_ring_valid));
     memset(background_chain_valid, 0, sizeof(background_chain_valid));
-    memset(
-        background_built_generation,
-        0xff,
-        sizeof(background_built_generation)
-    );
 
     memset(cached_palettes, 0xff, sizeof(cached_palettes));
     cached_backdrop = 0xffffu;
@@ -585,11 +574,15 @@ static void build_background(uint8_t set, uint8_t show_hud) {
     uint8_t first_tile_y = show_hud ? 4u : 1u;
     uint8_t tile_rows = show_hud ? 26u : 28u;
     uint16_t output_y = show_hud ? 24u : 0u;
-    uint32_t source_generation = show_hud
-        ? neogeo_ppu_background_hud_generation
-        : neogeo_ppu_background_full_generation;
-    uint8_t scan_background;
+    uint8_t *dirty_columns = neogeo_ppu_background_dirty_columns(
+        set,
+        show_hud
+    );
+    NeoGeoBackgroundUpdatePlan update_plan;
+    uint8_t previous_ring_valid = background_ring_valid[set];
+    uint8_t forward_delta = 0u;
     uint8_t reset_physical_map;
+    uint8_t force_full_rebuild;
     uint8_t ring_origin;
     uint8_t strip;
 
@@ -601,18 +594,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
 
     reset_physical_map =
         (uint8_t)(background_config_cache[set] != render_config);
-    scan_background = (uint8_t)(
-        background_ring_valid[set] == 0u ||
-        reset_physical_map != 0u ||
-        background_first_column[set] != first_column ||
-        background_built_generation[set] != source_generation
-    );
     if (reset_physical_map != 0u) {
-        memset(
-            background_generation_cache[set],
-            0xff,
-            sizeof(background_generation_cache[set])
-        );
         background_config_cache[set] = render_config;
     }
 
@@ -622,13 +604,13 @@ static void build_background(uint8_t set, uint8_t show_hud) {
      * fine scrolling becomes one or two driver updates on the hidden bank.
      */
     if (background_ring_valid[set] != 0u) {
-        uint8_t delta = (uint8_t)(
+        forward_delta = (uint8_t)(
             (first_column - background_first_column[set]) & 63u
         );
 
-        if (delta < BACKGROUND_STRIPS) {
+        if (forward_delta < BACKGROUND_STRIPS) {
             uint8_t origin =
-                (uint8_t)(background_ring_origin[set] + delta);
+                (uint8_t)(background_ring_origin[set] + forward_delta);
 
             if (origin >= BACKGROUND_STRIPS) {
                 origin = (uint8_t)(origin - BACKGROUND_STRIPS);
@@ -636,43 +618,36 @@ static void build_background(uint8_t set, uint8_t show_hud) {
             background_ring_origin[set] = origin;
         } else {
             background_ring_origin[set] = 0;
-            memset(
-                background_generation_cache[set],
-                0xff,
-                sizeof(background_generation_cache[set])
-            );
-            memset(
-                background_world_column_cache[set],
-                0xff,
-                sizeof(background_world_column_cache[set])
-            );
         }
     } else {
         background_ring_valid[set] = 1;
         background_ring_origin[set] = 0;
-        memset(
-            background_generation_cache[set],
-            0xff,
-            sizeof(background_generation_cache[set])
-        );
-        memset(
-            background_world_column_cache[set],
-            0xff,
-            sizeof(background_world_column_cache[set])
-        );
     }
 
     background_first_column[set] = first_column;
     ring_origin = background_ring_origin[set];
     next_background_active = 1;
+    force_full_rebuild = (uint8_t)(
+        previous_ring_valid == 0u ||
+        reset_physical_map != 0u ||
+        forward_delta >= BACKGROUND_STRIPS
+    );
+    neogeo_background_plan_updates(
+        first_column,
+        forward_delta,
+        force_full_rebuild,
+        dirty_columns,
+        &update_plan
+    );
 
-    if (scan_background != 0u) {
+    if (update_plan.count != 0u) {
+        uint8_t plan_index;
+
         write_vram_mod(1);
-        for (strip = 0; strip < BACKGROUND_STRIPS; ++strip) {
+        for (plan_index = 0u; plan_index < update_plan.count; ++plan_index) {
+            strip = update_plan.logical_strips[plan_index];
             uint8_t world_column =
                 (uint8_t)((first_column + strip) & 63u);
-            uint32_t column_generation =
-                neogeo_ppu_column_generation[world_column];
             uint8_t physical_strip = (uint8_t)(ring_origin + strip);
 
             if (physical_strip >= BACKGROUND_STRIPS) {
@@ -680,12 +655,7 @@ static void build_background(uint8_t set, uint8_t show_hud) {
                     (uint8_t)(physical_strip - BACKGROUND_STRIPS);
             }
 
-            if (
-                background_world_column_cache[set][physical_strip] !=
-                    world_column ||
-                background_generation_cache[set][physical_strip] !=
-                    column_generation
-            ) {
+            {
                 uint8_t source_x = (uint8_t)(world_column & 31u);
                 uint16_t nametable_offset =
                     (world_column & 32u) ? 0x0400u : 0u;
@@ -777,14 +747,9 @@ static void build_background(uint8_t set, uint8_t show_hud) {
                     cached->attributes = attributes;
                     previous_physical_row = physical_row;
                 }
-                background_world_column_cache[set][physical_strip] =
-                    world_column;
-                background_generation_cache[set][physical_strip] =
-                    column_generation;
             }
         }
     }
-    background_built_generation[set] = source_generation;
 
     /*
      * Hardware sticky sprites inherit the preceding strip's position, height,
@@ -1154,24 +1119,9 @@ void neogeo_video_init(void) {
 
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
-    memset(
-        background_generation_cache,
-        0xff,
-        sizeof(background_generation_cache)
-    );
-    memset(
-        background_world_column_cache,
-        0xff,
-        sizeof(background_world_column_cache)
-    );
     memset(background_config_cache, 0xff, sizeof(background_config_cache));
     memset(background_ring_valid, 0, sizeof(background_ring_valid));
     memset(background_chain_valid, 0, sizeof(background_chain_valid));
-    memset(
-        background_built_generation,
-        0xff,
-        sizeof(background_built_generation)
-    );
     memset(active_oam_count, 0, sizeof(active_oam_count));
     memset(active_background, 0, sizeof(active_background));
     memset(

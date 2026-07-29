@@ -33,11 +33,14 @@ uint32_t neogeo_ppu_batched_run_count;
 uint32_t neogeo_ppu_rejected_run_count;
 #endif
 
-uint32_t neogeo_ppu_column_generation[64];
-uint32_t neogeo_ppu_background_full_generation;
-uint32_t neogeo_ppu_background_hud_generation;
 uint32_t neogeo_ppu_hud_generation;
 uint32_t neogeo_ppu_palette_generation;
+uint8_t neogeo_ppu_background_full_dirty_columns
+    [NEOGEO_PPU_BACKGROUND_RENDER_BANKS]
+    [NEOGEO_PPU_BACKGROUND_DIRTY_BYTES];
+uint8_t neogeo_ppu_background_hud_dirty_columns
+    [NEOGEO_PPU_BACKGROUND_RENDER_BANKS]
+    [NEOGEO_PPU_BACKGROUND_DIRTY_BYTES];
 uint32_t neogeo_ppu_hud_dirty_rows[3];
 uint8_t neogeo_ppu_hud_dirty_tracking_valid;
 
@@ -66,6 +69,19 @@ static uint8_t palette_index(uint16_t addr) {
     return index;
 }
 
+static void mark_background_column(
+    uint8_t dirty_columns
+        [NEOGEO_PPU_BACKGROUND_RENDER_BANKS]
+        [NEOGEO_PPU_BACKGROUND_DIRTY_BYTES],
+    uint8_t column
+) {
+    uint8_t byte_index = (uint8_t)(column >> 3);
+    uint8_t bit = (uint8_t)((uint8_t)1u << (column & 7u));
+
+    dirty_columns[0][byte_index] |= bit;
+    dirty_columns[1][byte_index] |= bit;
+}
+
 static void mark_nametable_changed(uint16_t index) {
     uint16_t table_offset = (uint16_t)(index & 0x03ffu);
     uint8_t table_column_base = (index & 0x0400u) ? 32u : 0u;
@@ -75,12 +91,17 @@ static void mark_nametable_changed(uint16_t index) {
             (uint8_t)(table_column_base + (table_offset & 31u));
         uint8_t row = (uint8_t)(table_offset >> 5);
 
-        ++neogeo_ppu_column_generation[column];
         if (row >= 1u && row <= 28u) {
-            ++neogeo_ppu_background_full_generation;
+            mark_background_column(
+                neogeo_ppu_background_full_dirty_columns,
+                column
+            );
         }
         if (row >= 4u && row <= 29u) {
-            ++neogeo_ppu_background_hud_generation;
+            mark_background_column(
+                neogeo_ppu_background_hud_dirty_columns,
+                column
+            );
         }
         if (table_column_base == 0u && row >= 1u && row <= 3u) {
             neogeo_ppu_hud_dirty_rows[row - 1u] |=
@@ -95,11 +116,18 @@ static void mark_nametable_changed(uint16_t index) {
         uint8_t i;
 
         for (i = 0; i < 4u; ++i) {
-            ++neogeo_ppu_column_generation[first_column + i];
-        }
-        ++neogeo_ppu_background_full_generation;
-        if ((attribute >> 3) != 0u) {
-            ++neogeo_ppu_background_hud_generation;
+            uint8_t column = (uint8_t)(first_column + i);
+
+            mark_background_column(
+                neogeo_ppu_background_full_dirty_columns,
+                column
+            );
+            if ((attribute >> 3) != 0u) {
+                mark_background_column(
+                    neogeo_ppu_background_hud_dirty_columns,
+                    column
+                );
+            }
         }
         if (table_column_base == 0u && (attribute >> 3) == 0u) {
             uint32_t dirty_columns = UINT32_C(0x0f) << first_column;
@@ -132,15 +160,18 @@ void ppu_init(uint8_t *chr) {
     vram_internal_buffer = 0;
     oam_dma = 0;
     status_phase = 0;
-    memset(
-        neogeo_ppu_column_generation,
-        0,
-        sizeof(neogeo_ppu_column_generation)
-    );
-    neogeo_ppu_background_full_generation = 0;
-    neogeo_ppu_background_hud_generation = 0;
     neogeo_ppu_hud_generation = 0;
     neogeo_ppu_palette_generation = 0;
+    memset(
+        neogeo_ppu_background_full_dirty_columns,
+        0,
+        sizeof(neogeo_ppu_background_full_dirty_columns)
+    );
+    memset(
+        neogeo_ppu_background_hud_dirty_columns,
+        0,
+        sizeof(neogeo_ppu_background_hud_dirty_columns)
+    );
     neogeo_ppu_hud_dirty_rows[0] = 0u;
     neogeo_ppu_hud_dirty_rows[1] = 0u;
     neogeo_ppu_hud_dirty_rows[2] = 0u;

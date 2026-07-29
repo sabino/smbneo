@@ -40,9 +40,12 @@ typedef struct {
     uint16_t vram_addr;
     uint8_t vram_internal_buffer;
     uint8_t oam_dma;
-    uint32_t column_generation[64];
-    uint32_t background_full_generation;
-    uint32_t background_hud_generation;
+    uint8_t background_full_dirty_columns
+        [NEOGEO_PPU_BACKGROUND_RENDER_BANKS]
+        [NEOGEO_PPU_BACKGROUND_DIRTY_BYTES];
+    uint8_t background_hud_dirty_columns
+        [NEOGEO_PPU_BACKGROUND_RENDER_BANKS]
+        [NEOGEO_PPU_BACKGROUND_DIRTY_BYTES];
     uint32_t hud_generation;
     uint32_t palette_generation;
     uint32_t hud_dirty_rows[3];
@@ -71,6 +74,8 @@ static uint8_t pattern_byte(uint32_t seed, uint32_t index) {
 
 static void prepare_state(uint32_t seed) {
     uint16_t index;
+    uint8_t bank;
+    uint8_t byte_index;
 
     cpu_init();
     ppu_init(NULL);
@@ -114,13 +119,20 @@ static void prepare_state(uint32_t seed) {
     vram_internal_buffer = pattern_byte(seed, 3016u);
     oam_dma = pattern_byte(seed, 3017u);
 
-    for (index = 0u; index < 64u; ++index) {
-        neogeo_ppu_column_generation[index] =
-            UINT32_MAX - (uint32_t)index - seed;
+    for (bank = 0u;
+         bank < NEOGEO_PPU_BACKGROUND_RENDER_BANKS;
+         ++bank) {
+        for (byte_index = 0u;
+             byte_index < NEOGEO_PPU_BACKGROUND_DIRTY_BYTES;
+             ++byte_index) {
+            neogeo_ppu_background_full_dirty_columns[bank][byte_index] =
+                pattern_byte(seed ^ UINT32_C(0x46e7b8c1),
+                    (uint32_t)bank * 8u + byte_index);
+            neogeo_ppu_background_hud_dirty_columns[bank][byte_index] =
+                pattern_byte(seed ^ UINT32_C(0x8c3d51a7),
+                    (uint32_t)bank * 8u + byte_index);
+        }
     }
-    neogeo_ppu_background_full_generation = UINT32_MAX - seed;
-    neogeo_ppu_background_hud_generation =
-        UINT32_MAX - seed * UINT32_C(3);
     neogeo_ppu_hud_generation = UINT32_MAX - seed * UINT32_C(5);
     neogeo_ppu_palette_generation = UINT32_MAX - seed * UINT32_C(7);
     neogeo_ppu_hud_dirty_rows[0] = seed ^ UINT32_C(0x00000001);
@@ -164,14 +176,15 @@ static void capture_state(ObservableState *state) {
     state->vram_internal_buffer = vram_internal_buffer;
     state->oam_dma = oam_dma;
     memcpy(
-        state->column_generation,
-        neogeo_ppu_column_generation,
-        sizeof(state->column_generation)
+        state->background_full_dirty_columns,
+        neogeo_ppu_background_full_dirty_columns,
+        sizeof(state->background_full_dirty_columns)
     );
-    state->background_full_generation =
-        neogeo_ppu_background_full_generation;
-    state->background_hud_generation =
-        neogeo_ppu_background_hud_generation;
+    memcpy(
+        state->background_hud_dirty_columns,
+        neogeo_ppu_background_hud_dirty_columns,
+        sizeof(state->background_hud_dirty_columns)
+    );
     state->hud_generation = neogeo_ppu_hud_generation;
     state->palette_generation = neogeo_ppu_palette_generation;
     memcpy(
@@ -483,11 +496,11 @@ static void compare_accepted_helper_case(
     ));
     assert(neogeo_ppu_batched_run_count == 1u);
     capture_state(&actual);
-    assert_state_equal(&expected, &actual, "direct helper increment/generation");
+    assert_state_equal(&expected, &actual, "direct helper increment/dirty state");
     ++helper_comparisons;
 }
 
-static void compare_helper_increment_and_generation(void) {
+static void compare_helper_increment_and_dirty_state(void) {
     static const uint16_t destinations[] = {
         0x2000u, 0x201fu, 0x23bfu, 0x23c0u, 0x2400u,
         0x27ffu, 0x2fe0u, 0x3000u, 0x37ffu, 0x3e00u,
@@ -579,7 +592,7 @@ int main(void) {
     compare_all_control_bytes();
     compare_address_and_source_boundaries();
     compare_multi_record_chain();
-    compare_helper_increment_and_generation();
+    compare_helper_increment_and_dirty_state();
     compare_rejected_helper_is_noop();
 
     assert(accepted_pipeline_runs != 0u);

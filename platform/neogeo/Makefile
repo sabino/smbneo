@@ -18,6 +18,7 @@ WEB_MROM := $(WEB_BUILD)/smbneo-m1.m1
 WEB_VROM := $(WEB_BUILD)/smbneo-v1.v1
 WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
+BACKGROUND_UPDATE_PLAN_TEST := $(BUILD)/test_neogeo_background_update_plan
 HUD_UPDATE_TEST := $(BUILD)/test_neogeo_hud_updates
 BACKGROUND_CHAIN_TEST := $(BUILD)/test_neogeo_background_chain
 REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
@@ -354,6 +355,13 @@ $(PPU_STATE_TEST): \
 		-I. -I$(ROOT)/codegen/lib \
 		$(ROOT)/tools/test_neogeo_ppu_render_state.c \
 		ppu_direct.c title_data_stub.c -o $@
+
+$(BACKGROUND_UPDATE_PLAN_TEST): \
+		$(ROOT)/tools/test_neogeo_background_update_plan.c \
+		background_update_plan.h | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-I. \
+		$(ROOT)/tools/test_neogeo_background_update_plan.c -o $@
 
 $(HUD_UPDATE_TEST): \
 		$(ROOT)/tools/test_neogeo_hud_updates.c \
@@ -912,7 +920,8 @@ test-vram-batch-sanitize: $(VRAM_BATCH_SANITIZE_TEST)
 	$(VRAM_BATCH_SANITIZE_TEST)
 
 test: \
-		$(PPU_STATE_TEST) $(HUD_UPDATE_TEST) $(BACKGROUND_CHAIN_TEST) \
+		$(PPU_STATE_TEST) $(BACKGROUND_UPDATE_PLAN_TEST) \
+		$(HUD_UPDATE_TEST) $(BACKGROUND_CHAIN_TEST) \
 		$(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
 		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) $(BOUNDING_BOX_CORE_TEST) \
@@ -935,6 +944,7 @@ test: \
 	$(PYTHON) -m unittest discover \
 		-s $(ROOT)/tools -p 'test_*.py'
 	$(PPU_STATE_TEST)
+	$(BACKGROUND_UPDATE_PLAN_TEST)
 	$(HUD_UPDATE_TEST)
 	$(BACKGROUND_CHAIN_TEST)
 	$(REPLAY_GATE_TEST)
