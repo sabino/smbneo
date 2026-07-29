@@ -14637,75 +14637,101 @@ void RunOffscrBitsSubs(void) {
 }
 
 void GetXOffscreenBits(void) {
-  ram[0x4] = x; // save position in buffer to here
-  ldy_imm(0x1); // start with right side of screen
-  
-XOfsLoop:
-  lda_absy(ScreenEdge_X_Pos); // get pixel coordinate of edge
-  carry_flag = true; // get difference between pixel coordinate of edge
-  sbc_zpx(SprObject_X_Position); // and pixel coordinate of object position
-  ram[0x7] = a; // store here
-  lda_absy(ScreenEdge_PageLoc); // get page location of edge
-  sbc_zpx(SprObject_PageLoc); // subtract from page location of object position
-  ldx_absy(DefaultXOnscreenOfs); // load offset value here
-  cmp_imm(0x0);
-  // if beyond right edge or in front of left edge, branch
-  if (!neg_flag) {
-    ldx_absy(DefaultXOnscreenOfs + 1); // if not, load alternate offset value here
-    cmp_imm(0x1);
-    // if one page or more to the left of either edge, branch
-    if (neg_flag) {
-      lda_imm(0x38); // if no branching, load value here and store
-      ram[0x6] = a;
-      lda_imm(0x8); // load some other value and execute subroutine
-      DividePDiff();
+  // Reviewed table-driven horizontal offscreen specialization; guarded by exact lowered structures.
+  const uint8_t object_index = x;
+  const uint8_t object_pixel_address = (uint8_t)(SprObject_X_Position + object_index);
+  const uint8_t object_page_address = (uint8_t)(SprObject_PageLoc + object_index);
+  const uint8_t *const defaults = &data[DefaultXOnscreenOfs - 0x8000u];
+  const uint8_t *const bit_table = &data[XOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t bits;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];
+    const uint8_t object_pixel = ram[object_pixel_address];
+    const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_page;
+    uint8_t page_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_page = ram[object_page_address];
+    page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));
+    table_index = defaults[side];
+    if ((page_diff & 0x80u) == 0u) {
+      table_index = defaults[side + 1u];
+      if (page_diff == 0u) {
+        ram[0x6] = 0x38u;
+        ram[0x5] = 0x08u;
+        if (pixel_diff < 0x38u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));
+        }
+      }
+    }
+    bits = bit_table[table_index];
+    if (bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
     }
   }
-  // XLdBData:
-  lda_absx(XOffscreenBitsData); // get bits here
-  ldx_zp(0x4); // reobtain position in buffer
-  cmp_imm(0x0); // if bits not zero, branch to leave
-  if (zero_flag) {
-    dey(); // otherwise, do left side of screen now
-    if (!neg_flag) { goto XOfsLoop; } // branch if not already done with left side
-    // --------------------------------
-  }
+  a = bits;
+  x = object_index;
+  y = side;
+  carry_flag = true;
+  nz_value = bits != 0u ? bits : side;
 }
 
 void GetYOffscreenBits(void) {
-  ram[0x4] = x; // save position in buffer to here
-  ldy_imm(0x1); // start with top of screen
-  
-YOfsLoop:
-  lda_absy(HighPosUnitData); // load coordinate for edge of vertical unit
-  carry_flag = true;
-  sbc_zpx(SprObject_Y_Position); // subtract from vertical coordinate of object
-  ram[0x7] = a; // store here
-  lda_imm(0x1); // subtract one from vertical high byte of object
-  sbc_zpx(SprObject_Y_HighPos);
-  ldx_absy(DefaultYOnscreenOfs); // load offset value here
-  cmp_imm(0x0);
-  // if under top of the screen or beyond bottom, branch
-  if (!neg_flag) {
-    ldx_absy(DefaultYOnscreenOfs + 1); // if not, load alternate offset value here
-    cmp_imm(0x1);
-    // if one vertical unit or more above the screen, branch
-    if (neg_flag) {
-      lda_imm(0x20); // if no branching, load value here and store
-      ram[0x6] = a;
-      lda_imm(0x4); // load some other value and execute subroutine
-      DividePDiff();
+  // Reviewed table-driven vertical offscreen specialization; guarded by exact lowered structures.
+  const uint8_t object_index = x;
+  const uint8_t object_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);
+  const uint8_t object_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);
+  const uint8_t *const edge_pixels = &data[HighPosUnitData - 0x8000u];
+  const uint8_t *const defaults = &data[DefaultYOnscreenOfs - 0x8000u];
+  const uint8_t *const bit_table = &data[YOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t bits;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = edge_pixels[side];
+    const uint8_t object_pixel = ram[object_pixel_address];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_high;
+    uint8_t high_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_high = ram[object_high_address];
+    high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));
+    table_index = defaults[side];
+    if ((high_diff & 0x80u) == 0u) {
+      table_index = defaults[side + 1u];
+      if (high_diff == 0u) {
+        ram[0x6] = 0x20u;
+        ram[0x5] = 0x04u;
+        if (pixel_diff < 0x20u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));
+        }
+      }
+    }
+    bits = bit_table[table_index];
+    if (bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
     }
   }
-  // YLdBData:
-  lda_absx(YOffscreenBitsData); // get offscreen data bits using offset
-  ldx_zp(0x4); // reobtain position in buffer
-  cmp_imm(0x0);
-  if (zero_flag) {
-    dey(); // otherwise, do bottom of the screen now
-    if (!neg_flag) { goto YOfsLoop; }
-    // --------------------------------
-  }
+  a = bits;
+  x = object_index;
+  y = side;
+  carry_flag = true;
+  nz_value = bits != 0u ? bits : side;
 }
 
 void DividePDiff(void) {

@@ -28,6 +28,7 @@ DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
 MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
 SPRITE_SHUFFLER_TEST := $(BUILD)/test_sprite_shuffler
 READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
+OFFSCREEN_BITS_TEST := $(BUILD)/test_offscreen_bits
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
@@ -505,6 +506,27 @@ $(READ_PORT_BITS_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(OFFSCREEN_BITS_TEST): \
+		$(ROOT)/tools/test_offscreen_bits.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_offscreen_bits.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(ROM_FALLTHROUGH_TEST): \
 		$(ROOT)/tools/test_rom_fallthrough_data.c \
 		$(ROOT)/codegen/lib/data.c \
@@ -584,7 +606,7 @@ test: \
 		$(BLOCK_BUFFER_COLLISION_TEST) \
 		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
 		$(SPRITE_SHUFFLER_TEST) \
-		$(READ_PORT_BITS_TEST) \
+		$(READ_PORT_BITS_TEST) $(OFFSCREEN_BITS_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(APU_FRAME_UNITS_TEST) $(AUDIO_PACKET_TEST) \
 		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
@@ -602,6 +624,7 @@ test: \
 	$(MOVE_SPRITES_OFFSCREEN_TEST)
 	$(SPRITE_SHUFFLER_TEST)
 	$(READ_PORT_BITS_TEST)
+	$(OFFSCREEN_BITS_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
 	$(APU_BRIDGE_TEST)

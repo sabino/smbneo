@@ -897,6 +897,120 @@ fn is_read_joypads(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   )
 }
 
+fn is_get_x_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetXOffscreenBits" {
+    return false
+  }
+
+  // The direct implementation below folds the complete two-edge routine,
+  // including its call to DividePDiff. Keep every executable item in this
+  // allowlist so an assembly-side control-flow change uses generic emission.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x4
+    #|I:LDY:imm:0x1
+    #|L:XOfsLoop
+    #|I:LDA:absy:ScreenEdge_X_Pos
+    #|I:SEC:imp
+    #|I:SBC:zpx:SprObject_X_Position
+    #|I:STA:zp:0x7
+    #|I:LDA:absy:ScreenEdge_PageLoc
+    #|I:SBC:zpx:SprObject_PageLoc
+    #|I:LDX:absy:DefaultXOnscreenOfs
+    #|I:CMP:imm:0x0
+    #|IF:BPL
+    #|I:LDX:absy:DefaultXOnscreenOfs + 1
+    #|I:CMP:imm:0x1
+    #|IF:BMI
+    #|I:LDA:imm:0x38
+    #|I:STA:zp:0x6
+    #|I:LDA:imm:0x8
+    #|I:JSR:abs:DividePDiff
+    #|END_IF
+    #|END_IF
+    #|I:LDA:absx:XOffscreenBitsData
+    #|I:LDX:zp:0x4
+    #|I:CMP:imm:0x0
+    #|IF:BEQ
+    #|I:DEY:imp
+    #|I:BPL:rel:XOfsLoop
+    #|END_IF
+    #|
+  )
+}
+
+fn is_get_y_offscreen_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "GetYOffscreenBits" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STX:zp:0x4
+    #|I:LDY:imm:0x1
+    #|L:YOfsLoop
+    #|I:LDA:absy:HighPosUnitData
+    #|I:SEC:imp
+    #|I:SBC:zpx:SprObject_Y_Position
+    #|I:STA:zp:0x7
+    #|I:LDA:imm:0x1
+    #|I:SBC:zpx:SprObject_Y_HighPos
+    #|I:LDX:absy:DefaultYOnscreenOfs
+    #|I:CMP:imm:0x0
+    #|IF:BPL
+    #|I:LDX:absy:DefaultYOnscreenOfs + 1
+    #|I:CMP:imm:0x1
+    #|IF:BMI
+    #|I:LDA:imm:0x20
+    #|I:STA:zp:0x6
+    #|I:LDA:imm:0x4
+    #|I:JSR:abs:DividePDiff
+    #|END_IF
+    #|END_IF
+    #|I:LDA:absx:YOffscreenBitsData
+    #|I:LDX:zp:0x4
+    #|I:CMP:imm:0x0
+    #|IF:BEQ
+    #|I:DEY:imp
+    #|I:BPL:rel:YOfsLoop
+    #|END_IF
+    #|
+  )
+}
+
+fn is_divide_pdiff(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "DividePDiff" {
+    return false
+  }
+
+  // GetX/YOffscreenBits inline this helper's exact accumulator, carry, X,
+  // Y, and scratch-RAM behavior. Guard the helper as strictly as the callers.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:STA:zp:0x5
+    #|I:LDA:zp:0x7
+    #|I:CMP:zp:0x6
+    #|IF:BCC
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:AND:imm:0x7
+    #|I:CPY:imm:0x1
+    #|IF:BCC
+    #|I:ADC:zp:0x5
+    #|END_IF
+    #|I:TAX:imp
+    #|END_IF
+    #|
+  )
+}
+
+fn has_reviewed_divide_pdiff(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_divide_pdiff(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
 fn has_reviewed_read_port_bits(low : @lower.AsmLowering) -> Bool {
   for subroutine in low.flat_subroutines {
     if is_read_port_bits(subroutine) {
@@ -1334,6 +1448,168 @@ fn Emitter::emit_read_joypads(self : Emitter) -> Unit {
   self.emit("}\n")
 }
 
+fn Emitter::emit_get_x_offscreen_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetXOffscreenBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed table-driven horizontal offscreen specialization; guarded by exact lowered structures.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit(
+    "const uint8_t object_pixel_address = (uint8_t)(SprObject_X_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t object_page_address = (uint8_t)(SprObject_PageLoc + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const defaults = &data[DefaultXOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const bit_table = &data[XOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t bits;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];")
+  self.emit("const uint8_t object_pixel = ram[object_pixel_address];")
+  self.emit("const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_page;")
+  self.emit("uint8_t page_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_page = ram[object_page_address];")
+  self.emit(
+    "page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = defaults[side];")
+  self.emit("if ((page_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = defaults[side + 1u];")
+  self.emit("if (page_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x38u;")
+  self.emit("ram[0x5] = 0x08u;")
+  self.emit("if (pixel_diff < 0x38u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("bits = bit_table[table_index];")
+  self.emit("if (bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = bits;")
+  self.emit("x = object_index;")
+  self.emit("y = side;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = bits != 0u ? bits : side;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_get_y_offscreen_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetYOffscreenBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed table-driven vertical offscreen specialization; guarded by exact lowered structures.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit(
+    "const uint8_t object_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t object_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const edge_pixels = &data[HighPosUnitData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const defaults = &data[DefaultYOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const bit_table = &data[YOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t bits;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = edge_pixels[side];")
+  self.emit("const uint8_t object_pixel = ram[object_pixel_address];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_high;")
+  self.emit("uint8_t high_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_high = ram[object_high_address];")
+  self.emit(
+    "high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = defaults[side];")
+  self.emit("if ((high_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = defaults[side + 1u];")
+  self.emit("if (high_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x20u;")
+  self.emit("ram[0x5] = 0x04u;")
+  self.emit("if (pixel_diff < 0x20u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("bits = bit_table[table_index];")
+  self.emit("if (bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("a = bits;")
+  self.emit("x = object_index;")
+  self.emit("y = side;")
+  self.emit("carry_flag = true;")
+  self.emit("nz_value = bits != 0u ? bits : side;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
 ///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
   if is_spr_object_collision_core(subroutine) {
@@ -1370,6 +1646,16 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
 
   if is_read_port_bits(subroutine) {
     self.emit_read_port_bits()
+    return
+  }
+
+  if is_get_x_offscreen_bits(subroutine) && has_reviewed_divide_pdiff(low) {
+    self.emit_get_x_offscreen_bits()
+    return
+  }
+
+  if is_get_y_offscreen_bits(subroutine) && has_reviewed_divide_pdiff(low) {
+    self.emit_get_y_offscreen_bits()
     return
   }
 
