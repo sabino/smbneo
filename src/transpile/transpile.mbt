@@ -463,7 +463,577 @@ fn Emitter::emit_item(self: Emitter, item: @lower.AsmItem, low: @lower.AsmLoweri
     }
 }
 
+fn addressing_mode_structure(mode : @lower.AsmAddressingMode) -> String {
+  match mode {
+    Accumulator => "acc"
+    Implied => "imp"
+    Immediate(expr) => "imm:\{show_expr(expr)}"
+    Relative(expr) => "rel:\{show_expr(expr)}"
+    ZeroPage(expr) => "zp:\{show_expr(expr)}"
+    ZeroPageX(expr) => "zpx:\{show_expr(expr)}"
+    ZeroPageY(expr) => "zpy:\{show_expr(expr)}"
+    Absolute(expr) => "abs:\{show_expr(expr)}"
+    AbsoluteX(expr) => "absx:\{show_expr(expr)}"
+    AbsoluteY(expr) => "absy:\{show_expr(expr)}"
+    Indirect(expr) => "ind:\{show_expr(expr)}"
+    IndexedIndirect(expr) => "indx:\{show_expr(expr)}"
+    IndirectIndexed(expr) => "indy:\{show_expr(expr)}"
+  }
+}
+
+///|
+fn append_flat_items_structure(
+  structure : StringBuilder,
+  items : Array[@lower.AsmItem],
+) -> Unit {
+  for item in items {
+    match item {
+      Label(name) => structure.write_string("L:\{name}\n")
+      Inst(op~, mode~, ..) =>
+        structure.write_string(
+          "I:\{op.to_string()}:\{addressing_mode_structure(mode)}\n",
+        )
+      JumpEngine(..) => structure.write_string("JUMP_ENGINE\n")
+      If(cond~, then~, otherwise~, comment=_) => {
+        structure.write_string("IF:\{cond.to_string()}\n")
+        append_flat_items_structure(structure, then)
+        match otherwise {
+          Some(otherwise) => {
+            structure.write_string("ELSE\n")
+            append_flat_items_structure(structure, otherwise)
+          }
+          None => ()
+        }
+        structure.write_string("END_IF\n")
+      }
+      Comment(_) => ()
+    }
+  }
+}
+
+fn flat_subroutine_structure(items : Array[@lower.AsmItem]) -> String {
+  let structure = StringBuilder::new()
+
+  append_flat_items_structure(structure, items)
+  structure.to_string()
+}
+
+///|
+fn is_spr_object_collision_core(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "SprObjectCollisionCore" {
+    return false
+  }
+
+  // This is an allowlist, not a name-only replacement. Comments may change,
+  // but every executable instruction, addressing mode, and internal label
+  // must still match the reviewed leaf routine. A source change therefore
+  // falls back to the ordinary instruction-by-instruction emitter.
+  flat_subroutine_structure(subroutine.items) ==
+  (
+    #|L:SprObjectCollisionCore
+    #|I:STY:zp:0x6
+    #|I:LDA:imm:0x1
+    #|I:STA:zp:0x7
+    #|L:CollisionCoreLoop
+    #|I:LDA:absy:BoundingBox_UL_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:FirstBoxGreater
+    #|I:CMP:absx:BoundingBox_LR_Corner
+    #|I:BCC:rel:SecondBoxVerticalChk
+    #|I:BEQ:rel:CollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absy:BoundingBox_UL_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:SecondBoxVerticalChk
+    #|I:LDA:absx:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:FirstBoxGreater
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BEQ:rel:CollisionFound
+    #|I:CMP:absx:BoundingBox_LR_Corner
+    #|I:BCC:rel:CollisionFound
+    #|I:BEQ:rel:CollisionFound
+    #|I:CMP:absy:BoundingBox_LR_Corner
+    #|I:BCC:rel:NoCollisionFound
+    #|I:BEQ:rel:NoCollisionFound
+    #|I:LDA:absy:BoundingBox_LR_Corner
+    #|I:CMP:absx:BoundingBox_UL_Corner
+    #|I:BCS:rel:CollisionFound
+    #|L:NoCollisionFound
+    #|I:CLC:imp
+    #|I:LDY:zp:0x6
+    #|I:RTS:imp
+    #|L:CollisionFound
+    #|I:INX:imp
+    #|I:INY:imp
+    #|I:DEC:zp:0x7
+    #|I:BPL:rel:CollisionCoreLoop
+    #|I:SEC:imp
+    #|I:LDY:zp:0x6
+    #|
+  )
+}
+
+///|
+fn is_draw_sprite_object(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "DrawSpriteObject" {
+    return false
+  }
+
+  // Preserve the instruction-by-instruction emitter unless the complete
+  // reviewed sprite-row leaf is still byte-for-byte equivalent in lowered
+  // structure. This includes every flag-producing instruction and label.
+  flat_subroutine_structure(subroutine.items) ==
+  (
+    #|L:DrawSpriteObject
+    #|I:LDA:zp:0x3
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LDA:zp:0x0
+    #|I:BCC:rel:NoHFlip
+    #|I:STA:absy:Sprite_Tilenumber + 4
+    #|I:LDA:zp:0x1
+    #|I:STA:absy:Sprite_Tilenumber
+    #|I:LDA:imm:0x40
+    #|I:BNE:rel:SetHFAt
+    #|L:NoHFlip
+    #|I:STA:absy:Sprite_Tilenumber
+    #|I:LDA:zp:0x1
+    #|I:STA:absy:Sprite_Tilenumber + 4
+    #|I:LDA:imm:0x0
+    #|L:SetHFAt
+    #|I:ORA:zp:0x4
+    #|I:STA:absy:Sprite_Attributes
+    #|I:STA:absy:Sprite_Attributes + 4
+    #|I:LDA:zp:0x2
+    #|I:STA:absy:Sprite_Y_Position
+    #|I:STA:absy:Sprite_Y_Position + 4
+    #|I:LDA:zp:0x5
+    #|I:STA:absy:Sprite_X_Position
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:absy:Sprite_X_Position + 4
+    #|I:LDA:zp:0x2
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:STA:zp:0x2
+    #|I:TYA:imp
+    #|I:CLC:imp
+    #|I:ADC:imm:0x8
+    #|I:TAY:imp
+    #|I:INX:imp
+    #|I:INX:imp
+    #|
+  )
+}
+
+fn is_move_sprites_offscreen_skip(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "MoveSpritesOffscreenSkip" {
+    return false
+  }
+
+  // The source callers enter with Y=$00 or Y=$04. Keep the modulo-256 loop
+  // itself exact so any other multiple-of-four entry retains its boundaries.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0xf8
+    #|L:SprInitLoop
+    #|I:STA:absy:Sprite_Y_Position
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:INY:imp
+    #|I:BNE:rel:SprInitLoop
+    #|
+  )
+}
+
+fn is_read_port_bits(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "ReadPortBits" {
+    return false
+  }
+
+  // This fingerprints the serial reads, scratch/stack effects, controller
+  // debounce branch, and early return as one reviewed unit. Structured
+  // control flow is expanded recursively by flat_subroutine_structure.
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDY:imm:0x8
+    #|L:PortLoop
+    #|I:PHA:imp
+    #|I:LDA:absx:JOYPAD_PORT
+    #|I:STA:zp:0x0
+    #|I:LSR:acc
+    #|I:ORA:zp:0x0
+    #|I:LSR:acc
+    #|I:PLA:imp
+    #|I:ROL:acc
+    #|I:DEY:imp
+    #|I:BNE:rel:PortLoop
+    #|I:STA:absx:SavedJoypadBits
+    #|I:PHA:imp
+    #|I:AND:imm:0b00110000
+    #|I:AND:absx:JoypadBitMask
+    #|IF:BNE
+    #|I:PLA:imp
+    #|I:AND:imm:0b11001111
+    #|I:STA:absx:SavedJoypadBits
+    #|I:RTS:imp
+    #|END_IF
+    #|I:PLA:imp
+    #|I:STA:absx:JoypadBitMask
+    #|
+  )
+}
+
+fn is_read_joypads(subroutine : @lower.AsmFlatSubroutine) -> Bool {
+  if subroutine.name != "ReadJoypads" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:LDA:imm:0x1
+    #|I:STA:abs:JOYPAD_PORT
+    #|I:LSR:acc
+    #|I:TAX:imp
+    #|I:STA:abs:JOYPAD_PORT
+    #|I:JSR:abs:ReadPortBits
+    #|I:INX:imp
+    #|I:JSR:abs:ReadPortBits
+    #|
+  )
+}
+
+fn has_reviewed_read_port_bits(low : @lower.AsmLowering) -> Bool {
+  for subroutine in low.flat_subroutines {
+    if is_read_port_bits(subroutine) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn Emitter::emit_spr_object_collision_core(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void SprObjectCollisionCore(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed leaf specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("uint8_t local_a = 0x1u;")
+  self.emit("uint8_t local_x = x;")
+  self.emit("uint8_t local_y = y;")
+  self.emit("const uint8_t saved_y = local_y;")
+  self.emit("uint8_t local_operand;")
+  self.emit("bool local_carry;")
+  self.emit("ram[0x6] = saved_y;")
+  self.emit("ram[0x7] = local_a;")
+  self.indentation = 0
+  self.emit("SprCollisionCoreLoop:")
+  self.indentation = 1
+  self.emit("local_a = ram[BoundingBox_UL_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFirstBoxGreater; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionSecondBoxVerticalChk; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_y];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionSecondBoxVerticalChk:")
+  self.indentation = 1
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionFirstBoxGreater:")
+  self.indentation = 1
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionFound; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionFound; }")
+  self.emit("local_operand = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (!local_carry) { goto SprCollisionNoCollision; }")
+  self.emit("if (local_a == local_operand) { goto SprCollisionNoCollision; }")
+  self.emit("local_a = ram[BoundingBox_LR_Corner + local_y];")
+  self.emit("local_operand = ram[BoundingBox_UL_Corner + local_x];")
+  self.emit("local_carry = local_a >= local_operand;")
+  self.emit("if (local_carry) { goto SprCollisionFound; }")
+  self.indentation = 0
+  self.emit("SprCollisionNoCollision:")
+  self.indentation = 1
+  self.emit("local_carry = false;")
+  self.emit("goto SprCollisionReturn;")
+  self.indentation = 0
+  self.emit("SprCollisionFound:")
+  self.indentation = 1
+  self.emit("local_x = (uint8_t)(local_x + 1u);")
+  self.emit("local_y = (uint8_t)(local_y + 1u);")
+  self.emit("ram[0x7] = (uint8_t)(ram[0x7] - 1u);")
+  self.emit("if ((ram[0x7] & 0x80u) == 0u) { goto SprCollisionCoreLoop; }")
+  self.emit("local_carry = true;")
+  self.indentation = 0
+  self.emit("SprCollisionReturn:")
+  self.indentation = 1
+  self.emit("a = local_a;")
+  self.emit("x = local_x;")
+  self.emit("y = saved_y;")
+  self.emit("carry_flag = local_carry;")
+  self.emit("nz_value = y;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
+fn Emitter::emit_draw_sprite_object(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void DrawSpriteObject(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed sprite-row specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t local_x = x;")
+  self.emit("const uint8_t local_y = y;")
+  self.emit("const uint16_t right_sprite = (uint16_t)local_y + 4u;")
+  self.emit("const bool horizontal_flip = (ram[0x3] & 0x02u) != 0u;")
+  self.emit("const uint8_t left_tile = horizontal_flip ? ram[0x1] : ram[0x0];")
+  self.emit("const uint8_t right_tile = horizontal_flip ? ram[0x0] : ram[0x1];")
+  self.emit(
+    "const uint8_t attributes = (uint8_t)(ram[0x4] | (horizontal_flip ? 0x40u : 0x00u));",
+  )
+  self.emit("const uint8_t row_y = ram[0x2];")
+  self.emit("const uint8_t row_x = ram[0x5];")
+  self.emit("const uint16_t next_y = (uint16_t)local_y + 8u;")
+  self.emit("ram[Sprite_Tilenumber + local_y] = left_tile;")
+  self.emit("ram[Sprite_Tilenumber + right_sprite] = right_tile;")
+  self.emit("ram[Sprite_Attributes + local_y] = attributes;")
+  self.emit("ram[Sprite_Attributes + right_sprite] = attributes;")
+  self.emit("ram[Sprite_Y_Position + local_y] = row_y;")
+  self.emit("ram[Sprite_Y_Position + right_sprite] = row_y;")
+  self.emit("ram[Sprite_X_Position + local_y] = row_x;")
+  self.emit("ram[Sprite_X_Position + right_sprite] = (uint8_t)(row_x + 8u);")
+  self.emit("ram[0x2] = (uint8_t)(row_y + 8u);")
+  self.emit("a = (uint8_t)next_y;")
+  self.emit("y = a;")
+  self.emit("carry_flag = next_y > 0xffu;")
+  self.emit("x = (uint8_t)(local_x + 2u);")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_move_sprites_offscreen_skip(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void MoveSpritesOffscreenSkip(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed OAM-clear specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("uint8_t local_y = y;")
+  self.emit("uint8_t *const sprite_y = &ram[Sprite_Y_Position];")
+  self.emit("a = 0xf8u;")
+  self.emit("if (local_y == 0x04u) {")
+  self.indentation += 1
+  // The per-frame caller always enters at $04. Emit its 63 sparse OAM stores
+  // as constants so the target compiler can remove address conversion and
+  // loop branches while the generic exact loop remains available below.
+  let mut sprite_offset = 4
+  while sprite_offset != 0 {
+    self.emit(
+      "sprite_y[\{sprite_offset}u] = 0xf8u;",
+    )
+    sprite_offset = (sprite_offset + 4) & 0xff
+  }
+  self.emit("local_y = 0u;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("do {")
+  self.indentation += 1
+  self.emit("sprite_y[local_y] = 0xf8u;")
+  self.emit("local_y = (uint8_t)(local_y + 4u);")
+  self.indentation -= 1
+  self.emit("} while (local_y != 0u);")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("y = local_y;")
+  self.emit("nz_value = local_y;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_read_port_bits(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void ReadPortBits(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed serial-input specialization; guarded by the exact lowered structure.",
+  )
+  self.emit("const uint8_t initial_a = a;")
+  self.emit("uint8_t serial_value = 0u;")
+  self.emit("uint8_t last_port_bit = 0u;")
+  self.emit("if (x == 0u) {")
+  self.indentation += 1
+  self.emit("const uint8_t port_index = controller1_btn_index;")
+  self.emit("if (port_index > 7u) {")
+  self.indentation += 1
+  self.emit("serial_value = 0xffu;")
+  self.emit("last_port_bit = 1u;")
+  self.indentation -= 1
+  self.emit("} else if (controller1_strobe) {")
+  self.indentation += 1
+  self.emit(
+    "last_port_bit = (uint8_t)((controller1_state >> port_index) & 1u);",
+  )
+  self.emit("serial_value = last_port_bit != 0u ? 0xffu : 0u;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit(
+    "uint8_t reversed = (uint8_t)(controller1_state >> port_index);",
+  )
+  self.emit("reversed = (uint8_t)((reversed >> 4) | (reversed << 4));")
+  self.emit(
+    "reversed = (uint8_t)(((reversed & 0xccu) >> 2) | ((reversed & 0x33u) << 2));",
+  )
+  self.emit(
+    "reversed = (uint8_t)(((reversed & 0xaau) >> 1) | ((reversed & 0x55u) << 1));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(reversed | ((1u << port_index) - 1u));",
+  )
+  self.emit(
+    "last_port_bit = port_index == 0u ? (uint8_t)(controller1_state >> 7) : 1u;",
+  )
+  self.emit("controller1_btn_index = 8u;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = last_port_bit;")
+  self.emit("ram[0x100u + sp] = serial_value;")
+  self.emit("y = 0u;")
+  self.emit("carry_flag = (initial_a & 1u) != 0u;")
+  self.emit("ram[SavedJoypadBits + x] = serial_value;")
+  self.emit(
+    "if ((serial_value & 0x30u & ram[JoypadBitMask + x]) != 0u) {",
+  )
+  self.indentation += 1
+  self.emit("a = (uint8_t)(serial_value & 0xcfu);")
+  self.emit("ram[SavedJoypadBits + x] = a;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("a = serial_value;")
+  self.emit("ram[JoypadBitMask + x] = serial_value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("nz_value = a;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+fn Emitter::emit_read_joypads(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void ReadJoypads(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed whole-read specialization; requires the exact ReadPortBits shape.",
+  )
+  self.emit("uint8_t serial_value = controller1_state;")
+  self.emit(
+    "serial_value = (uint8_t)((serial_value >> 4) | (serial_value << 4));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(((serial_value & 0xccu) >> 2) | ((serial_value & 0x33u) << 2));",
+  )
+  self.emit(
+    "serial_value = (uint8_t)(((serial_value & 0xaau) >> 1) | ((serial_value & 0x55u) << 1));",
+  )
+  self.emit("controller1_strobe = false;")
+  self.emit("controller1_btn_index = 8u;")
+  self.emit("ram[SavedJoypadBits] = serial_value;")
+  self.emit(
+    "if ((serial_value & 0x30u & ram[JoypadBitMask]) != 0u) {",
+  )
+  self.indentation += 1
+  self.emit("serial_value = (uint8_t)(serial_value & 0xcfu);")
+  self.emit("ram[SavedJoypadBits] = serial_value;")
+  self.indentation -= 1
+  self.emit("} else {")
+  self.indentation += 1
+  self.emit("ram[JoypadBitMask] = serial_value;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = 0u;")
+  self.emit("ram[0x100u + sp] = 0u;")
+  self.emit("ram[SavedJoypadBits + 1u] = 0u;")
+  self.emit("ram[JoypadBitMask + 1u] = 0u;")
+  self.emit("a = 0u;")
+  self.emit("x = 1u;")
+  self.emit("y = 0u;")
+  self.emit("carry_flag = (serial_value & 1u) != 0u;")
+  self.emit("nz_value = 0u;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
+///|
 fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubroutine, low: @lower.AsmLowering) -> Unit {
+  if is_spr_object_collision_core(subroutine) {
+    self.emit_spr_object_collision_core()
+    return
+  }
+
+  if is_draw_sprite_object(subroutine) {
+    self.emit_draw_sprite_object()
+    return
+  }
+
+  if is_move_sprites_offscreen_skip(subroutine) {
+    self.emit_move_sprites_offscreen_skip()
+    return
+  }
+
+  if is_read_joypads(subroutine) && has_reviewed_read_port_bits(low) {
+    self.emit_read_joypads()
+    return
+  }
+
+  if is_read_port_bits(subroutine) {
+    self.emit_read_port_bits()
+    return
+  }
+
   self.indentation = 0
   self.emit("void \{rename_label(subroutine.name)}(void) {")
   self.indentation = 1

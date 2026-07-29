@@ -22,6 +22,10 @@ REPLAY_GATE_TEST := $(BUILD)/test_neogeo_replay_gate
 REPLAY_TIMING_TEST := $(BUILD)/test_neogeo_replay_timing
 REPLAY_CHECKPOINT_TEST := $(BUILD)/test_neogeo_replay_checkpoint
 JUMP_ENGINE_TEST := $(BUILD)/test_jump_engine_dispatch
+COLLISION_CORE_TEST := $(BUILD)/test_collision_core
+DRAW_SPRITE_OBJECT_TEST := $(BUILD)/test_draw_sprite_object
+MOVE_SPRITES_OFFSCREEN_TEST := $(BUILD)/test_move_sprites_offscreen
+READ_PORT_BITS_TEST := $(BUILD)/test_read_port_bits
 ROM_FALLTHROUGH_TEST := $(BUILD)/test_rom_fallthrough_data
 INPUT_POLICY_TEST := $(BUILD)/test_neogeo_input_policy
 APU_BRIDGE_TEST := $(BUILD)/test_neogeo_apu_bridge
@@ -329,6 +333,90 @@ $(JUMP_ENGINE_TEST): \
 		$(ROOT)/codegen/lib/ppu.c \
 		apu_null.c -o $@
 
+$(COLLISION_CORE_TEST): \
+		$(ROOT)/tools/test_collision_core.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_collision_core.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(DRAW_SPRITE_OBJECT_TEST): \
+		$(ROOT)/tools/test_draw_sprite_object.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_draw_sprite_object.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(MOVE_SPRITES_OFFSCREEN_TEST): \
+		$(ROOT)/tools/test_move_sprites_offscreen.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_move_sprites_offscreen.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
+$(READ_PORT_BITS_TEST): \
+		$(ROOT)/tools/test_read_port_bits.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		$(ROOT)/codegen/lib/nes_palette_rgb.inc \
+		apu_null.c | $(BUILD)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-Wno-unused-parameter -Wno-unused-variable \
+		-Wno-unused-function \
+		-I$(ROOT)/codegen/lib \
+		$(ROOT)/tools/test_read_port_bits.c \
+		$(ROOT)/codegen/lib/instructions.c \
+		$(ROOT)/codegen/lib/code.c \
+		$(ROOT)/codegen/lib/data.c \
+		$(ROOT)/codegen/lib/cpu.c \
+		$(ROOT)/codegen/lib/ppu.c \
+		apu_null.c -o $@
+
 $(ROM_FALLTHROUGH_TEST): \
 		$(ROOT)/tools/test_rom_fallthrough_data.c \
 		$(ROOT)/codegen/lib/data.c \
@@ -397,7 +485,9 @@ $(VBLANK_BUDGET_TEST): \
 test: \
 		$(PPU_STATE_TEST) $(REPLAY_GATE_TEST) \
 		$(REPLAY_TIMING_TEST) $(REPLAY_CHECKPOINT_TEST) \
-		$(JUMP_ENGINE_TEST) \
+		$(JUMP_ENGINE_TEST) $(COLLISION_CORE_TEST) \
+		$(DRAW_SPRITE_OBJECT_TEST) $(MOVE_SPRITES_OFFSCREEN_TEST) \
+		$(READ_PORT_BITS_TEST) \
 		$(ROM_FALLTHROUGH_TEST) $(INPUT_POLICY_TEST) \
 		$(APU_BRIDGE_TEST) $(AUDIO_PACKET_TEST) \
 		$(AUDIO_CADENCE_TEST) $(OAM_VISIBILITY_TEST) $(OAM_TILES_TEST) \
@@ -409,6 +499,10 @@ test: \
 	$(REPLAY_TIMING_TEST)
 	$(REPLAY_CHECKPOINT_TEST)
 	$(JUMP_ENGINE_TEST)
+	$(COLLISION_CORE_TEST)
+	$(DRAW_SPRITE_OBJECT_TEST)
+	$(MOVE_SPRITES_OFFSCREEN_TEST)
+	$(READ_PORT_BITS_TEST)
 	$(ROM_FALLTHROUGH_TEST)
 	$(INPUT_POLICY_TEST)
 	$(APU_BRIDGE_TEST)

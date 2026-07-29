@@ -1236,16 +1236,83 @@ void MoveSpritesOffscreen(void) {
 }
 
 void MoveSpritesOffscreenSkip(void) {
-  lda_imm(0xf8); // off the screen
-  
-SprInitLoop:
-  ram[Sprite_Y_Position + y] = a; // write 248 into OAM data's Y coordinate
-  iny(); // which will move it off the screen
-  iny();
-  iny();
-  iny();
-  if (!zero_flag) { goto SprInitLoop; }
-  // -------------------------------------------------------------------------------------
+  // Reviewed OAM-clear specialization; guarded by the exact lowered structure.
+  uint8_t local_y = y;
+  uint8_t *const sprite_y = &ram[Sprite_Y_Position];
+  a = 0xf8u;
+  if (local_y == 0x04u) {
+    sprite_y[4u] = 0xf8u;
+    sprite_y[8u] = 0xf8u;
+    sprite_y[12u] = 0xf8u;
+    sprite_y[16u] = 0xf8u;
+    sprite_y[20u] = 0xf8u;
+    sprite_y[24u] = 0xf8u;
+    sprite_y[28u] = 0xf8u;
+    sprite_y[32u] = 0xf8u;
+    sprite_y[36u] = 0xf8u;
+    sprite_y[40u] = 0xf8u;
+    sprite_y[44u] = 0xf8u;
+    sprite_y[48u] = 0xf8u;
+    sprite_y[52u] = 0xf8u;
+    sprite_y[56u] = 0xf8u;
+    sprite_y[60u] = 0xf8u;
+    sprite_y[64u] = 0xf8u;
+    sprite_y[68u] = 0xf8u;
+    sprite_y[72u] = 0xf8u;
+    sprite_y[76u] = 0xf8u;
+    sprite_y[80u] = 0xf8u;
+    sprite_y[84u] = 0xf8u;
+    sprite_y[88u] = 0xf8u;
+    sprite_y[92u] = 0xf8u;
+    sprite_y[96u] = 0xf8u;
+    sprite_y[100u] = 0xf8u;
+    sprite_y[104u] = 0xf8u;
+    sprite_y[108u] = 0xf8u;
+    sprite_y[112u] = 0xf8u;
+    sprite_y[116u] = 0xf8u;
+    sprite_y[120u] = 0xf8u;
+    sprite_y[124u] = 0xf8u;
+    sprite_y[128u] = 0xf8u;
+    sprite_y[132u] = 0xf8u;
+    sprite_y[136u] = 0xf8u;
+    sprite_y[140u] = 0xf8u;
+    sprite_y[144u] = 0xf8u;
+    sprite_y[148u] = 0xf8u;
+    sprite_y[152u] = 0xf8u;
+    sprite_y[156u] = 0xf8u;
+    sprite_y[160u] = 0xf8u;
+    sprite_y[164u] = 0xf8u;
+    sprite_y[168u] = 0xf8u;
+    sprite_y[172u] = 0xf8u;
+    sprite_y[176u] = 0xf8u;
+    sprite_y[180u] = 0xf8u;
+    sprite_y[184u] = 0xf8u;
+    sprite_y[188u] = 0xf8u;
+    sprite_y[192u] = 0xf8u;
+    sprite_y[196u] = 0xf8u;
+    sprite_y[200u] = 0xf8u;
+    sprite_y[204u] = 0xf8u;
+    sprite_y[208u] = 0xf8u;
+    sprite_y[212u] = 0xf8u;
+    sprite_y[216u] = 0xf8u;
+    sprite_y[220u] = 0xf8u;
+    sprite_y[224u] = 0xf8u;
+    sprite_y[228u] = 0xf8u;
+    sprite_y[232u] = 0xf8u;
+    sprite_y[236u] = 0xf8u;
+    sprite_y[240u] = 0xf8u;
+    sprite_y[244u] = 0xf8u;
+    sprite_y[248u] = 0xf8u;
+    sprite_y[252u] = 0xf8u;
+    local_y = 0u;
+  } else {
+    do {
+      sprite_y[local_y] = 0xf8u;
+      local_y = (uint8_t)(local_y + 4u);
+    } while (local_y != 0u);
+  }
+  y = local_y;
+  nz_value = local_y;
 }
 
 void GoContinue(void) {
@@ -2151,47 +2218,67 @@ InitATLoop:
 }
 
 void ReadJoypads(void) {
-  lda_imm(0x1); // reset and clear strobe of joypad ports
-  write_joypad1(a);
-  lsr_acc();
-  tax(); // start with joypad 1's port
-  write_joypad1(a);
-  ReadPortBits();
-  inx(); // increment for joypad 2's port
-  ReadPortBits();
+  // Reviewed whole-read specialization; requires the exact ReadPortBits shape.
+  uint8_t serial_value = controller1_state;
+  serial_value = (uint8_t)((serial_value >> 4) | (serial_value << 4));
+  serial_value = (uint8_t)(((serial_value & 0xccu) >> 2) | ((serial_value & 0x33u) << 2));
+  serial_value = (uint8_t)(((serial_value & 0xaau) >> 1) | ((serial_value & 0x55u) << 1));
+  controller1_strobe = false;
+  controller1_btn_index = 8u;
+  ram[SavedJoypadBits] = serial_value;
+  if ((serial_value & 0x30u & ram[JoypadBitMask]) != 0u) {
+    serial_value = (uint8_t)(serial_value & 0xcfu);
+    ram[SavedJoypadBits] = serial_value;
+  } else {
+    ram[JoypadBitMask] = serial_value;
+  }
+  ram[0x0] = 0u;
+  ram[0x100u + sp] = 0u;
+  ram[SavedJoypadBits + 1u] = 0u;
+  ram[JoypadBitMask + 1u] = 0u;
+  a = 0u;
+  x = 1u;
+  y = 0u;
+  carry_flag = (serial_value & 1u) != 0u;
+  nz_value = 0u;
 }
 
 void ReadPortBits(void) {
-  ldy_imm(0x8);
-  
-PortLoop:
-  pha(); // push previous bit onto stack
-  lda_absx(JOYPAD_PORT); // read current bit on joypad port
-  ram[0x0] = a; // check d1 and d0 of port output
-  lsr_acc(); // this is necessary on the old
-  ora_zp(0x0); // famicom systems in japan
-  lsr_acc();
-  pla(); // read bits from stack
-  rol_acc(); // rotate bit from carry flag
-  dey();
-  if (!zero_flag) { goto PortLoop; } // count down bits left
-  ram[SavedJoypadBits + x] = a; // save controller status here always
-  pha();
-  and_imm(0b00110000); // check for select or start
-  and_absx(JoypadBitMask); // if neither saved state nor current state
-  // have any of these two set, branch
-  if (!zero_flag) {
-    pla();
-    and_imm(0b11001111); // otherwise store without select
-    ram[SavedJoypadBits + x] = a; // or start bits and leave
-    return;
+  // Reviewed serial-input specialization; guarded by the exact lowered structure.
+  const uint8_t initial_a = a;
+  uint8_t serial_value = 0u;
+  uint8_t last_port_bit = 0u;
+  if (x == 0u) {
+    const uint8_t port_index = controller1_btn_index;
+    if (port_index > 7u) {
+      serial_value = 0xffu;
+      last_port_bit = 1u;
+    } else if (controller1_strobe) {
+      last_port_bit = (uint8_t)((controller1_state >> port_index) & 1u);
+      serial_value = last_port_bit != 0u ? 0xffu : 0u;
+    } else {
+      uint8_t reversed = (uint8_t)(controller1_state >> port_index);
+      reversed = (uint8_t)((reversed >> 4) | (reversed << 4));
+      reversed = (uint8_t)(((reversed & 0xccu) >> 2) | ((reversed & 0x33u) << 2));
+      reversed = (uint8_t)(((reversed & 0xaau) >> 1) | ((reversed & 0x55u) << 1));
+      serial_value = (uint8_t)(reversed | ((1u << port_index) - 1u));
+      last_port_bit = port_index == 0u ? (uint8_t)(controller1_state >> 7) : 1u;
+      controller1_btn_index = 8u;
+    }
   }
-  // Save8Bits:
-  pla();
-  ram[JoypadBitMask + x] = a; // save with all bits in another place and leave
-  // -------------------------------------------------------------------------------------
-  // $00 - vram buffer address table low
-  // $01 - vram buffer address table high
+  ram[0x0] = last_port_bit;
+  ram[0x100u + sp] = serial_value;
+  y = 0u;
+  carry_flag = (initial_a & 1u) != 0u;
+  ram[SavedJoypadBits + x] = serial_value;
+  if ((serial_value & 0x30u & ram[JoypadBitMask + x]) != 0u) {
+    a = (uint8_t)(serial_value & 0xcfu);
+    ram[SavedJoypadBits + x] = a;
+  } else {
+    a = serial_value;
+    ram[JoypadBitMask + x] = serial_value;
+  }
+  nz_value = a;
 }
 
 void WriteBufferToScreen(void) {
@@ -13174,66 +13261,73 @@ void PlayerCollisionCore(void) {
 }
 
 void SprObjectCollisionCore(void) {
-  ram[0x6] = y; // save contents of Y here
-  lda_imm(0x1);
-  ram[0x7] = a; // save value 1 here as counter, compare horizontal coordinates first
-  
-CollisionCoreLoop:
-  lda_absy(BoundingBox_UL_Corner); // compare left/top coordinates
-  cmp_absx(BoundingBox_UL_Corner); // of first and second objects' bounding boxes
-  if (carry_flag) { goto FirstBoxGreater; } // if first left/top => second, branch
-  cmp_absx(BoundingBox_LR_Corner); // otherwise compare to right/bottom of second
-  if (!carry_flag) { goto SecondBoxVerticalChk; } // if first left/top < second right/bottom, branch elsewhere
-  if (zero_flag) { goto CollisionFound; } // if somehow equal, collision, thus branch
-  lda_absy(BoundingBox_LR_Corner); // if somehow greater, check to see if bottom of
-  cmp_absy(BoundingBox_UL_Corner); // first object's bounding box is greater than its top
-  if (!carry_flag) { goto CollisionFound; } // if somehow less, vertical wrap collision, thus branch
-  cmp_absx(BoundingBox_UL_Corner); // otherwise compare bottom of first bounding box to the top
-  if (carry_flag) { goto CollisionFound; } // of second box, and if equal or greater, collision, thus branch
-  ldy_zp(0x6); // otherwise return with carry clear and Y = $0006
-  return; // note horizontal wrapping never occurs
-  
-SecondBoxVerticalChk:
-  lda_absx(BoundingBox_LR_Corner); // check to see if the vertical bottom of the box
-  cmp_absx(BoundingBox_UL_Corner); // is greater than the vertical top
-  if (!carry_flag) { goto CollisionFound; } // if somehow less, vertical wrap collision, thus branch
-  lda_absy(BoundingBox_LR_Corner); // otherwise compare horizontal right or vertical bottom
-  cmp_absx(BoundingBox_UL_Corner); // of first box with horizontal left or vertical top of second box
-  if (carry_flag) { goto CollisionFound; } // if equal or greater, collision, thus branch
-  ldy_zp(0x6); // otherwise return with carry clear and Y = $0006
-  return;
-  
-FirstBoxGreater:
-  cmp_absx(BoundingBox_UL_Corner); // compare first and second box horizontal left/vertical top again
-  if (zero_flag) { goto CollisionFound; } // if first coordinate = second, collision, thus branch
-  cmp_absx(BoundingBox_LR_Corner); // if not, compare with second object right or bottom edge
-  if (!carry_flag) { goto CollisionFound; } // if left/top of first less than or equal to right/bottom of second
-  if (zero_flag) { goto CollisionFound; } // then collision, thus branch
-  cmp_absy(BoundingBox_LR_Corner); // otherwise check to see if top of first box is greater than bottom
-  if (!carry_flag) { goto NoCollisionFound; } // if less than or equal, no collision, branch to end
-  if (zero_flag) { goto NoCollisionFound; }
-  lda_absy(BoundingBox_LR_Corner); // otherwise compare bottom of first to top of second
-  cmp_absx(BoundingBox_UL_Corner); // if bottom of first is greater than top of second, vertical wrap
-  if (carry_flag) { goto CollisionFound; } // collision, and branch, otherwise, proceed onwards here
-  
-NoCollisionFound:
-  carry_flag = false; // clear carry, then load value set earlier, then leave
-  ldy_zp(0x6); // like previous ones, if horizontal coordinates do not collide, we do
-  return; // not bother checking vertical ones, because what's the point?
-  
-CollisionFound:
-  inx(); // increment offsets on both objects to check
-  iny(); // the vertical coordinates
-  dec_zp(0x7); // decrement counter to reflect this
-  if (!neg_flag) { goto CollisionCoreLoop; } // if counter not expired, branch to loop
-  carry_flag = true; // otherwise we already did both sets, therefore collision, so set carry
-  ldy_zp(0x6); // load original value set here earlier, then leave
-  // -------------------------------------------------------------------------------------
-  // $02 - modified y coordinate
-  // $03 - stores metatile involved in block buffer collisions
-  // $04 - comes in with offset to block buffer adder data, goes out with low nybble x/y coordinate
-  // $05 - modified x coordinate
-  // $06-$07 - block buffer address
+  // Reviewed leaf specialization; guarded by the exact lowered structure.
+  uint8_t local_a = 0x1u;
+  uint8_t local_x = x;
+  uint8_t local_y = y;
+  const uint8_t saved_y = local_y;
+  uint8_t local_operand;
+  bool local_carry;
+  ram[0x6] = saved_y;
+  ram[0x7] = local_a;
+SprCollisionCoreLoop:
+  local_a = ram[BoundingBox_UL_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFirstBoxGreater; }
+  local_operand = ram[BoundingBox_LR_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionSecondBoxVerticalChk; }
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_y];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+  goto SprCollisionReturn;
+SprCollisionSecondBoxVerticalChk:
+  local_a = ram[BoundingBox_LR_Corner + local_x];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+  goto SprCollisionReturn;
+SprCollisionFirstBoxGreater:
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_LR_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionFound; }
+  if (local_a == local_operand) { goto SprCollisionFound; }
+  local_operand = ram[BoundingBox_LR_Corner + local_y];
+  local_carry = local_a >= local_operand;
+  if (!local_carry) { goto SprCollisionNoCollision; }
+  if (local_a == local_operand) { goto SprCollisionNoCollision; }
+  local_a = ram[BoundingBox_LR_Corner + local_y];
+  local_operand = ram[BoundingBox_UL_Corner + local_x];
+  local_carry = local_a >= local_operand;
+  if (local_carry) { goto SprCollisionFound; }
+SprCollisionNoCollision:
+  local_carry = false;
+  goto SprCollisionReturn;
+SprCollisionFound:
+  local_x = (uint8_t)(local_x + 1u);
+  local_y = (uint8_t)(local_y + 1u);
+  ram[0x7] = (uint8_t)(ram[0x7] - 1u);
+  if ((ram[0x7] & 0x80u) == 0u) { goto SprCollisionCoreLoop; }
+  local_carry = true;
+SprCollisionReturn:
+  a = local_a;
+  x = local_x;
+  y = saved_y;
+  carry_flag = local_carry;
+  nz_value = y;
 }
 
 void BlockBufferChk_FBall(void) {
@@ -14657,49 +14751,31 @@ void DividePDiff(void) {
 }
 
 void DrawSpriteObject(void) {
-  lda_zp(0x3); // get saved flip control bits
-  lsr_acc();
-  lsr_acc(); // move d1 into carry
-  lda_zp(0x0);
-  if (!carry_flag) { goto NoHFlip; } // if d1 not set, branch
-  ram[Sprite_Tilenumber + 4 + y] = a; // store first tile into second sprite
-  lda_zp(0x1); // and second into first sprite
-  ram[Sprite_Tilenumber + y] = a;
-  lda_imm(0x40); // activate horizontal flip OAM attribute
-  if (!zero_flag) { goto SetHFAt; } // and unconditionally branch
-  
-NoHFlip:
-  ram[Sprite_Tilenumber + y] = a; // store first tile into first sprite
-  lda_zp(0x1); // and second into second sprite
-  ram[Sprite_Tilenumber + 4 + y] = a;
-  lda_imm(0x0); // clear bit for horizontal flip
-  
-SetHFAt:
-  ora_zp(0x4); // add other OAM attributes if necessary
-  ram[Sprite_Attributes + y] = a; // store sprite attributes
-  ram[Sprite_Attributes + 4 + y] = a;
-  lda_zp(0x2); // now the y coordinates
-  ram[Sprite_Y_Position + y] = a; // note because they are
-  ram[Sprite_Y_Position + 4 + y] = a; // side by side, they are the same
-  lda_zp(0x5);
-  ram[Sprite_X_Position + y] = a; // store x coordinate, then
-  carry_flag = false; // add 8 pixels and store another to
-  adc_imm(0x8); // put them side by side
-  ram[Sprite_X_Position + 4 + y] = a;
-  lda_zp(0x2); // add eight pixels to the next y
-  carry_flag = false; // coordinate
-  adc_imm(0x8);
-  ram[0x2] = a;
-  tya(); // add eight to the offset in Y to
-  carry_flag = false; // move to the next two sprites
-  adc_imm(0x8);
-  tay();
-  inx(); // increment offset to return it to the
-  inx(); // routine that called this subroutine
-  // -------------------------------------------------------------------------------------
-  // unused space
-  //         .db $ff, $ff, $ff, $ff, $ff, $ff
-  // -------------------------------------------------------------------------------------
+  // Reviewed sprite-row specialization; guarded by the exact lowered structure.
+  const uint8_t local_x = x;
+  const uint8_t local_y = y;
+  const uint16_t right_sprite = (uint16_t)local_y + 4u;
+  const bool horizontal_flip = (ram[0x3] & 0x02u) != 0u;
+  const uint8_t left_tile = horizontal_flip ? ram[0x1] : ram[0x0];
+  const uint8_t right_tile = horizontal_flip ? ram[0x0] : ram[0x1];
+  const uint8_t attributes = (uint8_t)(ram[0x4] | (horizontal_flip ? 0x40u : 0x00u));
+  const uint8_t row_y = ram[0x2];
+  const uint8_t row_x = ram[0x5];
+  const uint16_t next_y = (uint16_t)local_y + 8u;
+  ram[Sprite_Tilenumber + local_y] = left_tile;
+  ram[Sprite_Tilenumber + right_sprite] = right_tile;
+  ram[Sprite_Attributes + local_y] = attributes;
+  ram[Sprite_Attributes + right_sprite] = attributes;
+  ram[Sprite_Y_Position + local_y] = row_y;
+  ram[Sprite_Y_Position + right_sprite] = row_y;
+  ram[Sprite_X_Position + local_y] = row_x;
+  ram[Sprite_X_Position + right_sprite] = (uint8_t)(row_x + 8u);
+  ram[0x2] = (uint8_t)(row_y + 8u);
+  a = (uint8_t)next_y;
+  y = a;
+  carry_flag = next_y > 0xffu;
+  x = (uint8_t)(local_x + 2u);
+  nz_value = x;
 }
 
 void SoundEngine(void) {

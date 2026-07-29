@@ -34,6 +34,8 @@ SMB_CPU_INLINE void write_word(uint16_t addr, uint16_t value);
 
 // controllers
 extern uint8_t controller1_state, controller2_state;
+extern bool controller1_strobe, controller2_strobe;
+extern uint8_t controller1_btn_index, controller2_btn_index;
 SMB_CPU_INLINE void update_controller1(uint8_t state);
 SMB_CPU_INLINE void write_joypad1(uint8_t value);
 SMB_CPU_INLINE void write_joypad2(uint8_t value);
