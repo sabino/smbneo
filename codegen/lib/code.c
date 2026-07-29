@@ -14698,20 +14698,96 @@ void SetOffscrBitsOffset(void) {
 }
 
 void GetOffScreenBitsSet(void) {
-  tya(); // save offscreen bits offset to stack for now
-  pha();
-  RunOffscrBitsSubs();
-  asl_acc(); // move low nybble to high nybble
-  asl_acc();
-  asl_acc();
-  asl_acc();
-  ora_zp(0x0); // mask together with previously saved low nybble
-  ram[0x0] = a; // store both here
-  pla(); // get offscreen bits offset from stack
-  tay();
-  lda_zp(0x0); // get value here and store elsewhere
+  // Reviewed fused offscreen-mask specialization; guarded by exact helper and table shapes.
+  const uint8_t object_index = x;
+  const uint8_t output_offset = y;
+  const uint8_t x_pixel_address = (uint8_t)(SprObject_X_Position + object_index);
+  const uint8_t x_page_address = (uint8_t)(SprObject_PageLoc + object_index);
+  const uint8_t y_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);
+  const uint8_t y_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);
+  const uint8_t *const x_defaults = &data[DefaultXOnscreenOfs - 0x8000u];
+  const uint8_t *const x_bit_table = &data[XOffscreenBitsData - 0x8000u];
+  const uint8_t *const y_edges = &data[HighPosUnitData - 0x8000u];
+  const uint8_t *const y_defaults = &data[DefaultYOnscreenOfs - 0x8000u];
+  const uint8_t *const y_bit_table = &data[YOffscreenBitsData - 0x8000u];
+  uint8_t side = 1u;
+  uint8_t x_bits;
+  uint8_t y_bits;
+  ram[0x100u + sp] = output_offset;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];
+    const uint8_t object_pixel = ram[x_pixel_address];
+    const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_page;
+    uint8_t page_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_page = ram[x_page_address];
+    page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));
+    table_index = x_defaults[side];
+    if ((page_diff & 0x80u) == 0u) {
+      table_index = x_defaults[side + 1u];
+      if (page_diff == 0u) {
+        ram[0x6] = 0x38u;
+        ram[0x5] = 0x08u;
+        if (pixel_diff < 0x38u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));
+        }
+      }
+    }
+    x_bits = x_bit_table[table_index];
+    if (x_bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
+    }
+  }
+  ram[0x0] = (uint8_t)(x_bits >> 4);
+  side = 1u;
+  ram[0x4] = object_index;
+  for (;;) {
+    const uint8_t edge_pixel = y_edges[side];
+    const uint8_t object_pixel = ram[y_pixel_address];
+    const bool pixel_borrow = edge_pixel < object_pixel;
+    const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);
+    uint8_t object_high;
+    uint8_t high_diff;
+    uint8_t table_index;
+    ram[0x7] = pixel_diff;
+    object_high = ram[y_high_address];
+    high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));
+    table_index = y_defaults[side];
+    if ((high_diff & 0x80u) == 0u) {
+      table_index = y_defaults[side + 1u];
+      if (high_diff == 0u) {
+        ram[0x6] = 0x20u;
+        ram[0x5] = 0x04u;
+        if (pixel_diff < 0x20u) {
+          table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));
+        }
+      }
+    }
+    y_bits = y_bit_table[table_index];
+    if (y_bits != 0u) {
+      break;
+    }
+    side = (uint8_t)(side - 1u);
+    if ((side & 0x80u) != 0u) {
+      break;
+    }
+  }
+  ram[0x0] = (uint8_t)((y_bits << 4) | ram[0x0]);
+  y = ram[0x100u + sp];
+  a = ram[0x0];
   ram[SprObject_OffscrBits + y] = a;
-  ldx_zp(ObjectOffset);
+  x = ram[ObjectOffset];
+  carry_flag = (y_bits & 0x10u) != 0u;
+  nz_value = x;
 }
 
 void RunOffscrBitsSubs(void) {

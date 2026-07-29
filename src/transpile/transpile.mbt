@@ -1404,6 +1404,138 @@ fn is_divide_pdiff(subroutine : @lower.AsmFlatSubroutine) -> Bool {
   )
 }
 
+fn is_get_off_screen_bits_set(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "GetOffScreenBitsSet" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:TYA:imp
+    #|I:PHA:imp
+    #|I:JSR:abs:RunOffscrBitsSubs
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ASL:acc
+    #|I:ORA:zp:0x0
+    #|I:STA:zp:0x0
+    #|I:PLA:imp
+    #|I:TAY:imp
+    #|I:LDA:zp:0x0
+    #|I:STA:absy:SprObject_OffscrBits
+    #|I:LDX:zp:ObjectOffset
+    #|
+  )
+}
+
+fn is_run_offscr_bits_subs(
+  subroutine : @lower.AsmFlatSubroutine,
+) -> Bool {
+  if subroutine.name != "RunOffscrBitsSubs" {
+    return false
+  }
+
+  flat_subroutine_structure(subroutine.items) == (
+    #|I:JSR:abs:GetXOffscreenBits
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:LSR:acc
+    #|I:STA:zp:0x0
+    #|I:JSR:abs:GetYOffscreenBits
+    #|
+  )
+}
+
+fn has_reviewed_byte_table(
+  low : @lower.AsmLowering,
+  name : String,
+  size : Int,
+  expected : String,
+) -> Bool {
+  match low.tables_by_label.get(name) {
+    None => false
+    Some(table) => {
+      if table.name != name || table.size != size ||
+        table.storage_size != size {
+        return false
+      }
+
+      let entries : Array[String] = []
+      for line in table.lines {
+        match line {
+          Data(data~, comment=_) =>
+            for entry in data {
+              entries.push(show_expr(entry))
+            }
+          RomFallthrough(..) => return false
+          Comment(_) => ()
+        }
+      }
+      entries.join("|") == expected
+    }
+  }
+}
+
+fn has_reviewed_offscreen_tables(low : @lower.AsmLowering) -> Bool {
+  has_reviewed_byte_table(
+    low,
+    "XOffscreenBitsData",
+    16,
+    "0x7f|0x3f|0x1f|0xf|0x7|0x3|0x1|0x0|" +
+    "0x80|0xc0|0xe0|0xf0|0xf8|0xfc|0xfe|0xff",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "DefaultXOnscreenOfs",
+    3,
+    "0x7|0xf|0x7",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "YOffscreenBitsData",
+    9,
+    "0x0|0x8|0xc|0xe|0xf|0x7|0x3|0x1|0x0",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "DefaultYOnscreenOfs",
+    3,
+    "0x4|0x0|0x4",
+  ) &&
+  has_reviewed_byte_table(
+    low,
+    "HighPosUnitData",
+    2,
+    "0xff|0x0",
+  )
+}
+
+fn has_reviewed_offscreen_mask_dependencies(
+  low : @lower.AsmLowering,
+) -> Bool {
+  let mut has_run = false
+  let mut has_x = false
+  let mut has_y = false
+  let mut has_divide = false
+
+  for subroutine in low.flat_subroutines {
+    if is_run_offscr_bits_subs(subroutine) {
+      has_run = true
+    } else if is_get_x_offscreen_bits(subroutine) {
+      has_x = true
+    } else if is_get_y_offscreen_bits(subroutine) {
+      has_y = true
+    } else if is_divide_pdiff(subroutine) {
+      has_divide = true
+    }
+  }
+  has_run && has_x && has_y && has_divide &&
+  has_reviewed_offscreen_tables(low)
+}
+
 fn has_reviewed_divide_pdiff(low : @lower.AsmLowering) -> Bool {
   for subroutine in low.flat_subroutines {
     if is_divide_pdiff(subroutine) {
@@ -1969,6 +2101,156 @@ fn Emitter::emit_read_joypads(self : Emitter) -> Unit {
   self.emit("}\n")
 }
 
+fn Emitter::emit_get_off_screen_bits_set(self : Emitter) -> Unit {
+  self.indentation = 0
+  self.emit("void GetOffScreenBitsSet(void) {")
+  self.indentation = 1
+  self.emit(
+    "// Reviewed fused offscreen-mask specialization; guarded by exact helper and table shapes.",
+  )
+  self.emit("const uint8_t object_index = x;")
+  self.emit("const uint8_t output_offset = y;")
+  self.emit(
+    "const uint8_t x_pixel_address = (uint8_t)(SprObject_X_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t x_page_address = (uint8_t)(SprObject_PageLoc + object_index);",
+  )
+  self.emit(
+    "const uint8_t y_pixel_address = (uint8_t)(SprObject_Y_Position + object_index);",
+  )
+  self.emit(
+    "const uint8_t y_high_address = (uint8_t)(SprObject_Y_HighPos + object_index);",
+  )
+  self.emit(
+    "const uint8_t *const x_defaults = &data[DefaultXOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const x_bit_table = &data[XOffscreenBitsData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_edges = &data[HighPosUnitData - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_defaults = &data[DefaultYOnscreenOfs - 0x8000u];",
+  )
+  self.emit(
+    "const uint8_t *const y_bit_table = &data[YOffscreenBitsData - 0x8000u];",
+  )
+  self.emit("uint8_t side = 1u;")
+  self.emit("uint8_t x_bits;")
+  self.emit("uint8_t y_bits;")
+  self.emit("ram[0x100u + sp] = output_offset;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = ram[ScreenEdge_X_Pos + side];")
+  self.emit("const uint8_t object_pixel = ram[x_pixel_address];")
+  self.emit("const uint8_t edge_page = ram[ScreenEdge_PageLoc + side];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_page;")
+  self.emit("uint8_t page_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_page = ram[x_page_address];")
+  self.emit(
+    "page_diff = (uint8_t)(edge_page - object_page - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = x_defaults[side];")
+  self.emit("if ((page_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = x_defaults[side + 1u];")
+  self.emit("if (page_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x38u;")
+  self.emit("ram[0x5] = 0x08u;")
+  self.emit("if (pixel_diff < 0x38u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 8u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("x_bits = x_bit_table[table_index];")
+  self.emit("if (x_bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = (uint8_t)(x_bits >> 4);")
+  self.emit("side = 1u;")
+  self.emit("ram[0x4] = object_index;")
+  self.emit("for (;;) {")
+  self.indentation += 1
+  self.emit("const uint8_t edge_pixel = y_edges[side];")
+  self.emit("const uint8_t object_pixel = ram[y_pixel_address];")
+  self.emit("const bool pixel_borrow = edge_pixel < object_pixel;")
+  self.emit("const uint8_t pixel_diff = (uint8_t)(edge_pixel - object_pixel);")
+  self.emit("uint8_t object_high;")
+  self.emit("uint8_t high_diff;")
+  self.emit("uint8_t table_index;")
+  self.emit("ram[0x7] = pixel_diff;")
+  self.emit("object_high = ram[y_high_address];")
+  self.emit(
+    "high_diff = (uint8_t)(1u - object_high - (pixel_borrow ? 1u : 0u));",
+  )
+  self.emit("table_index = y_defaults[side];")
+  self.emit("if ((high_diff & 0x80u) == 0u) {")
+  self.indentation += 1
+  self.emit("table_index = y_defaults[side + 1u];")
+  self.emit("if (high_diff == 0u) {")
+  self.indentation += 1
+  self.emit("ram[0x6] = 0x20u;")
+  self.emit("ram[0x5] = 0x04u;")
+  self.emit("if (pixel_diff < 0x20u) {")
+  self.indentation += 1
+  self.emit(
+    "table_index = (uint8_t)((pixel_diff >> 3) + (side == 0u ? 4u : 0u));",
+  )
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("y_bits = y_bit_table[table_index];")
+  self.emit("if (y_bits != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("side = (uint8_t)(side - 1u);")
+  self.emit("if ((side & 0x80u) != 0u) {")
+  self.indentation += 1
+  self.emit("break;")
+  self.indentation -= 1
+  self.emit("}")
+  self.indentation -= 1
+  self.emit("}")
+  self.emit("ram[0x0] = (uint8_t)((y_bits << 4) | ram[0x0]);")
+  self.emit("y = ram[0x100u + sp];")
+  self.emit("a = ram[0x0];")
+  self.emit("ram[SprObject_OffscrBits + y] = a;")
+  self.emit("x = ram[ObjectOffset];")
+  self.emit("carry_flag = (y_bits & 0x10u) != 0u;")
+  self.emit("nz_value = x;")
+  self.indentation = 0
+  self.emit("}\n")
+}
+
 fn Emitter::emit_get_x_offscreen_bits(self : Emitter) -> Unit {
   self.indentation = 0
   self.emit("void GetXOffscreenBits(void) {")
@@ -2330,12 +2612,22 @@ fn Emitter::emit_flat_subroutine(self: Emitter, subroutine: @lower.AsmFlatSubrou
     return
   }
 
-  if is_get_x_offscreen_bits(subroutine) && has_reviewed_divide_pdiff(low) {
+  if is_get_off_screen_bits_set(subroutine) &&
+    has_reviewed_offscreen_mask_dependencies(low) {
+    self.emit_get_off_screen_bits_set()
+    return
+  }
+
+  if is_get_x_offscreen_bits(subroutine) &&
+    has_reviewed_divide_pdiff(low) &&
+    has_reviewed_offscreen_tables(low) {
     self.emit_get_x_offscreen_bits()
     return
   }
 
-  if is_get_y_offscreen_bits(subroutine) && has_reviewed_divide_pdiff(low) {
+  if is_get_y_offscreen_bits(subroutine) &&
+    has_reviewed_divide_pdiff(low) &&
+    has_reviewed_offscreen_tables(low) {
     self.emit_get_y_offscreen_bits()
     return
   }
