@@ -156,7 +156,8 @@ hidden. The renderer stages its live SCB3 words in work RAM, then hides only
 the old bank's active entries and reveals only the new bank's in-range/live
 entries. SCB2 zoom values are initialized once for all 322 slots. Hidden-bank
 SCB1/SCB4 data is written directly instead of compared against a work-RAM OAM
-cache, and descending same-plane SCB3 runs share one address setup.
+cache. Each live OAM SCB3 word uses an independent address/data pair so every
+8x8 component remains independent on the physical LSPC bus.
 
 The renderer waits for a display interrupt observed after hidden-set
 construction finishes. If construction crosses an earlier VBlank, it waits
@@ -174,12 +175,13 @@ ceiling; larger live changes complete first. The render generation advances
 only after the atomic reveal.
 
 Every LSPC address, data, and modifier write is emitted as an absolute-long
-`move.w` to `$3c0000`, `$3c0002`, or `$3c0004`. The instruction takes 16
-cycles, satisfying the LSPC's minimum 12-cycle spacing without relying on
-optimizer-sensitive address-register loops. Final-ELF verification rejects
-known-pointer indirect stores, direct non-word/odd-address stores, and a
-missing absolute-long register class. The current linked image has 29
-address, 36 data, and 12 modifier writes, all in the required form.
+`move.w` to `$3c0000`, `$3c0002`, or `$3c0004`. Each instruction takes 16
+cycles, satisfying both the LSPC's minimum data-write interval and its
+data-to-new-address interval without relying on optimizer-sensitive
+address-register loops. Final-ELF verification rejects known-pointer indirect
+stores, direct non-word/odd-address stores, and a missing absolute-long
+register class. The current linked image has 30 address, 36 data, and 12
+modifier writes, all in the required form.
 
 The following table belongs to the older, pre-audio, double-background
 renderer milestone ELF (SHA-256
