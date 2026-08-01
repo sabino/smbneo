@@ -991,7 +991,6 @@ static void upload_hud_chunk(void) {
 
 static void hide_sprite_set(uint8_t set) {
     uint8_t i;
-    uint16_t previous_sprite = 0xffffu;
 
     write_vram_mod(1);
     if (active_background[set] != 0u) {
@@ -1007,26 +1006,18 @@ static void hide_sprite_set(uint8_t set) {
     }
     active_background[set] = 0;
 
-    /*
-     * Source OAM order maps consecutive same-plane entries onto descending
-     * hardware slots. A -1 modifier turns each such run into one address load.
-     */
-    write_vram_mod(0xffffu);
+    /* Keep every OAM SCB3 update independent on the physical LSPC bus. */
     for (i = 0; i < active_oam_count[set]; ++i) {
         uint16_t sprite =
             oam_hardware_sprite(set, active_oam[set][i]);
 
-        if (sprite + 1u != previous_sprite) {
-            write_vram_address((uint16_t)(ADDR_SCB3 + sprite));
-        }
+        write_vram_address((uint16_t)(ADDR_SCB3 + sprite));
         write_vram_data(0);
-        previous_sprite = sprite;
     }
 }
 
 static void show_next_sprite_set(uint8_t set) {
     uint8_t i;
-    uint16_t previous_sprite = 0xffffu;
 
     write_vram_mod(1);
     if (next_background_active != 0u) {
@@ -1041,18 +1032,18 @@ static void show_next_sprite_set(uint8_t set) {
         }
     }
 
-    write_vram_mod(0xffffu);
+    /*
+     * Do not auto-decrement through a run of OAM slots here. Giving every
+     * revealed component its own address/data pair keeps a composite sprite
+     * independent of sequential LSPC modifier state.
+     */
     for (i = 0; i < next_oam_count; ++i) {
         uint8_t relative_sprite = next_oam[i];
         uint16_t sprite = oam_hardware_sprite(set, relative_sprite);
 
-        if (sprite + 1u != previous_sprite) {
-            write_vram_address((uint16_t)(ADDR_SCB3 + sprite));
-        }
+        write_vram_address((uint16_t)(ADDR_SCB3 + sprite));
         write_vram_data(next_scb3[relative_sprite]);
-        previous_sprite = sprite;
     }
-    write_vram_mod(1);
 
     active_background[set] = next_background_active;
     active_background_driver_count[set] = next_background_driver_count;
