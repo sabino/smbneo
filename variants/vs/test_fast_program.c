@@ -20,7 +20,15 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     vs_program_reference(&want, 200000);
     vs_program_run(&got, 200000);
     assert(want.pc == 0xffff && want.fault && got.pc == want.pc && got.fault);
-    assert(want.a == got.a && want.x == got.x && want.y == got.y && want.s == got.s && want.p == got.p);
+    if (!(want.a == got.a && want.x == got.x && want.y == got.y && want.s == got.s && want.p == got.p)) {
+        fprintf(stderr, "entry=%04x seed=%u/%u/%u want=%02x,%02x,%02x,%02x,%02x got=%02x,%02x,%02x,%02x,%02x\n",
+                entry, x, y, pattern, want.a, want.x, want.y, want.s, want.p,
+                got.a, got.x, got.y, got.s, got.p);
+        for (unsigned i = 1758; i < 1790; ++i)
+            if (reference.ram[i] != optimized.ram[i])
+                fprintf(stderr, "ram[%u] want=%02x got=%02x\n", i, reference.ram[i], optimized.ram[i]);
+        assert(0);
+    }
     assert(want.idle == got.idle && want.in_nmi == got.in_nmi && want.yielded == got.yielded);
     assert(memcmp(reference.ram, optimized.ram, sizeof(reference.ram)) == 0);
     assert(memcmp(reference.extra_ram, optimized.extra_ram, sizeof(reference.extra_ram)) == 0);
@@ -36,5 +44,7 @@ int main(int argc, char **argv) {
         compare(data, 0xf1e7, x, y, (x * 17 + y * 31) & 255);
     for (unsigned y = 0; y < 256; y += 4) for (unsigned status = 0; status < 256; ++status)
         compare(data, 0x8275, 0, y, status);
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0x8212, seed >> 8, seed, seed * 29);
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }

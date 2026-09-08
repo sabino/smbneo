@@ -299,6 +299,24 @@ def semantic_fast_paths(code, named_entries):
         digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
         if digest == '52b0d0b34ee0ccfe79674ddafbef6eabc9d9a516134a5950be611f1c5639e870':
             result[start] = ('vs_fast_render_pair(c);', a - 1)
+    start = named_entries.get('tbljmp')
+    if start is not None:
+        a, body = start, []
+        while a in code and len(body) < 32:
+            ins = code[a]; body.append(ins); a += LENGTH[ins[1]]
+            if ins == ('JMP', 'ind', 6): break
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if digest == 'd66523143c86f5df4b330afe7f2cad7b449de9b252846e819b446eeef547e74d':
+            result[start] = ('vs_fast_table_jump(c); return;', None)
+    start = named_entries.get('nmi_oam_shuffle')
+    if start is not None:
+        a, body = start, []
+        while a in code and len(body) < 64:
+            ins = code[a]; body.append(ins); a += LENGTH[ins[1]]
+            if ins[0] == 'RTS': break
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if digest == 'f94b014c05ed7c56da8bd0e38168cbbb2267af4778a0cd545e8f0cf69918866f':
+            result[start] = ('vs_fast_nmi_oam_shuffle(c);', a - 1)
     return result
 
 
@@ -317,7 +335,7 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) 
                 name = re.search(r'\bname=("[^"]*")', line)
                 if name: named_entries[json.loads(name[1])] = int(match[1], 0)
     fast_paths = semantic_fast_paths(code, named_entries)
-    native_entries.update(target for _, target in fast_paths.values())
+    native_entries.update(target for _, target in fast_paths.values() if target is not None)
     first_in_page = {}
     for a in sorted(code): first_in_page.setdefault(a >> 8, a)
     native_entries.update(first_in_page.values())
@@ -356,8 +374,9 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) 
             emitted = emit_instruction(a, op, mode, operand, live[a])
             if a in fast_paths:
                 action, target = fast_paths[a]
+                suffix = '' if target is None else f' goto L{target:04x};'
                 emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS)',
-                                f'{action} goto L{target:04x};', '#endif']
+                                f'{action}{suffix}', '#endif']
             body.extend(emitted)
         def transfer(match):
             target = int(match[1], 16)

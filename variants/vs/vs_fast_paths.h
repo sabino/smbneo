@@ -34,4 +34,60 @@ static inline void vs_fast_render_pair(VsCpu *c) {
          | ((offset >= 120 && offset < 128) ? VS_V : 0);
     c->x = vs_nz(c, (uint8_t)(c->x + 2));
 }
+
+static inline void vs_fast_table_jump(VsCpu *c) {
+    uint8_t shifted = (uint8_t)(c->a << 1);
+    c->p = (c->p & ~VS_C) | (c->a >> 7);
+    c->a = c->y = vs_nz(c, shifted);
+    c->a = vs_nz(c, vs_pop(c)); c->bus->ram[4] = c->a;
+    c->a = vs_nz(c, vs_pop(c)); c->bus->ram[5] = c->a;
+    c->y = vs_nz(c, (uint8_t)(c->y + 1));
+    c->a = vs_nz(c, vs_rd(c, (uint16_t)(vs_zpword(c, 4) + c->y)));
+    c->bus->ram[6] = c->a;
+    c->y = vs_nz(c, (uint8_t)(c->y + 1));
+    c->a = vs_nz(c, vs_rd(c, (uint16_t)(vs_zpword(c, 4) + c->y)));
+    c->bus->ram[7] = c->a;
+    c->pc = vs_zpword(c, 6);
+}
+
+static inline void vs_fast_nmi_oam_shuffle(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    c->y = vs_nz(c, ram[1870]);
+    c->a = vs_nz(c, 40); ram[0] = c->a;
+    c->x = vs_nz(c, 14);
+    for (;;) {
+        unsigned slot = c->x;
+        c->a = vs_nz(c, ram[1764 + slot]);
+        vs_cmp(c, c->a, ram[0]);
+        if (c->p & VS_C) {
+            c->y = vs_nz(c, ram[1760]);
+            c->p &= ~VS_C;
+            vs_adc(c, ram[1761 + c->y]);
+            if (c->p & VS_C) {
+                c->p &= ~VS_C;
+                vs_adc(c, ram[0]);
+            }
+            ram[1764 + slot] = c->a;
+        }
+        c->x = vs_nz(c, (uint8_t)(c->x - 1));
+        if (c->p & VS_N) break;
+    }
+    c->x = vs_nz(c, ram[1760]);
+    c->x = vs_nz(c, (uint8_t)(c->x + 1));
+    vs_cmp(c, c->x, 3);
+    if (c->p & VS_Z) c->x = vs_nz(c, 0);
+    ram[1760] = c->x;
+    c->x = vs_nz(c, 8); c->y = vs_nz(c, 2);
+    for (;;) {
+        unsigned source = 1769 + c->y, target = 1777 + c->x;
+        c->a = vs_nz(c, ram[source]); ram[target] = c->a;
+        c->p &= ~VS_C; vs_adc(c, 8); ram[target + 1] = c->a;
+        c->p &= ~VS_C; vs_adc(c, 8); ram[target + 2] = c->a;
+        c->x = vs_nz(c, (uint8_t)(c->x - 1));
+        c->x = vs_nz(c, (uint8_t)(c->x - 1));
+        c->x = vs_nz(c, (uint8_t)(c->x - 1));
+        c->y = vs_nz(c, (uint8_t)(c->y - 1));
+        if (c->p & VS_N) break;
+    }
+}
 #endif
