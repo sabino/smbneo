@@ -12,7 +12,7 @@ pub(all) struct AsmLowering {
   bb_by_label: Map[String, BasicBlock]
   subroutines: Array[AsmSubroutine]
   flat_subroutines: Array[AsmFlatSubroutine]
-} derive (Show)
+}
 
 pub suberror LoweringError { LoweringError(String) } derive(Show)
 
@@ -350,7 +350,7 @@ pub(all) struct JumpTargets {
   jump_targets: Set[String]
   subroutines: Set[String]
   externals: Set[String]
-} derive (Show)
+}
 
 fn AsmLowering::collect_jump_targets(self: AsmLowering) -> Unit {
   for item in self.lowered {

@@ -106,7 +106,7 @@ fn Lexer::parse_constant(self: Lexer, base~: ConstantBase) -> LexerResult {
   let value = match (lexeme, base) {
     ("0b", Hexadecimal) => 11 // https://github.com/moonbitlang/core/issues/2006
     _ => {
-      try @strconv.parse_int(lexeme, base=base.to_int()) catch {
+      try @string.parse_int(lexeme, base=base.to_int()) catch {
         _ => return Grr(InvalidConstant(lexeme~, base~))
       } noraise {
         value => value
