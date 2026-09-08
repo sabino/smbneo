@@ -23,7 +23,7 @@
 #define FIX_CONTENT_X (NES_CONTENT_X / 8u)
 #define FIX_CONTENT_COLUMNS 32u
 #define FIX_BLANK_TILE NEOGEO_HUD_FIX_BLANK_TILE
-#define FIX_SOLID_TILE 514u
+#define FIX_SOLID_TILE (NEOGEO_HUD_FIX_BLANK_TILE + 1u)
 #define FIX_BORDER_PALETTE 15u
 
 /*
@@ -111,9 +111,18 @@ typedef struct {
  * 5-bit-per-channel plus shared-low-bit color format. Keeping this in ROM
  * costs 128 bytes and avoids an RGB framebuffer or per-frame conversion.
  */
+#if defined(SMB_VS)
+extern const uint16_t vs_palette_neogeo[64];
+extern uint16_t neogeo_vs_pattern_bank;
+extern uint8_t neogeo_vs_split;
+#define nes_palette_to_neogeo vs_palette_neogeo
+#define VS_PATTERN_BANK neogeo_vs_pattern_bank
+#else
+#define VS_PATTERN_BANK 0u
 static const uint16_t nes_palette_to_neogeo[64] = {
 #include "nes_palette_neogeo.inc"
 };
+#endif
 
 /*
  * Only SCB3 needs staging.  SCB1, SCB2, and SCB4 can be updated while their
@@ -209,7 +218,7 @@ void neogeo_video_wait_for_present(void) {
     }
 }
 
-#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH) || defined(SMB_VS)
 void neogeo_video_benchmark_invalidate(void) {
     memset(background_cache, 0xff, sizeof(background_cache));
     memset(background_x_cache, 0xff, sizeof(background_x_cache));
@@ -565,7 +574,7 @@ static void upload_palette_changes(void) {
 }
 
 static void build_background(uint8_t set, uint8_t show_hud) {
-    uint16_t pattern_base = (ppu_ctrl & 0x10u) ? 256u : 0u;
+    uint16_t pattern_base = VS_PATTERN_BANK + ((ppu_ctrl & 0x10u) ? 256u : 0u);
     uint16_t render_config =
         (uint16_t)(pattern_base | (show_hud != 0u ? 1u : 0u));
     uint8_t fine_scroll = (uint8_t)(ppu_scroll_x & 7u);
@@ -873,7 +882,7 @@ static void prepare_background_hidden(uint8_t set) {
 }
 
 static void build_oam_sprites(uint8_t set) {
-    uint16_t pattern_base = (ppu_ctrl & 0x08u) ? 256u : 0u;
+    uint16_t pattern_base = VS_PATTERN_BANK + ((ppu_ctrl & 0x08u) ? 256u : 0u);
     uint8_t draw_left_edge = (uint8_t)(ppu_mask & 0x04u);
     uint8_t oam_index;
 
@@ -940,7 +949,7 @@ static void build_oam_sprites(uint8_t set) {
 }
 
 static void build_hud(uint8_t show_hud) {
-    uint16_t pattern_base = (ppu_ctrl & 0x10u) ? 256u : 0u;
+    uint16_t pattern_base = VS_PATTERN_BANK + ((ppu_ctrl & 0x10u) ? 256u : 0u);
 
     /*
      * NES tile row 0 is overscan.  Rows 1..3 become the three visible FIX
@@ -1161,7 +1170,11 @@ void neogeo_video_render(void) {
     uint8_t show_hud =
         (uint8_t)(
             (ppu_mask & 0x08u) != 0u &&
+#if defined(SMB_VS)
+            neogeo_vs_split != 0u
+#else
             ram[Sprite0HitDetectFlag] != 0u
+#endif
     );
 
     build_background(next_set, show_hud);

@@ -7,7 +7,14 @@
 
 all: test
 
-ci: test web-test
+ci: test web-test vs-test
+
+.PHONY: vs-test vs-reference
+vs-test:
+	$(MAKE) -C variants/vs test
+
+vs-reference:
+	$(MAKE) -C variants/vs reference
 
 # ROM-free host regression suite. PKG_CONFIG=true prevents the cross-toolchain
 # probe from being required for tests that compile and run on the host.

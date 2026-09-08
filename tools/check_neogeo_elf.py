@@ -444,6 +444,7 @@ def parse_sections(output: str) -> dict[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("elf", type=Path)
+    parser.add_argument("--variant", choices=("home", "vs"), default="home")
     parser.add_argument(
         "--prefix",
         default="m68k-neogeo-elf-",
@@ -470,7 +471,10 @@ def main() -> int:
 
     symbols = run([f"{args.prefix}nm", "-a", str(args.elf)])
     try:
-        symbol_values = parse_nm_symbols(symbols)
+        # VS translation helpers can legitimately have same-named local copies
+        # in separate translation units. Linker contract symbols are global.
+        values_text = run([f"{args.prefix}nm", "-g", str(args.elf)]) if args.variant == "vs" else symbols
+        symbol_values = parse_nm_symbols(values_text)
     except ElfCheckError as error:
         raise SystemExit(str(error)) from error
     present_symbols = {
@@ -490,7 +494,9 @@ def main() -> int:
             + ", ".join(forbidden)
         )
 
-    missing = sorted(REQUIRED_SYMBOLS - present_symbols)
+    required = ({"main", "nametable", "machine", "vs_prg", "vs_chr", "vs_program_run"}
+                if args.variant == "vs" else REQUIRED_SYMBOLS)
+    missing = sorted(required - present_symbols)
     if missing:
         raise SystemExit(
             "translated core reachability check failed; missing symbols: "
@@ -512,8 +518,13 @@ def main() -> int:
 
     try:
         startup = validate_startup_layout(symbol_values)
-        ngh_id = validate_ngh_id(symbol_values)
-        title_data_address = validate_title_data_alignment(symbol_values)
+        ngh_id = validate_ngh_id(symbol_values, expected=0x2027 if args.variant == "vs" else EXPECTED_NGH_ID)
+        if args.variant == "vs":
+            title_data_address = symbol_values["vs_chr"]
+            if title_data_address & 1:
+                raise ElfCheckError("VS CHR/data payload is not word aligned")
+        else:
+            title_data_address = validate_title_data_alignment(symbol_values)
         disassembly = run(
             [f"{args.prefix}objdump", "-d", str(args.elf)]
         )

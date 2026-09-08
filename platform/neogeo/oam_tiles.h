@@ -6,7 +6,11 @@
 /* C-ROM tiles 0..255 are reserved for the BIOS/ngdevkit eyecatcher. */
 #define CROM_BLANK_TILE 256u
 #define CROM_NES_TILE_BASE 257u
+#if defined(SMB_VS)
+#define CROM_NES_TILE_BANK_SIZE 1024u
+#else
 #define CROM_NES_TILE_BANK_SIZE 512u
+#endif
 #define CROM_NES_HFLIP_TILE_BASE \
     (CROM_NES_TILE_BASE + CROM_NES_TILE_BANK_SIZE)
 #define CROM_NES_VFLIP_TILE_BASE \
