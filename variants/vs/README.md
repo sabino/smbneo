@@ -91,12 +91,15 @@ For a bounded Neo Geo integration test, from the repository root:
 
 ```sh
 python3 tools/run_vs_mame.py --build variants/vs/build \
-  --bios-dir /path/to/your/bios --real-coin --game-frames 1200
+  --bios-dir /path/to/your/bios --real-coin --game-frames 1200 \
+  --label my-checkpoint
 ```
 
 This tests the actual MVS coin input, credit consumption, and right/run/jump in
 gameplay. It rejects unexpected game restarts and uses a fresh output directory
-for each run. Omit `--real-coin` to test the AES-friendly shortcut; add
+for each run. A 1200-tick run also reports the isolated 600-to-1200 gameplay
+interval as display frames per game tick; `--metrics-json path.json` can save
+that result. Omit `--real-coin` to test the AES-friendly shortcut; add
 `--system aes` for the AES machine. The VS integration keeps the BIOS in game
 mode while VS handles its own attract screen and credits, preventing the BIOS
 from restarting the port on coin insertion.
