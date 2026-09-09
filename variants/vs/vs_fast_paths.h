@@ -164,6 +164,84 @@ static inline int vs_fast_render_player_tiles(VsCpu *c) {
     return 1;
 }
 
+static inline void vs_fast_render_player_init(VsCpu *c, uint8_t rows) {
+    uint8_t *ram = c->bus->ram;
+    ram[7] = rows;
+    ram[0x0755] = ram[5] = ram[0x03ad];
+    ram[2] = ram[0x03b8];
+    ram[3] = ram[0x33];
+    ram[4] = ram[0x03c4];
+    c->x = ram[0x06d5];
+    c->y = ram[0x06e4];
+    (void)vs_fast_render_player_tiles(c);
+}
+
+/* Compose Mario's complete OAM record, including standing/death mirroring,
+ * the fireball-throw overlay and per-row clipping. Animation selection stays
+ * in the caller; each selected frame is now built without page dispatch. */
+static inline int vs_fast_render_player_do(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t sprite = ram[0x06e4];
+    uint8_t group = c->a;
+    uint8_t bits;
+
+    if (!c->bus->prg || (sprite & 3u) != 0u || sprite > 224u ||
+        c->s < 0x40u)
+        return 0;
+    ram[0x06d5] = group;
+    vs_push(c, 0xee);
+    vs_push(c, 0xb1);
+    vs_fast_render_player_init(c, 4u);
+
+    vs_push(c, 0xee);
+    vs_push(c, 0xb4);
+    if (ram[0x0e] == 0x0bu || group == 0xc8u) {
+        ram[0x0212u + sprite] &= 0x3fu;
+        ram[0x0216u + sprite] =
+            (uint8_t)((ram[0x0216u + sprite] & 0x3fu) | 0x40u);
+    }
+    if (ram[0x0e] == 0x0bu || group == 0xc8u || group == 0x50u ||
+        group == 0xb8u || group == 0xc0u) {
+        ram[0x021au + sprite] &= 0x3fu;
+        ram[0x021eu + sprite] =
+            (uint8_t)((ram[0x021eu + sprite] & 0x3fu) | 0x40u);
+    }
+    vs_fast_return(c);
+
+    if (ram[0x0711] != 0u) {
+        uint8_t timer = ram[0x0781];
+        uint8_t throwing = ram[0x0711];
+        ram[0x0711] = 0u;
+        if (timer < throwing) {
+            ram[0x0711] = timer;
+            ram[0x06d5] = c->bus->prg[0xed6bu - 0x8000u];
+            vs_push(c, 0xee);
+            vs_push(c, 0xde);
+            vs_fast_render_player_init(c,
+                (ram[0x57] | ram[0x0c]) != 0u ? 3u : 4u);
+        }
+    }
+
+    bits = (uint8_t)(ram[0x03d0] >> 4);
+    for (unsigned row = 0; row < 4u; ++row) {
+        if (bits & (1u << row)) {
+            unsigned output = 0x0200u + sprite + (3u - row) * 8u;
+            vs_push(c, 0xee);
+            vs_push(c, 0xf9);
+            ram[output] = ram[output + 4u] = 0xf8u;
+            vs_fast_return(c);
+        }
+    }
+    ram[0] = 0u;
+    c->a = c->y = (uint8_t)(sprite - 8u);
+    c->x = 0xffu;
+    c->p = (c->p & ~(VS_C | VS_V | VS_N | VS_Z)) | VS_N
+        | (sprite >= 8u ? VS_C : 0u)
+        | (sprite >= 128u && sprite < 136u ? VS_V : 0u);
+    vs_fast_return(c);
+    return 1;
+}
+
 static inline void vs_fast_render_actor_pair(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
     const uint8_t *prg = c->bus->prg;
@@ -183,38 +261,6 @@ static inline void vs_fast_render_actor_tiles(VsCpu *c) {
         vs_fast_render_actor_pair(c);
         vs_fast_return(c);
     }
-}
-
-/* Goombas take the overwhelmingly common straight-through actor-render path.
- * Prepare that path's exact scratch state directly, then rejoin the shared
- * three-row renderer and offscreen cleanup. */
-static inline int vs_fast_render_goomba_state0(VsCpu *c) {
-    uint8_t *ram = c->bus->ram;
-    uint8_t slot = c->x;
-
-    if (!c->bus->prg || slot >= 6u || ram[8] != slot ||
-        ram[(uint8_t)(0x16u + slot)] != 6u ||
-        ram[(uint8_t)(0x1eu + slot)] != 0u ||
-        ram[0x036a] != 0u || ram[0x0747] != 0u ||
-        ram[(0x0796u + slot) & 0x07ffu] >= 5u ||
-        (ram[0x03d1] & 0xe0u) != 0u || c->s < 0x40u)
-        return 0;
-
-    ram[2] = ram[(uint8_t)(0xcfu + slot)];
-    ram[5] = ram[0x03ae];
-    ram[0xeb] = ram[(0x06e5u + slot) & 0x07ffu];
-    ram[0x0109] = 0;
-    ram[3] = ram[(uint8_t)(0x46u + slot)];
-    ram[4] = ram[(0x03c5u + slot) & 0x07ffu];
-    ram[0xed] = 0;
-    ram[0xef] = 6;
-    ram[0xec] = 0;
-    if ((ram[9] & 8u) == 0u)
-        ram[3] ^= 3u;
-    ram[4] |= c->bus->prg[0xe7beu - 0x8000u];
-    c->x = c->bus->prg[0xe7a3u - 0x8000u];
-    c->pc = 0xe9a8;
-    return 1;
 }
 
 static inline int vs_fast_misc_proc_inactive(VsCpu *c) {
@@ -369,6 +415,253 @@ static inline int vs_fast_render_actor_clear_offscr(VsCpu *c) {
     c->a = vs_nz(c, vs_pop(c));
     vs_fast_lsr_a(c);
     vs_fast_return(c);
+    return 1;
+}
+
+/* Complete actor graphics composition for the game's allocated six-sprite
+ * records.  The original graphics/attribute tables remain authoritative;
+ * animation decisions and sprite layout are ordinary C operations.  All
+ * sprite state is still staged in RAM for the shared hardware-safe renderer.
+ * Unallocated/misaligned layouts retain the translated byte ordering. */
+static inline int vs_fast_render_actor(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    const uint8_t *prg = c->bus->prg;
+    uint8_t slot = c->x;
+    uint8_t sprite;
+    uint8_t id;
+    uint8_t state;
+    uint8_t next;
+    uint8_t graphics;
+    uint8_t bowser;
+
+    if (!prg || slot >= 6u || ram[8] != slot || c->s < 0x40u)
+        return 0;
+    sprite = ram[0x06e5u + slot];
+    if ((sprite & 3u) != 0u || sprite > 232u)
+        return 0;
+
+    ram[2] = ram[0xcfu + slot];
+    ram[5] = ram[0x03ae];
+    ram[0xeb] = sprite;
+    ram[0x0109] = 0u;
+    ram[3] = ram[0x46u + slot];
+    ram[4] = ram[0x03c5u + slot];
+    id = ram[0x16u + slot];
+
+    /* A submerged Piranha can deliberately leave its previous OAM untouched.
+     * This early return precedes the sprite arithmetic, so preserve its
+     * incoming overflow flag and exact CMP/LDY result. */
+    if (id == 0x0du && (ram[0x58u + slot] & 0x80u) == 0u &&
+        ram[0x078au + slot] != 0u) {
+        c->a = id;
+        c->y = vs_nz(c, ram[0x078au + slot]);
+        c->p |= VS_C;
+        vs_fast_return(c);
+        return 1;
+    }
+
+    state = ram[0x1eu + slot];
+    next = (uint8_t)(state & 0x1fu);
+    if (id == 0x35u) {             /* Toad uses the second graphics page. */
+        next = 0u;
+        ram[3] = 1u;
+        id = 0x15u;
+    }
+    if (id == 0x33u) {             /* Cannon Bullet Bill. */
+        --ram[2];
+        ram[4] = (uint8_t)(3u | (ram[0x078au + slot] ? 0x20u : 0u));
+        next = state = 0u;
+        id = 8u;
+    }
+    if (id == 0x32u) {             /* Springboard compression frame. */
+        next = 3u;
+        id = prg[0xe7d5u - 0x8000u + ram[0x070e]];
+    }
+    if (id == 0x0cu && (ram[0xa0u + slot] & 0x80u) == 0u)
+        ram[0x0109] = 1u;
+    bowser = ram[0x036a];
+    if (bowser != 0u)
+        id = bowser == 1u ? 0x16u : 0x17u;
+    if (id == 6u) {
+        if (ram[0x1eu + slot] >= 2u)
+            next = 4u;
+        if ((ram[0x1eu + slot] & 0x20u) == 0u &&
+            ram[0x0747] == 0u && (ram[9] & 8u) == 0u)
+            ram[3] ^= 3u;
+    }
+
+    ram[4] |= prg[0xe7b8u - 0x8000u + id];
+    graphics = prg[0xe79du - 0x8000u + id];
+    if (bowser != 0u) {
+        if (bowser == 1u) {
+            if (ram[0x0363] & 0x80u)
+                graphics = 0xdeu;
+        } else {
+            if (ram[0x0363] & 1u)
+                graphics = 0xe4u;
+            if (state & 0x20u)
+                ram[2] = (uint8_t)(ram[2] - 16u);
+        }
+        if (state & 0x20u)
+            ram[0x0109] = graphics;
+    } else {
+        int animate = 0;
+        int check_animation = 1;
+
+        if (graphics == 0x24u) {   /* Spiny walking / egg. */
+            if (next == 5u) {
+                graphics = 0x30u;
+                ram[3] = 2u;
+                next = 5u;
+            }
+        } else if (graphics == 0x90u) { /* Lakitu throwing / ducking. */
+            if ((state & 0x20u) == 0u && ram[0x078f] < 16u)
+                graphics = 0x96u;
+            check_animation = 0;
+        } else {
+            if (id < 4u && next >= 2u) {
+                graphics = 0x5au;
+                if (id == 2u) {
+                    graphics = 0x7eu;
+                    ++ram[2];
+                }
+            }
+            if (next == 4u) {
+                graphics = 0x72u;
+                ++ram[2];
+                if (id != 2u) {
+                    graphics = 0x66u;
+                    ++ram[2];
+                }
+                if (id == 6u) {
+                    graphics = 0x54u;
+                    if ((state & 0x20u) == 0u) {
+                        graphics = 0x8au;
+                        --ram[2];
+                    }
+                }
+            }
+        }
+
+        if (check_animation) {
+            uint8_t timer = ram[0x0796u + slot];
+            int check_frame = 1;
+
+            if (id == 5u) {
+                if (state != 0u) {
+                    if ((state & 8u) == 0u)
+                        check_frame = 0;
+                    else
+                        graphics = 0xb4u;
+                }
+            } else if (graphics != 0x48u) {
+                if (timer >= 5u) {
+                    check_frame = 0;
+                } else if (graphics == 0x3cu) {
+                    check_frame = 0;
+                    if (timer != 1u) {
+                        ram[2] = (uint8_t)(ram[2] + 3u);
+                        animate = 1;
+                    }
+                }
+            }
+            if (check_frame && id != 6u && id != 8u && id != 0x0cu &&
+                id < 0x18u) {
+                if (id == 0x15u) {
+                    if (ram[0x075f] < 7u) {
+                        graphics = 0xa2u;
+                        next = 3u;
+                    }
+                } else if ((ram[9] & prg[0xe7d3u - 0x8000u]) == 0u) {
+                    animate = 1;
+                }
+            }
+            if (animate && (state & 0xa0u) == 0u && ram[0x0747] == 0u)
+                graphics = (uint8_t)(graphics + 6u);
+        }
+        if ((state & 0x20u) != 0u && id >= 4u) {
+            ram[0x0109] = 1u;
+            next = 0u;
+        }
+    }
+
+    ram[0xed] = state;
+    ram[0xec] = next;
+    ram[0xef] = id;
+    c->x = graphics;
+    vs_fast_render_actor_tiles(c);
+    c->y = sprite;
+
+    if (id != 8u) {
+        if (ram[0x0109] != 0u) {
+            uint8_t attr = (uint8_t)(ram[0x0202u + sprite] | 0x80u);
+            uint8_t swap = sprite;
+
+            for (unsigned row = 0; row < 6u; ++row)
+                ram[0x0202u + sprite + row * 4u] = attr;
+            /* The source stores this JSR return before swapping two rows. */
+            vs_push(c, 0xe9);
+            vs_push(c, 0xcf);
+            vs_fast_return(c);
+            if (id != 5u && id != 0x11u && id < 0x15u) {
+                c->a = sprite;
+                c->p &= (uint8_t)~VS_C;
+                vs_adc(c, 8u);
+                swap = c->a;
+            }
+            vs_push(c, ram[0x0201u + swap]);
+            vs_push(c, ram[0x0205u + swap]);
+            ram[0x0201u + swap] = ram[0x0211u + sprite];
+            ram[0x0205u + swap] = ram[0x0215u + sprite];
+            ram[0x0215u + sprite] = vs_pop(c);
+            ram[0x0211u + sprite] = vs_pop(c);
+        }
+        if (bowser == 0u && id != 5u) {
+            int mirror = id == 7u || id == 0x0du || id == 0x0cu;
+            if (!mirror && !(id == 0x12u && next != 5u)) {
+                if (id == 0x15u)
+                    ram[0x0216u + sprite] = 0x42u;
+                mirror = next >= 2u;
+            }
+            if (mirror) {
+                uint8_t left = (uint8_t)(ram[0x0202u + sprite] & 0xa3u);
+                uint8_t right = (uint8_t)(left | 0x40u |
+                    (next == 5u ? 0x80u : 0u));
+                for (unsigned row = 0; row < 3u; ++row) {
+                    ram[0x0202u + sprite + row * 8u] = left;
+                    ram[0x0206u + sprite + row * 8u] = right;
+                }
+                if (next == 4u) {
+                    left |= 0x80u;
+                    right = (uint8_t)(left | 0x40u);
+                    ram[0x020au + sprite] = ram[0x0212u + sprite] = left;
+                    ram[0x020eu + sprite] = ram[0x0216u + sprite] = right;
+                }
+            }
+            if (id == 0x11u) {
+                if (ram[0x0109] == 0u) {
+                    ram[0x0212u + sprite] &= 0x81u;
+                    ram[0x0216u + sprite] |= 0x41u;
+                    if (ram[0x078f] < 16u) {
+                        ram[0x020eu + sprite] = ram[0x0216u + sprite];
+                        ram[0x020au + sprite] =
+                            (uint8_t)(ram[0x0216u + sprite] & 0x81u);
+                    }
+                } else {
+                    ram[0x0202u + sprite] &= 0x81u;
+                    ram[0x0206u + sprite] |= 0x41u;
+                }
+            } else if (id >= 0x18u) {
+                ram[0x020au + sprite] = ram[0x0212u + sprite] = 0x82u;
+                ram[0x020eu + sprite] = ram[0x0216u + sprite] = 0xc2u;
+            }
+        }
+    }
+
+    /* The established cleanup helper handles ordinary horizontal clipping;
+     * vertical erase cases continue through the complete original tail. */
+    if (!vs_fast_render_actor_clear_offscr(c))
+        c->pc = 0xeac1;
     return 1;
 }
 
@@ -557,6 +850,64 @@ static inline void vs_fast_pos_bits_get_do_x(VsCpu *c) {
             break;
     }
     vs_fast_pos_bits_finish(c, object_index, side, bits, overflow);
+}
+
+/* Six tiles make one large platform. Build its coordinates, tile IDs and
+ * attributes in one pass, then apply the shared horizontal bounds result.
+ * This replaces the regular port's same multi-call sprite-stacker sequence. */
+static inline int vs_fast_render_plat_large(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+    uint8_t sprite;
+    uint8_t y;
+    uint8_t tile;
+    uint8_t offscreen;
+
+    if (slot >= 6u || ram[8] != slot || c->s < 0x40u)
+        return 0;
+    sprite = ram[0x06e5u + slot];
+    if ((sprite & 3u) != 0u || sprite > 232u)
+        return 0;
+    ram[2] = sprite;
+    y = ram[0xcfu + slot];
+    tile = ram[0x0743] != 0u ? 0x75u : 0x5bu;
+    for (unsigned index = 0; index < 6u; ++index) {
+        unsigned output = 0x0200u + sprite + index * 4u;
+        ram[output] = index >= 4u &&
+            (ram[0x074e] == 3u || ram[0x06cc] != 0u) ? 0xf8u : y;
+        ram[output + 1u] = tile;
+        ram[output + 2u] = 2u;
+        ram[output + 3u] = (uint8_t)(ram[0x03ae] + index * 8u);
+    }
+
+    /* All previous leaf calls use the same stack bytes. This final call
+     * overwrites them and preserves any deeper bounds-helper stack writes. */
+    c->x = (uint8_t)(slot + 1u);
+    vs_push(c, 0xe5);
+    vs_push(c, 0x69);
+    vs_fast_pos_bits_get_do_x(c);
+    vs_fast_return(c);
+    offscreen = c->a;
+    c->x = slot;
+    c->y = sprite;
+    for (unsigned index = 0; index < 6u; ++index) {
+        if (offscreen & (0x80u >> index))
+            ram[0x0200u + sprite + index * 4u] = 0xf8u;
+    }
+    /* Five balanced PHA/PLA operations leave the fifth shifted mask here. */
+    ram[0x0100u | c->s] = (uint8_t)(offscreen << 5);
+    c->a = ram[0x03d1];
+    vs_fast_asl_a(c);
+    if (c->p & VS_C) {
+        vs_push(c, 0xe5);
+        vs_push(c, 0xb0);
+        c->a = vs_nz(c, 0xf8u);
+        for (unsigned index = 0; index < 6u; ++index)
+            ram[0x0200u + sprite + index * 4u] = c->a;
+        vs_fast_return(c);
+    }
+    vs_fast_return(c);
+    return 1;
 }
 
 static inline void vs_fast_pos_bits_get_do_y(VsCpu *c) {
@@ -1011,7 +1362,76 @@ static inline void vs_fast_motion_x_player(VsCpu *c) {
     vs_fast_return(c);
 }
 
-/* Relative coordinates are geometry, not an emulated timing primitive.  Keep
+/* Integrate vertical position and acceleration as fixed-point arithmetic.
+ * Player, enemy and platform callers share this operation; only the final
+ * comparisons need materialized CPU flags. Preserve the source's byte-sign
+ * clamp tests (including wraparound), rather than imposing signed C clamps. */
+static inline int vs_fast_motion_gravity(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    unsigned slot = c->x;
+    unsigned sum;
+    uint8_t speed;
+    uint8_t acceleration;
+    uint8_t result;
+
+    if (slot > 21u || c->s < 0x40u)
+        return 0;
+    vs_push(c, c->a);
+    sum = ram[0x0416u + slot] + ram[0x0433u + slot];
+    ram[0x0416u + slot] = (uint8_t)sum;
+    speed = ram[0x9fu + slot];
+    c->y = (speed & 0x80u) != 0u ? 0xffu : 0u;
+    ram[7] = c->y;
+    sum = speed + ram[0xceu + slot] + (sum >> 8);
+    ram[0xceu + slot] = (uint8_t)sum;
+    ram[0xb5u + slot] = (uint8_t)(
+        ram[0xb5u + slot] + c->y + (sum >> 8));
+
+    sum = ram[0x0433u + slot] + ram[0];
+    acceleration = (uint8_t)sum;
+    ram[0x0433u + slot] = acceleration;
+    result = (uint8_t)(speed + (sum >> 8));
+    ram[0x9fu + slot] = result;
+    c->p = (c->p & (uint8_t)~VS_V) |
+        (speed == 0x7fu && sum > 255u ? VS_V : 0u);
+    vs_cmp(c, result, ram[2]);
+    if ((c->p & VS_N) == 0u) {
+        vs_cmp(c, acceleration, 0x80u);
+        if (c->p & VS_C) {
+            ram[0x9fu + slot] = ram[2];
+            ram[0x0433u + slot] = 0u;
+        }
+    }
+    c->a = vs_nz(c, vs_pop(c));
+    if (c->a != 0u) {
+        uint8_t borrow;
+        c->y = (uint8_t)(0u - ram[2]);
+        ram[7] = c->y;
+        acceleration = ram[0x0433u + slot];
+        borrow = acceleration < ram[1];
+        acceleration = (uint8_t)(acceleration - ram[1]);
+        ram[0x0433u + slot] = acceleration;
+        speed = ram[0x9fu + slot];
+        c->a = (uint8_t)(speed - borrow);
+        ram[0x9fu + slot] = c->a;
+        c->p = (c->p & (uint8_t)~VS_V) |
+            (speed == 0x80u && borrow ? VS_V : 0u);
+        vs_cmp(c, c->a, c->y);
+        if (c->p & VS_N) {
+            c->a = acceleration;
+            vs_cmp(c, c->a, 0x80u);
+            if ((c->p & VS_C) == 0u) {
+                ram[0x9fu + slot] = c->y;
+                c->a = vs_nz(c, 0xffu);
+                ram[0x0433u + slot] = c->a;
+            }
+        }
+    }
+    vs_fast_return(c);
+    return 1;
+}
+
+/* Relative coordinates are geometry, not an emulated timing primitive. Keep
  * the exact zero-page aliases, flag residue and nested JSR stack writes. */
 static inline void vs_fast_pos_calc_x_rel_do(
     VsCpu *c,

@@ -17,7 +17,8 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.s = (uint8_t)(pattern + y);
     if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
         entry == 0xeac1 || entry == 0xc9ba || entry == 0xd98a ||
-        entry == 0xdf17)
+        entry == 0xdf17 || entry == 0xe525 || entry == 0xbeea ||
+        entry == 0xeeaa)
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -41,6 +42,15 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     }
     if (entry == 0xef41)
         reference.ram[7] = (uint8_t)(1u + (pattern & 3u));
+    if (entry == 0xeeaa) {
+        reference.ram[0x06e4] = (uint8_t)((y % 57u) * 4u);
+        reference.ram[0x0e] = (uint8_t)(pattern & 15u);
+        reference.ram[0x0711] = (uint8_t)(pattern & 7u);
+        reference.ram[0x0781] = (uint8_t)((pattern >> 4) & 7u);
+        reference.ram[0x57] = (uint8_t)((pattern >> 7) & 1u);
+        reference.ram[0x0c] = (uint8_t)((pattern >> 8) & 3u);
+        reference.ram[0x03d0] = (uint8_t)(pattern >> 5);
+    }
     if (entry == 0xbfea || entry == 0xbf60) {
         reference.ram[(uint8_t)(0x0fu + x)] = 0;
         reference.ram[0x071f] = (uint8_t)(pattern & 7u);
@@ -80,15 +90,41 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         reference.ram[0x03d1] = 0;
     }
     if (entry == 0xe7da) {
+        unsigned slot = (x & 255u) % 6u;
+        unsigned bowser = (pattern >> 12) & 7u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0x16u + slot] = (uint8_t)(x >> 8);
+        reference.ram[0x1eu + slot] = (uint8_t)pattern;
+        reference.ram[0x06e5u + slot] = (uint8_t)((y % 59u) * 4u);
+        reference.ram[0x036a] = bowser < 3u ? (uint8_t)bowser : 0;
+        reference.ram[0x0363] = (uint8_t)(pattern >> 5);
+        reference.ram[0x0747] = (uint8_t)((y >> 6) & 1u);
+        reference.ram[0x0796u + slot] = (uint8_t)((pattern >> 4) & 7u);
+        reference.ram[0x078au + slot] = (uint8_t)(pattern >> 2);
+        reference.ram[0x070e] = (uint8_t)(pattern & 3u);
+        reference.ram[0x075f] = (uint8_t)(y & 7u);
+        reference.ram[0x078f] = (uint8_t)pattern;
+        reference.ram[0x03d1] = (uint8_t)(pattern >> 8);
+    }
+    if (entry == 0xe525) {
         unsigned slot = x % 6u;
         want.x = (uint8_t)slot;
         reference.ram[8] = (uint8_t)slot;
-        reference.ram[0x16u + slot] = 6;
-        reference.ram[0x1eu + slot] = 0;
-        reference.ram[0x036a] = 0;
-        reference.ram[0x0747] = 0;
-        reference.ram[0x0796u + slot] = (uint8_t)(pattern % 5u);
-        reference.ram[0x03d1] = (uint8_t)(pattern & 0x1fu);
+        reference.ram[0x06e5u + slot] = (uint8_t)((y % 59u) * 4u);
+        reference.ram[0x074e] = (uint8_t)(pattern & 3u);
+        reference.ram[0x06cc] = (uint8_t)((pattern >> 2) & 1u);
+        reference.ram[0x0743] = (uint8_t)((pattern >> 3) & 1u);
+    }
+    if (entry == 0xbeea) {
+        unsigned slot = x % 22u;
+        want.x = (uint8_t)slot;
+        want.a = (uint8_t)(pattern & 1u);
+        reference.ram[0x9fu + slot] = (uint8_t)y;
+        reference.ram[0x0433u + slot] = (uint8_t)(pattern >> 1);
+        reference.ram[0] = (uint8_t)(pattern >> 9);
+        reference.ram[1] = (uint8_t)(pattern >> 7);
+        reference.ram[2] = (uint8_t)(pattern >> 5);
     }
     if (entry == 0xd7aa)
         reference.ram[9] |= 1u;
@@ -285,7 +321,11 @@ int main(int argc, char **argv) {
         compare(data, 0xe9a8, seed >> 8, seed, seed * 89);
         compare(data, 0xbf60, seed % 5u, seed >> 8, seed * 97);
         compare(data, 0xc9ba, seed % 6u, seed >> 8, seed * 101);
-        compare(data, 0xe7da, seed % 6u, seed >> 8, seed * 103);
+        compare(data, 0xe7da, (seed % 6u) | ((seed >> 10) << 8),
+                seed >> 8, seed * 103);
+        compare(data, 0xe525, seed % 6u, seed >> 8, seed * 157);
+        compare(data, 0xbeea, seed % 22u, seed >> 8, seed * 163);
+        compare(data, 0xeeaa, seed >> 8, seed, seed * 167);
         compare(data, 0xd7aa, seed % 6u, seed >> 8, seed * 107);
         compare(data, 0xd98a, seed % 6u, seed >> 8, seed * 109);
         compare(data, 0xdf17, seed % 6u, seed >> 8, seed * 113);

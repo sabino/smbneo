@@ -315,6 +315,9 @@ def semantic_fast_paths(code, named_entries):
         ('motion_x_player', 41,
          '6f2ca95dbca2e023a85736f4096ecfec0c6d724d6ac8b23f38aa91be49be6df9',
          'vs_fast_motion_x_player(c); return;'),
+        ('motion_gravity', 55,
+         'dcaec7c8f29ecd6b849d0b69bdab6ccc891fa1d14d39032f552dbcf4ea1b48fc',
+         'if (vs_fast_motion_gravity(c)) return;'),
         ('render_player_tiles', 7,
          '1bea09ccbed6d3ed6687a55fb92881a7592319611d70d401d93e63b6a0d92510',
          'if (vs_fast_render_player_tiles(c)) return;'),
@@ -403,6 +406,42 @@ def semantic_fast_paths(code, named_entries):
                  '0a8c68a9f05633c3cbb20d2f43e4254fab8738ec42efdce557885abc255552df'),
             ),
             'vs_fast_col_actor_block_col(c); return;',
+        ),
+        (
+            'render_plat_large',
+            (
+                ('render_plat_large', 72,
+                 '57d52485b1ee5c872b61b9cbb80133cc22d04746632bd87c4973db3255e21975'),
+                ('render_vine_column', 12,
+                 'a19c0fee0e85c0a58be7de00eb39cfe4d5c73e6393649167a8404b3f697aced9'),
+                ('render_set_four_sprites_v', 5,
+                 'fb9bcdc481d1346663fb0dbb8e477d46f1b71863ab89338bbc4d6b3d9adbb804'),
+                ('render_set_six_sprites', 7,
+                 '44025c05744f68abbe80d93b60907f9a737ed3eada58ef087ff8f6ca27d997a3'),
+                ('render_clear_six_sprites', 8,
+                 '6e47809fb2f87775de7555a629f9e0804947f18c7313d612272676c1db32b40c'),
+                ('pos_bits_get_do_x', 25,
+                 '42d792d7740f7fc14606f2c861a1cf04f903e6898ef520d53089ca41e267d758'),
+            ),
+            'if (vs_fast_render_plat_large(c)) return;',
+        ),
+        (
+            'render_player_do',
+            (
+                ('render_player_do', 44,
+                 '35b255aa055084373bb684d58d4e2a49e32a51b7556f494fc168974950f0d648'),
+                ('render_player_tiles_init', 19,
+                 'b83e996d90865db5bc7fbcef3e6db3cc8cbfb35b17c38e8394b0743f0a8177fd'),
+                ('render_player_tiles_mirror', 28,
+                 '0bd7b65f99476ae17761bcb0c6a3a52219811ea445daacec96bd60805a350746'),
+                ('render_set_two_sprites_v', 3,
+                 '29bb026601033d3bf9b080ebc4672eb8d8b617b08b1c798e2d32e058ab427d95'),
+                ('render_chr_pair', 2,
+                 '42ce39eac366bd5e84e69d7e0fe0491622899df41078eae9a5e93b62823efca6'),
+                ('render_chr_pair_do', 36,
+                 '52b0d0b34ee0ccfe79674ddafbef6eabc9d9a516134a5950be611f1c5639e870'),
+            ),
+            'if (vs_fast_render_player_do(c)) return;',
         ),
     )
     for entry_name, members, action in chained_routines:
@@ -567,18 +606,27 @@ def semantic_fast_paths(code, named_entries):
             result[render_tiles] = ('vs_fast_render_actor_tiles(c);', cursor)
 
     render_actor = named_entries.get('render_actor')
-    if render_actor is not None and render_tiles is not None:
+    render_cleanup = named_entries.get('render_actor_clear_offscr')
+    if render_actor is not None and render_cleanup is not None:
         actor_body = [
-            code[a] for a in sorted(code) if render_actor <= a < render_tiles
+            code[a] for a in sorted(code) if render_actor <= a < render_cleanup
         ]
         actor_digest = hashlib.sha256(
             json.dumps(actor_body, separators=(',', ':')).encode()
         ).hexdigest()
+        # The flipped-actor path also calls this shared six-store leaf.
+        six_sprite_stores = all(
+            code.get(0xe512 + i * 3) == ('STA', 'wy', 0x0214 - i * 4)
+            for i in range(6)
+        ) and code.get(0xe524) == ('RTS', 'i', 0)
         if (
-            len(actor_body) == 222 and
-            actor_digest == '33660d865d87d0bbb982fe4b63ce912cc64de58240c43d0a4729e985f2a91bc2'
+            len(actor_body) == 345 and
+            actor_digest == 'a8835dda978c39bd3d12f7a64ada1ec0d88e63c43380f643047cb90866412b9b' and
+            render_tiles in result and render_cleanup in result and
+            render_pair in result and six_sprite_stores and
+            named_entries.get('render_chr_pair_do') in result
         ):
-            result[render_actor] = ('if (vs_fast_render_goomba_state0(c)) return;', None)
+            result[render_actor] = ('if (vs_fast_render_actor(c)) return;', None)
 
     # Rendering one ordinary area column traverses 13 metatiles and crosses a
     # generated C page boundary on every row.  Fingerprint the complete source

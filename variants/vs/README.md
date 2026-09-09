@@ -97,6 +97,12 @@ Performance is still work in progress. Measure simulated display frames per
 game frame, not MAME's unthrottled host-speed percentage. The shorter 600-frame
 test includes attract/title screens and is not a standalone gameplay FPS test.
 
+The C core batches complete background columns, enemy and player sprite
+composition, and moving-platform rendering. Shared gravity and common collision
+and movement routines use direct C arithmetic. These follow the regular port's
+optimization approach while retaining the arcade game's animation, physics and
+clipping rules. The physical Neo Geo renderer is shared with SMBNeo.
+
 ## Hardware safeguards inherited from SMBNeo
 
 The VS renderer reuses the hardware-correct path, including these reviewed fixes:
