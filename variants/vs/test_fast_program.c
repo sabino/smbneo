@@ -36,7 +36,8 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
         entry == 0xeac1 || entry == 0xc9ba || entry == 0xd98a ||
         entry == 0xdf17 || entry == 0xe525 || entry == 0xbeea ||
-        entry == 0xeeaa || entry == 0x914a)
+        entry == 0xeeaa || entry == 0x914a ||
+        ((entry == 0xae40 || entry == 0xae71) && x < 256u))
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -48,6 +49,56 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     reference.coin_service = (uint8_t)(pattern & 0x64u);
     if (entry == 0xba8a)
         memset(reference.ram + 0x2a, 0, 9);
+    if (entry == 0xb2fd) {
+        reference.ram[0x1d] = (uint8_t)(x & 3u);
+        reference.ram[0x070e] = (uint8_t)((x >> 2) & 1u);
+        reference.ram[0x0a] = (uint8_t)y;
+        reference.ram[0x0b] = (uint8_t)y;
+        reference.ram[0x0c] = (uint8_t)(y & 3u);
+        reference.ram[0x0490] = (uint8_t)(pattern >> 8);
+        reference.ram[0x0d] = (x & 8u) ? 0x80u : 0u;
+        reference.ram[0x0704] = (uint8_t)((x >> 4) & 1u);
+        reference.ram[0x0782] = (uint8_t)((x >> 5) & 1u);
+        reference.ram[0x0783] = (uint8_t)((pattern >> 16) & 1u);
+        reference.ram[0x074e] = (uint8_t)((x >> 6) & 3u);
+        reference.ram[0x0700] = (uint8_t)(pattern >> 8);
+        reference.ram[0x047d] = (uint8_t)((pattern >> 10) & 1u);
+        reference.ram[0x0e] = (pattern & 1u) ? 7u : 8u;
+        reference.ram[0x0754] = (uint8_t)(pattern & 1u);
+        reference.ram[0x45] = (uint8_t)(1u + ((pattern >> 2) & 1u));
+        reference.ram[0x33] = (uint8_t)(1u + ((pattern >> 1) & 1u));
+        reference.ram[0x0703] = (uint8_t)((pattern >> 5) & 1u);
+    }
+    if (entry == 0xb43c) {
+        reference.ram[0x0700] = (uint8_t)y;
+        reference.ram[0x06fc] = (uint8_t)x;
+        reference.ram[0x45] = (uint8_t)(pattern & 3u);
+    }
+    if (entry == 0xb479) {
+        want.a = (uint8_t)(x & 3u);
+        reference.ram[0x0490] = (uint8_t)((x >> 2) & 3u);
+        reference.ram[0x57] = (uint8_t)y;
+        reference.ram[0x0705] = (uint8_t)(pattern >> 8);
+        reference.ram[0x0701] = (uint8_t)((x >> 4) & 1u);
+        reference.ram[0x0702] = (uint8_t)pattern;
+        reference.ram[0x0450] = (uint8_t)(0u - ((pattern >> 16) & 63u));
+        reference.ram[0x0456] = (uint8_t)((pattern >> 16) & 63u);
+    }
+    if (entry == 0xae40 || entry == 0xae71) {
+        reference.ram[0x0723] = (uint8_t)(x & 1u);
+        reference.ram[0x0785] = (uint8_t)((x >> 1) & 1u);
+        reference.ram[0x0755] = (uint8_t)y;
+        reference.ram[0x06ff] = (uint8_t)(pattern >> 8);
+        reference.ram[0x03a1] = (uint8_t)((x >> 2) & 3u);
+        reference.ram[0x0c] = (uint8_t)((x >> 4) & 3u);
+        reference.ram[0x071a] = (uint8_t)(pattern >> 16);
+        reference.ram[0x071c] = (uint8_t)pattern;
+        reference.ram[0x071b] = (uint8_t)(reference.ram[0x071a] + 1u);
+        reference.ram[0x071d] = (uint8_t)(reference.ram[0x071c] - 1u);
+        reference.ram[0x6d] = (uint8_t)(reference.ram[0x071a] +
+            ((x >> 6) & 3u) - 1u);
+        reference.ram[0x86] = (uint8_t)(pattern >> 5);
+    }
     if (entry == 0x914a) {
         unsigned pointer = 0x0300u + (y & 255u);
         unsigned count = 1u + (pattern % 63u);
@@ -346,6 +397,20 @@ int main(int argc, char **argv) {
         compare(data, 0x8aaf, seed >> 8, seed, seed * 151);
     for (unsigned seed = 0; seed < 65536; ++seed)
         compare(data, 0x914a, seed >> 8, seed, seed * 173);
+    /* Whole player policies: every speed/button byte, grounded/airborne/swim/
+     * climb modes, fractional carry/borrow, skid and camera boundaries. */
+    for (unsigned seed = 0; seed < 65536; ++seed) {
+        compare(data, 0xb2fd, seed >> 8, seed, seed * 179);
+        compare(data, 0xb43c, seed >> 8, seed, seed * 181);
+        compare(data, 0xb479, seed >> 8, seed, seed * 191);
+        compare(data, 0xae40, seed >> 8, seed, seed * 193);
+        compare(data, 0xae71, seed >> 8, seed, seed * 197);
+    }
+    /* Also retain the literal scroll path for wrapped/aliased stack layouts. */
+    for (unsigned seed = 0; seed < 4096; ++seed) {
+        compare(data, 0xae40, 256u + (seed >> 4), seed, seed * 199);
+        compare(data, 0xae71, 256u + (seed >> 4), seed, seed * 211);
+    }
     /* Nonempty offsets can alias the attribute buffer. Check every offset's
      * fallback, both column parities and both metatile sides. */
     for (unsigned offset = 1; offset < 256; ++offset)

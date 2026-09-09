@@ -300,6 +300,15 @@ def semantic_fast_paths(code, named_entries):
         if digest == '52b0d0b34ee0ccfe79674ddafbef6eabc9d9a516134a5950be611f1c5639e870':
             result[start] = ('vs_fast_render_pair(c); vs_fast_return(c); return;', None)
     for name, count, expected, action in (
+        ('player_proc_player_physics', 142,
+         '9e32d4b02d44599dc63bad5150a179f2366b828bdbad366b6be7e497c995d12a',
+         'vs_fast_player_physics(c); return;'),
+        ('player_proc_player_ani_speed', 28,
+         'b994f9a50e624f87e33499283a701934597cd9fbdd4357ab636e05efb00cdf55',
+         'vs_fast_player_animation_speed(c); return;'),
+        ('player_proc_player_friction', 39,
+         '8dbd4d5757d0b3846ed0f6d2a0e450067052d4aea332050f867c0aa1bd3456e7',
+         'vs_fast_player_friction(c); return;'),
         ('render_actor_chr_pair', 5,
          '50b64dc2ef458cce7f02753ba8150611b881c140ee646312b8806032d43dfe1c',
          'vs_fast_render_actor_pair(c); vs_fast_return(c); return;'),
@@ -357,6 +366,20 @@ def semantic_fast_paths(code, named_entries):
     # These wrappers are only safe when every member of their shared helper
     # chain retains the reviewed instruction shape.
     chained_routines = (
+        (
+            'game_scroll',
+            (
+                ('game_scroll', 72,
+                 '7655251e95aee817e406a608668b2db353147b8060d125a836156d1154e783c0'),
+                ('game_screen_pos_x_calc', 8,
+                 '08cc79bed70c85d37b7bd39215c6196418aa78fce1f9bbbc4cf33625677d4239'),
+                ('pos_bits_diff', 13,
+                 '2512abfcfa3e43f35588715357b4d81257c8f8158569ecc085b53aa91a7ab91a'),
+                ('pos_bits_get_do_x', 25,
+                 '42d792d7740f7fc14606f2c861a1cf04f903e6898ef520d53089ca41e267d758'),
+            ),
+            'if (vs_fast_game_scroll(c, 0u)) return;',
+        ),
         (
             'ppu_displist_write_do',
             (
@@ -476,6 +499,11 @@ def semantic_fast_paths(code, named_entries):
                 break
         if valid:
             result[named_entries[entry_name]] = (action, None)
+
+    # The alternate entry is inside the same fully fingerprinted scroll body.
+    scroll = named_entries.get('game_scroll')
+    if scroll in result and named_entries.get('game_scroll_calc') == 0xae71:
+        result[0xae71] = ('if (vs_fast_game_scroll(c, 1u)) return;', None)
 
     actor_loop = named_entries.get('actor_loop')
     actor_init_check = named_entries.get('actor_init_check')

@@ -1323,6 +1323,235 @@ static inline void vs_fast_stats_score_hi_check_do(VsCpu *c) {
 }
 
 
+/* Select the complete player physics profile in C. The verified cartridge's
+ * tables remain authoritative for jumping, swimming, climbing and run speed;
+ * no movement constants or original button-edge rules are changed. */
+static inline void vs_fast_player_physics(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    const uint8_t *prg = c->bus->prg;
+    uint8_t state = ram[0x1d];
+    unsigned speed_profile = 0u;
+    unsigned friction_profile = 0u;
+
+    if (state == 3u) {
+        uint8_t direction = ram[0x0b] & ram[0x0490];
+        unsigned profile = direction == 0u ? 0u : (direction & 8u) ? 1u : 2u;
+        uint8_t speed = prg[0x32f7u + profile];
+        ram[0x0433] = prg[0x32fau + profile];
+        ram[0x9f] = speed;
+        c->x = speed;
+        c->y = (uint8_t)profile;
+        c->a = (speed & 0x80u) ? 8u : 4u;
+        ram[0x070c] = c->a;
+        c->p = (c->p & ~(VS_C | VS_N | VS_Z)) |
+            ((speed & 0x80u) ? (VS_C | VS_N) : 0u);
+        vs_fast_return(c);
+        return;
+    }
+
+    if (ram[0x070e] == 0u && (ram[0x0a] & 0x80u) != 0u &&
+        (ram[0x0d] & 0x80u) == 0u &&
+        (state == 0u || (ram[0x0704] != 0u &&
+            (ram[0x0782] != 0u || (ram[0x9f] & 0x80u) == 0u)))) {
+        uint8_t speed = ram[0x0700];
+        unsigned profile = (speed >= 9u) + (speed >= 16u) +
+            (speed >= 25u) + (speed >= 28u);
+        ram[0x0782] = 0x20u;
+        ram[0x0416] = 0u;
+        ram[0x0707] = ram[0xb5];
+        ram[0x0708] = ram[0xce];
+        ram[0x1d] = state = 1u;
+        ram[0x0706] = 1u;
+        if (ram[0x0704] != 0u)
+            profile = 5u + (ram[0x047d] != 0u);
+        ram[0x0709] = prg[0x32d1u + profile];
+        ram[0x070a] = prg[0x32d8u + profile];
+        ram[0x0433] = prg[0x32e6u + profile];
+        ram[0x9f] = prg[0x32dfu + profile];
+        if (ram[0x0704] != 0u) {
+            ram[0xff] = 4u;
+            if (ram[0xce] < 20u)
+                ram[0x9f] = 0u;
+        } else {
+            ram[0xff] = ram[0x0754] == 0u ? 1u : 0x80u;
+        }
+    }
+
+    if (state != 0u && ram[0x0700] >= 25u) {
+        /* Keep the fast horizontal profile during an already-fast jump. */
+    } else if (state == 0u && ram[0x074e] != 0u &&
+               ram[0x0c] == ram[0x45] &&
+               ((ram[0x0a] & 0x40u) != 0u || ram[0x0783] != 0u)) {
+        if ((ram[0x0a] & 0x40u) != 0u)
+            ram[0x0783] = 10u;
+    } else {
+        speed_profile = 1u + (state == 0u && ram[0x074e] == 0u);
+        friction_profile = 1u +
+            (ram[0x0703] != 0u || ram[0x0700] >= 33u);
+    }
+    ram[0] = (uint8_t)friction_profile;
+    ram[0x0450] = prg[0x32edu + speed_profile];
+    ram[0x0456] = prg[0x32f0u + (ram[0x0e] == 7u ? 3u : speed_profile)];
+    ram[0x0702] = prg[0x32f4u + friction_profile];
+    ram[0x0701] = 0u;
+    c->y = (uint8_t)friction_profile;
+    c->a = ram[0x33];
+    if (c->a == ram[0x45]) {
+        c->p = (c->p & ~(VS_C | VS_N | VS_Z)) | VS_C | VS_Z;
+    } else {
+        ram[0x0701] = ram[0x0702] >> 7;
+        ram[0x0702] = (uint8_t)(ram[0x0702] << 1);
+        c->p &= (uint8_t)~VS_C;
+        (void)vs_nz(c, ram[0x0701]);
+    }
+    vs_fast_return(c);
+}
+
+/* Animation/skid policy uses speed bands rather than instruction dispatch. */
+static inline void vs_fast_player_animation_speed(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t speed = ram[0x0700];
+    unsigned profile = speed >= 28u ? 0u : speed >= 14u ? 1u : 2u;
+    uint8_t carry = speed >= 14u;
+
+    if (profile == 0u) {
+        ram[0x0703] = speed;
+    } else if ((ram[0x06fc] & 0x7fu) != 0u) {
+        if ((ram[0x06fc] & 3u) == ram[0x45]) {
+            ram[0x0703] = 0u;
+            carry = 1u;
+        } else {
+            carry = speed >= 11u;
+            if (!carry) {
+                ram[0x45] = ram[0x33];
+                ram[0x57] = 0u;
+                ram[0x0705] = 0u;
+            }
+        }
+    }
+    c->y = (uint8_t)profile;
+    c->p = (c->p & ~VS_C) | carry;
+    c->a = vs_nz(c, c->bus->prg[0x3439u + profile]);
+    ram[0x070c] = c->a;
+    vs_fast_return(c);
+}
+
+/* One fixed-point horizontal acceleration/braking operation. Only the final
+ * high-byte arithmetic and sign/clamp decisions materialize CPU flags. Keep
+ * byte-sign comparisons, including wraparound, exactly as in the source. */
+static inline void vs_fast_player_friction(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t direction = c->a & ram[0x0490];
+    uint8_t speed = ram[0x57];
+    unsigned low;
+
+    if (direction == 0u && speed == 0u) {
+        c->p |= VS_C;
+        c->a = vs_nz(c, 0u);
+    } else if ((direction & 1u) != 0u ||
+               (direction == 0u && (speed & 0x80u) != 0u)) {
+        low = (unsigned)ram[0x0705] + ram[0x0702];
+        ram[0x0705] = (uint8_t)low;
+        c->a = speed;
+        c->p = (c->p & ~VS_C) | (low > 255u);
+        vs_adc(c, ram[0x0701]);
+        ram[0x57] = c->a;
+        vs_cmp(c, c->a, ram[0x0456]);
+        if ((c->p & VS_N) == 0u) {
+            c->a = vs_nz(c, ram[0x0456]);
+            ram[0x57] = c->a;
+            /* The right clamp bypasses the absolute-value conversion. */
+            ram[0x0700] = c->a;
+            vs_fast_return(c);
+            return;
+        }
+        goto absolute_speed;
+    } else {
+        low = (unsigned)ram[0x0705] + (uint8_t)~ram[0x0702] + 1u;
+        ram[0x0705] = (uint8_t)low;
+        c->a = speed;
+        c->p = (c->p & ~VS_C) | (low > 255u);
+        vs_adc(c, (uint8_t)~ram[0x0701]);
+        ram[0x57] = c->a;
+        vs_cmp(c, c->a, ram[0x0450]);
+        if ((c->p & VS_N) != 0u) {
+            c->a = ram[0x0450];
+            ram[0x57] = c->a;
+        }
+    absolute_speed:
+        vs_cmp(c, c->a, 0u);
+        if ((c->a & 0x80u) != 0u) {
+            c->a ^= 0xffu;
+            c->p &= (uint8_t)~VS_C;
+            vs_adc(c, 1u);
+        }
+    }
+    ram[0x0700] = c->a;
+    vs_fast_return(c);
+}
+
+/* Screen movement is a pair of 16-bit additions followed by the shared
+ * horizontal bounds calculation. Preserve its clamping and scratch bytes;
+ * this changes neither the camera threshold nor the number of game ticks. */
+static inline int vs_fast_game_scroll(VsCpu *c, uint8_t direct_amount) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t amount = c->y;
+
+    if (c->s < 0x40u)
+        return 0;
+    if (!direct_amount) {
+        uint8_t motion = (uint8_t)(ram[0x06ff] + ram[0x03a1]);
+        ram[0x06ff] = motion;
+        if (ram[0x0723] != 0u || ram[0x0755] < 80u ||
+            ram[0x0785] != 0u || ((uint8_t)(motion - 1u) & 0x80u) != 0u) {
+            ram[0x0775] = 0u;
+            goto clamp_player;
+        }
+        amount = motion;
+        if (motion >= 2u && ram[0x0755] < 112u)
+            --amount;
+    }
+    ram[0x0775] = amount;
+    ram[0x073d] = (uint8_t)(ram[0x073d] + amount);
+    {
+        unsigned left = (unsigned)ram[0x071c] + amount;
+        ram[0x071c] = ram[0x073f] = (uint8_t)left;
+        ram[0x071a] = (uint8_t)(ram[0x071a] + (left > 255u));
+        ram[0x0778] = (ram[0x0778] & 0xfeu) | (ram[0x071a] & 1u);
+        left = (unsigned)ram[0x071c] + 255u;
+        ram[0x071d] = (uint8_t)left;
+        ram[0x071b] = (uint8_t)(ram[0x071a] + (left > 255u));
+    }
+    ram[0x0795] = 8u;
+
+clamp_player:
+    c->x = 0u;
+    /* This last leaf overwrites the earlier screen-boundary call's stack. */
+    vs_push(c, 0xae);
+    vs_push(c, 0xb1);
+    vs_fast_pos_bits_get_do_x(c);
+    vs_fast_return(c);
+    ram[0] = c->a;
+    c->y = (c->a & 0x80u) ? 0u : 1u;
+    c->p = (c->p & ~VS_C) | ((c->a & 0x80u) != 0u);
+    if ((c->a & 0xa0u) != 0u) {
+        unsigned low = (unsigned)ram[0x071cu + c->y] +
+            (uint8_t)~c->bus->prg[0x2ee1u + c->y] + 1u;
+        ram[0x86] = (uint8_t)low;
+        c->a = ram[0x071au + c->y];
+        c->p = (c->p & ~VS_C) | (low > 255u);
+        vs_adc(c, 0xffu);
+        ram[0x6d] = c->a;
+        vs_cmp(c, ram[0x0c], c->bus->prg[0x2ee3u + c->y]);
+        if ((c->p & VS_Z) == 0u)
+            ram[0x57] = 0u;
+    }
+    c->a = vs_nz(c, 0u);
+    ram[0x03a1] = 0u;
+    vs_fast_return(c);
+    return 1;
+}
+
 static inline void vs_fast_motion_x_do_alias_exact(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
 
