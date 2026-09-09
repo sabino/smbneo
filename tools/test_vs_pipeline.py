@@ -156,20 +156,22 @@ class TranslationTests(unittest.TestCase):
             root = Path(tmp)
             prg, dbg = self.fixture(root, 'lda #0\nbne :-\nrts\n.res 1\n',
                                     bytes([0xa9, 0, 0xd0, 0xfc, 0x60, 0xea]), [(0, 2), (2, 2), (4, 1), (5, 1)])
-            output, count = translate(prg, dbg, root)
+            output, count = translate(prg, dbg, root, native_allowlist=())
             self.assertEqual(count, 3)
             self.assertNotIn(0x8005, instructions(prg, dbg, root))
             self.assertIn('goto L8000;', output)
             self.assertNotIn('switch (opcode)', output)
-            self.assertEqual(translate(prg, dbg, root)[0], output)
+            self.assertEqual(translate(prg, dbg, root, native_allowlist=())[0], output)
 
     def test_mismatched_code_and_jump_into_data_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             prg, dbg = self.fixture(root, 'lda #0\n', bytes([0xa2, 0]), [(0, 2)])
-            with self.assertRaisesRegex(ValueError, 'mismatch'): translate(prg, dbg, root)
+            with self.assertRaisesRegex(ValueError, 'mismatch'):
+                translate(prg, dbg, root, native_allowlist=())
             prg, dbg = self.fixture(root, 'jmp $8003\n.res 1\n', bytes([0x4c, 3, 0x80, 0x60]), [(0, 3), (3, 1)])
-            with self.assertRaisesRegex(ValueError, 'Unmapped direct'): translate(prg, dbg, root)
+            with self.assertRaisesRegex(ValueError, 'Unmapped direct'):
+                translate(prg, dbg, root, native_allowlist=())
 
     def test_opcode_inventory(self):
         self.assertEqual(len(OPS), 256)
@@ -183,12 +185,58 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(set(routines), {0x80fe, 0x8200})
         self.assertEqual(routines[0x80fe], ('vs_fn_actor_step_80fe', {0x80fe, 0x8100, 0x8103}))
         with patch('translate_vs.instructions', return_value=code):
-            generated, _ = translate(bytes(32768), '', Path('.'))
+            generated, _ = translate(bytes(32768), '', Path('.'),
+                                      native_allowlist={0x80fe, 0x8200})
             fallback, _ = translate(bytes(32768), '', Path('.'), native_functions=False)
         self.assertIn('vs_fn_sub_8200(c, depth + 1u);', generated)
         self.assertIn('c->pc != 0x8103', generated)
         self.assertIn('depth >= 16u', generated)
         self.assertNotIn('vs_fn_', fallback)
+
+    def test_native_allowlist_selects_calls_and_keeps_omitted_jsr_on_pages(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8003: ('JSR', 'w', 0x8200),
+                0x8006: ('RTS', 'i', 0), 0x8100: ('RTS', 'i', 0),
+                0x8200: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code):
+            source, _ = translate(bytes(32768), '', Path('.'),
+                                  native_allowlist={0x8100})
+        self.assertIn('static void vs_fn_sub_8100', source)
+        self.assertNotIn('static void vs_fn_sub_8200', source)
+        self.assertIn('vs_fn_sub_8100(c, 0u);', source)
+        self.assertIn('vs_push(c, 0x80); vs_push(c, 0x05); { c->pc = 0x8200; return; }', source)
+
+    def test_native_allowlist_rejects_stale_policy_and_reports_deterministic_stats(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8100: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code):
+            stats = {}
+            translate(bytes(32768), '', Path('.'), native_allowlist={0x8100}, stats=stats)
+            self.assertEqual(stats['native_function_policy'], 'allowlist-v1')
+            self.assertEqual(stats['native_allowlist_count'], 1)
+            self.assertEqual(stats['native_routine_count'], 1)
+            self.assertEqual(stats['semantic_native_routine_count'], 0)
+            self.assertEqual(stats['native_table_target_count'], 0)
+            self.assertEqual(stats['native_table_direct_target_count'], 0)
+            self.assertEqual(stats['native_allowlist_sha256'],
+                             '148f7f53058a1788821aacd2ae8f3264f0cc3da0f1fd55e71f21974362d9f58e')
+            disabled = {}
+            translate(bytes(32768), '', Path('.'), native_functions=False,
+                      stats=disabled)
+            self.assertEqual(disabled['native_function_policy'], 'disabled')
+            self.assertEqual(disabled['native_routine_count'], 0)
+            self.assertIsNone(disabled['native_allowlist_sha256'])
+            with self.assertRaisesRegex(ValueError, 'not verified routines'):
+                translate(bytes(32768), '', Path('.'), native_allowlist={0x8200})
+
+    def test_semantic_routine_survives_an_empty_explicit_allowlist(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8003: ('RTS', 'i', 0),
+                0x8100: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x8100: ('c->a = 1;', None)}):
+            source, _ = translate(bytes(32768), '', Path('.'),
+                                  native_allowlist=())
+        self.assertIn('static void vs_fn_sub_8100', source)
+        self.assertIn('c->a = 1;', source)
 
     def test_native_tables_require_explicit_address_data_and_known_code(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,7 +314,16 @@ class TranslationTests(unittest.TestCase):
                  'sym\tname="unexpected_target",val=0xa700,type=lab\n')
         with patch('translate_vs.instructions', return_value=code), \
              patch('translate_vs.native_tables', return_value={0xa102: {0xa600}}):
-            source, _ = translate(bytes(32768), debug, Path('.'))
+            selected = {0x8100, 0x8200, 0x8500, 0x8600, 0x8900,
+                        0x8d00, 0x9100, 0x9200, 0x9500, 0x9900,
+                        0x9d00, 0xa100, 0xa500}
+            source, _ = translate(bytes(32768), debug, Path('.'),
+                                  native_allowlist=selected)
+        self.assertNotIn('vs_fast_table_jump(c);\nswitch (c->pc) {\ncase 0xa600:',
+                         source)
+        self.assertIn('vs_fast_table_jump(c);\nswitch (c->pc) {\ndefault: return;',
+                      source)
+        self.assertNotIn('vs_fn_sub_a600', source)
         include = Path(__file__).resolve().parents[1] / 'variants' / 'vs'
         harness = r'''
 #include "vs_cpu.h"

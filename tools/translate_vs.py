@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 import re
 
+from vs_native_allowlist import NATIVE_ROUTINE_ALLOWLIST
+
 # Official RP2A03 instructions, organized by opcode. '-' is unsupported.
 ROWS = (
 "BRK:i ORA:ix - - - ORA:z ASL:z - PHP:i ORA:n ASL:a - - ORA:w ASL:w -",
@@ -1163,7 +1165,8 @@ def emit_game_proc_composition(routines):
 
 
 def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
-              native_functions: bool = True) -> tuple[str, int]:
+              native_functions: bool = True, native_allowlist=None,
+              stats: dict | None = None) -> tuple[str, int]:
     page_bits = 8
     code = instructions(prg, debug, source_root)
     # Preserve conservative flag-liveness barriers while changing call flow.
@@ -1202,7 +1205,40 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
     if native_functions and fast_paths.get(table_entry) == ('vs_fast_table_jump(c); return;', None):
         tables = native_tables(prg, debug, source_root, code, table_entry)
     table_targets = {target for targets in tables.values() for target in targets}
-    routines = native_routines(code, named_entries, table_targets) if native_functions else {}
+    all_routines = native_routines(code, named_entries, table_targets) if native_functions else {}
+    policy = (NATIVE_ROUTINE_ALLOWLIST if native_allowlist is None
+              else frozenset(native_allowlist))
+    if native_functions:
+        stale = sorted(policy - set(all_routines))
+        if stale:
+            formatted = ', '.join(f'0x{address:04x}' for address in stale)
+            raise ValueError(f'Native allowlist addresses are not verified routines: {formatted}')
+        semantic_routines = {
+            address for address in fast_paths
+            if address in all_routines
+        }
+        semantic_routines.update(
+            target for _, target in fast_paths.values()
+            if target is not None and target in all_routines
+        )
+        selected = policy | semantic_routines
+        routines = {address: value for address, value in all_routines.items()
+                    if address in selected}
+    else:
+        routines = {}
+        semantic_routines = set()
+    if stats is not None:
+        stats.update({
+            'native_function_policy': 'allowlist-v1' if native_functions else 'disabled',
+            'native_allowlist_count': len(policy) if native_functions else 0,
+            'native_routine_count': len(routines),
+            'semantic_native_routine_count': len(semantic_routines),
+            'native_table_target_count': len(table_targets),
+            'native_table_direct_target_count': len(table_targets & set(routines)),
+            'native_allowlist_sha256': hashlib.sha256(
+                json.dumps(sorted(policy), separators=(',', ':')).encode()
+            ).hexdigest() if native_functions else None,
+        })
     native_entries.update(routines)
     composition = (game_proc_composition(code, named_entries, routines)
                    if native_functions else None)
@@ -1224,8 +1260,12 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
             if a in tables:
                 emitted += ['#if !defined(VS_REFERENCE_KERNELS)', 'vs_fast_table_jump(c);',
                             'switch (c->pc) {']
-                for target in sorted(tables[a]):
-                    emitted += [f'case 0x{target:04x}:'] + emit_native_call(routines[target][0], target, depth)
+                for target in sorted(tables[a] & routines.keys()):
+                    emitted += [f'case 0x{target:04x}:']
+                    emitted += emit_native_call(routines[target][0], target, depth)
+                # The table jump already selected the actual target in c->pc.
+                # Any omitted or unexpected target resumes through the page
+                # dispatcher with that value intact.
                 emitted += ['default: return;', '}', '#else']
             emitted += emit_native_call(routines[operand][0], operand, depth, nxt)
             if a in tables: emitted += ['#endif']
@@ -1337,14 +1377,16 @@ def main() -> None:
     if args.reference_prg.read_bytes() != rom.prg:
         raise ValueError('Linked reference PRG differs from verified user input')
     debug = args.debug.read_text()
+    stats = {}
     source, count = translate(rom.prg, debug, args.source_root, args.profile,
-                              not args.no_native_functions)
+                              not args.no_native_functions, stats=stats)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if not args.output.exists() or args.output.read_text() != source:
         args.output.write_text(source)
     args.output.with_suffix('.json').write_text(json.dumps({
         'instruction_count': count,
         'native_functions': not args.no_native_functions,
+        **stats,
         'prg_sha256': hashlib.sha256(rom.prg).hexdigest(),
         'debug_sha256': hashlib.sha256(debug.encode()).hexdigest(),
         'c_sha256': hashlib.sha256(source.encode()).hexdigest()}, indent=2) + '\n')
