@@ -426,6 +426,90 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     assert(reference.coin_counter == optimized.coin_counter);
     ++cases;
 }
+
+/* B1D6 is the player movement state selector.  Keep this matrix deliberately
+ * smaller than the broad helper sweep above: its purpose is to pin the state
+ * and input boundary contract while it calls the already-covered physics and
+ * movement kernels. */
+static void compare_player_move(const uint8_t *prg, unsigned size,
+                                unsigned state, unsigned down,
+                                unsigned resizing, unsigned climb_timer,
+                                unsigned seed) {
+    VsBus reference, optimized;
+    VsCpu want, got;
+    vs_bus_init(&reference, prg, prg + 32768);
+    for (unsigned i = 0; i < 2048; ++i)
+        reference.ram[i] = (uint8_t)(i * 29u + seed * 17u);
+
+    /* B1D6 inputs and the live player physics fields.  The values deliberately
+     * include fractional positions, signed velocities, and timer boundaries. */
+    reference.ram[0x0754] = (uint8_t)size;
+    reference.ram[0x001d] = (uint8_t)state;
+    reference.ram[0x000b] = (uint8_t)down;
+    reference.ram[0x070b] = (uint8_t)resizing;
+    reference.ram[0x0789] = (uint8_t)climb_timer;
+    reference.ram[0x000a] = (uint8_t)(seed * 3u);
+    reference.ram[0x000c] = (uint8_t)(seed * 5u);
+    reference.ram[0x000d] = (uint8_t)(seed * 7u);
+    reference.ram[0x000e] = (uint8_t)(seed * 11u);
+    reference.ram[0x0033] = (uint8_t)(seed * 13u);
+    reference.ram[0x0045] = (uint8_t)(seed * 19u);
+    reference.ram[0x0490] = (uint8_t)(seed * 23u);
+    reference.ram[0x0700] = (uint8_t)(seed * 31u);
+    reference.ram[0x0701] = (uint8_t)(seed * 37u);
+    reference.ram[0x0702] = (uint8_t)(seed * 41u);
+    reference.ram[0x0703] = (uint8_t)(seed * 43u);
+    reference.ram[0x0704] = (uint8_t)(seed * 47u);
+    reference.ram[0x0705] = (uint8_t)(seed * 53u);
+    reference.ram[0x0706] = (uint8_t)(seed * 59u);
+    reference.ram[0x0708] = (uint8_t)(seed * 61u);
+    reference.ram[0x0709] = (uint8_t)(seed * 67u);
+    reference.ram[0x070a] = (uint8_t)(seed * 71u);
+    reference.ram[0x070e] = (uint8_t)(seed * 73u);
+    reference.ram[0x0714] = (uint8_t)(seed * 79u);
+    reference.ram[0x0747] = (uint8_t)(seed * 83u);
+    reference.ram[0x0755] = (uint8_t)(seed * 89u);
+    reference.ram[0x0782] = (uint8_t)(seed * 97u);
+    reference.ram[0x0783] = (uint8_t)(seed * 101u);
+    reference.ram[0x0785] = (uint8_t)(seed * 103u);
+    reference.ram[0x078f] = (uint8_t)(seed * 107u);
+    reference.ram[0x0796] = (uint8_t)(seed * 109u);
+
+    vs_cpu_init(&want, &reference);
+    want.pc = 0xb1d6;
+    want.a = (uint8_t)(seed * 113u);
+    want.x = (uint8_t)(seed * 127u);
+    want.y = (uint8_t)(seed * 131u);
+    want.p = (uint8_t)(VS_U | (seed * 137u));
+    want.s = 0xfd;
+    vs_push(&want, 0xff);
+    vs_push(&want, 0xfe);
+    optimized = reference;
+    got = want;
+    got.bus = &optimized;
+
+    vs_program_reference(&want, 200000u);
+    vs_program_run(&got, 200000u);
+    if (!(want.pc == got.pc && want.a == got.a && want.x == got.x &&
+          want.y == got.y && want.s == got.s && want.p == got.p &&
+          want.fault == got.fault && want.idle == got.idle &&
+          want.in_nmi == got.in_nmi && want.yielded == got.yielded)) {
+        fprintf(stderr, "B1D6 CPU mismatch size=%u state=%u down=%u resize=%u climb=%u seed=%u\n",
+                size, state, down, resizing, climb_timer, seed);
+        assert(0);
+    }
+    assert(memcmp(reference.ram, optimized.ram, sizeof(reference.ram)) == 0);
+    assert(memcmp(reference.extra_ram, optimized.extra_ram,
+                  sizeof(reference.extra_ram)) == 0);
+    assert(memcmp(reference.latch, optimized.latch, sizeof(reference.latch)) == 0);
+    assert(reference.strobe == optimized.strobe);
+    assert(reference.chr_bank == optimized.chr_bank);
+    assert(reference.ram_control == optimized.ram_control);
+    assert(reference.counter_latch == optimized.counter_latch);
+    assert(reference.counter_line == optimized.counter_line);
+    assert(reference.coin_counter == optimized.coin_counter);
+    ++cases;
+}
 int main(int argc, char **argv) {
     static uint8_t data[49152];
     assert(argc == 2);
@@ -433,6 +517,18 @@ int main(int argc, char **argv) {
     assert(fseek(f, 16, SEEK_SET) == 0);
     assert(fread(data, 1, sizeof(data), f) == sizeof(data)); fclose(f);
     check_cannon_fallback(data);
+    static const unsigned player_move_states[] = {0, 1, 2, 3, 4, 5, 7, 0xff};
+    for (unsigned size = 0; size < 4; ++size)
+        for (unsigned state_index = 0;
+             state_index < sizeof(player_move_states) / sizeof(player_move_states[0]);
+             ++state_index) {
+            unsigned state = player_move_states[state_index];
+            for (unsigned down = 0; down < 4; ++down)
+                for (unsigned resizing = 0; resizing < 4; ++resizing)
+                    for (unsigned climb = 0; climb < 4; ++climb)
+                        compare_player_move(data, size, state, down, resizing,
+                                            climb, size + state * 3u + down);
+        }
     for (unsigned y = 0; y < 256; ++y) for (unsigned x = 0; x < 512; ++x)
         compare(data, 0xf1e7, x, y, (x * 17 + y * 31) & 255);
     for (unsigned y = 0; y < 256; y += 4) for (unsigned status = 0; status < 256; ++status)

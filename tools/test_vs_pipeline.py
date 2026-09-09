@@ -14,7 +14,10 @@ from vs_rom import Chip, CHIPS, PALETTE, load_vs_rom, verify_chip
 from translate_vs import (instructions, translate, OPS, live_flags, emit_instruction,
                           semantic_fast_paths, native_routines, native_tables,
                           game_proc_composition, emit_game_proc_composition,
-                          _GAME_PROC_CHILDREN, _SCENERY_CHILD)
+                          player_move_composition, emit_player_move_composition,
+                          _GAME_PROC_CHILDREN, _SCENERY_CHILD, _PLAYER_MOVE_BODY,
+                          _PLAYER_MOVE_TABLE, _PLAYER_MOVE_TABLE_BYTES,
+                          _PLAYER_MOVE_FINGERPRINT)
 
 
 class VsInputTests(unittest.TestCase):
@@ -51,6 +54,102 @@ class VsInputTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_player_move_composition_is_fingerprint_and_table_gated(self):
+        code = {
+            0xb1d6: ('LDA', 'n', 0), 0xb1d8: ('LDY', 'w', 0x0754),
+            0xb1db: ('BNE', 'r', 8), 0xb1dd: ('LDA', 'z', 0x1d),
+            0xb1df: ('BNE', 'r', 7), 0xb1e1: ('LDA', 'z', 0x0b),
+            0xb1e3: ('AND', 'n', 4), 0xb1e5: ('STA', 'w', 0x0714),
+            0xb1e8: ('JSR', 'w', 0xb2fd), 0xb1eb: ('LDA', 'w', 0x070b),
+            0xb1ee: ('BNE', 'r', 22), 0xb1f0: ('LDA', 'z', 0x1d),
+            0xb1f2: ('CMP', 'n', 3), 0xb1f4: ('BEQ', 'r', 5),
+            0xb1f6: ('LDY', 'n', 24), 0xb1f8: ('STY', 'w', 0x0789),
+            0xb1fb: ('JSR', 'w', 0x90bb), 0xb206: ('RTS', 'i', 0),
+        }
+        self.assertEqual(tuple(code), _PLAYER_MOVE_BODY)
+        self.assertEqual(len(_PLAYER_MOVE_BODY), _PLAYER_MOVE_FINGERPRINT[1])
+        routines = {0xb2fd: ('vs_fn_physics_b2fd', set())}
+        names = {'player_proc_player_move': 0xb1d6}
+        tables = {0xb1fb: {target for _, target in _PLAYER_MOVE_TABLE}}
+        prg = bytearray(32768)
+        prg[0xb1fe - 0x8000:0xb206 - 0x8000] = _PLAYER_MOVE_TABLE_BYTES
+        self.assertIsNotNone(player_move_composition(code, names, routines, tables, prg))
+        self.assertIsNone(player_move_composition(code, names, routines, {}, prg))
+        self.assertIsNone(player_move_composition(
+            code, names, routines, {0xb1fb: {0xb207, 0xb223, 0xb21a}}, prg))
+        self.assertIsNone(player_move_composition(
+            {**code, 0xb1d6: ('NOP', 'i', 0)}, names, routines, tables, prg))
+        self.assertIsNone(player_move_composition(code, names, {}, tables, prg))
+        self.assertIsNone(player_move_composition(
+            code, {'player_proc_player_move': 0xb1d7}, routines, tables, prg))
+        reordered = bytearray(prg)
+        reordered[0xb1fe - 0x8000:0xb206 - 0x8000] = bytes(
+            (0x23, 0xb2, 0x07, 0xb2, 0x1a, 0xb2, 0x7c, 0xb2))
+        self.assertIsNone(player_move_composition(code, names, routines, tables, reordered))
+
+    def test_player_move_composition_emits_state_tail_and_fallback_contract(self):
+        targets = dict(_PLAYER_MOVE_TABLE)
+        routines = {0xb2fd: ('vs_fn_physics_b2fd', set())}
+        routines.update({target: (f'vs_fn_state_{target:04x}', set())
+                         for target in targets.values()})
+        output = '\n'.join(emit_player_move_composition(
+            {'physics': 0xb2fd, 'targets': targets}, routines))
+        self.assertIn('if (state > 3u) return 0;', output)
+        self.assertIn('uint8_t store_crouch = 1u;', output)
+        self.assertIn('if (store_crouch) ram[0x0714] = c->a;', output)
+        self.assertIn('vs_push(c, 0xb1); vs_push(c, 0xea);', output)
+        self.assertIn('c->pc = 0xb2fd; vs_fn_physics_b2fd(c, depth + 1u);', output)
+        self.assertIn('if (c->pc != 0xb1eb || !c->fuel || c->fault || c->idle || c->yielded) return 1;', output)
+        self.assertIn('if (state > 3u) { c->pc = 0xb1f0; return 1; }', output)
+        self.assertIn('vs_push(c, 0xb1); vs_push(c, 0xfd);', output)
+        self.assertIn('vs_fast_table_jump(c);', output)
+        for target in targets.values():
+            self.assertIn(f'case 0x{target:04x}:', output)
+            self.assertIn(f'c->pc = 0x{target:04x}; vs_fn_state_{target:04x}(c, depth + 1u);', output)
+        # Table-selected state routines consume the original caller frame;
+        # composition must not synthesize another JSR frame for them.
+        table_tail = output[output.index('switch (c->pc) {'):]
+        self.assertNotIn('vs_push(c, 0xb2)', table_tail)
+
+    def test_translate_emits_player_move_composition_only_for_verified_table(self):
+        code = {
+            0x8000: ('JSR', 'w', 0xb1d6), 0x8003: ('RTS', 'i', 0),
+            0xb1d6: ('LDA', 'n', 0), 0xb1d8: ('LDY', 'w', 0x0754),
+            0xb1db: ('BNE', 'r', 8), 0xb1dd: ('LDA', 'z', 0x1d),
+            0xb1df: ('BNE', 'r', 7), 0xb1e1: ('LDA', 'z', 0x0b),
+            0xb1e3: ('AND', 'n', 4), 0xb1e5: ('STA', 'w', 0x0714),
+            0xb1e8: ('JSR', 'w', 0xb2fd), 0xb1eb: ('LDA', 'w', 0x070b),
+            0xb1ee: ('BNE', 'r', 22), 0xb1f0: ('LDA', 'z', 0x1d),
+            0xb1f2: ('CMP', 'n', 3), 0xb1f4: ('BEQ', 'r', 5),
+            0xb1f6: ('LDY', 'n', 24), 0xb1f8: ('STY', 'w', 0x0789),
+            0xb1fb: ('JSR', 'w', 0x90bb), 0xb206: ('RTS', 'i', 0),
+            0x90bb: ('RTS', 'i', 0), 0xb2fd: ('RTS', 'i', 0),
+        }
+        debug = ('sym\tname="player_proc_player_move",val=0xb1d6,type=lab\n'
+                 'sym\tname="tbljmp",val=0x90bb,type=lab\n')
+        good_table = {0xb1fb: {target for _, target in _PLAYER_MOVE_TABLE}}
+        good_prg = bytearray(32768)
+        good_prg[0xb1fe - 0x8000:0xb206 - 0x8000] = _PLAYER_MOVE_TABLE_BYTES
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x90bb: ('vs_fast_table_jump(c); return;', None)}), \
+             patch('translate_vs.native_tables', return_value=good_table):
+            source, _ = translate(good_prg, debug, Path('.'),
+                                  native_allowlist={0xb1d6, 0xb2fd})
+        self.assertIn('static int vs_generated_player_move', source)
+        self.assertIn('if (vs_generated_player_move(c, depth)) return;', source)
+        bad_table = {0xb1fb: {0xb207, 0xb223, 0xb21a}}
+        bad_prg = bytearray(good_prg)
+        bad_prg[0xb1fe - 0x8000:0xb206 - 0x8000] = bytes(
+            (0x23, 0xb2, 0x07, 0xb2, 0x1a, 0xb2, 0x7c, 0xb2))
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x90bb: ('vs_fast_table_jump(c); return;', None)}), \
+             patch('translate_vs.native_tables', return_value=bad_table):
+            source, _ = translate(bad_prg, debug, Path('.'),
+                                  native_allowlist={0xb2fd})
+        self.assertNotIn('static int vs_generated_player_move', source)
+
     def test_scheduler_composition_requires_verified_bodies_and_all_children(self):
         # Synthetic instruction maps exercise the recognizer without importing
         # any donor ROM bytes.  The expected fingerprint is patched only for

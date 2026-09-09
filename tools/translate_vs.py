@@ -891,6 +891,126 @@ _GAME_PROC_CHILDREN = (
 )
 _SCENERY_CHILD = (0xa18b, 0xae3f, 0xae, 0x3e)
 
+# player_proc_player_move is a small orchestration routine whose table bytes
+# sit immediately after the JSR to tbljmp.  The ordinary local CFG walker
+# cannot cross that untyped address table, so keep its exact decoded body
+# addresses explicit and fingerprint the complete reviewed shape.  This
+# authorizes only the linked VS routine; any drift falls back to translation.
+_PLAYER_MOVE_FINGERPRINT = (
+    0xb1d6, 18,
+    'b38188277783231a7c78a008ba29fc4309dc2341c1338f5fe9c10f8625426388',
+)
+_PLAYER_MOVE_BODY = (
+    0xb1d6, 0xb1d8, 0xb1db, 0xb1dd, 0xb1df, 0xb1e1, 0xb1e3, 0xb1e5,
+    0xb1e8, 0xb1eb, 0xb1ee, 0xb1f0, 0xb1f2, 0xb1f4, 0xb1f6, 0xb1f8,
+    0xb1fb, 0xb206,
+)
+_PLAYER_MOVE_TABLE = (
+    (0, 0xb207), (1, 0xb223), (2, 0xb21a), (3, 0xb27c),
+)
+_PLAYER_MOVE_TABLE_BYTES = bytes((
+    0x07, 0xb2, 0x23, 0xb2, 0x1a, 0xb2, 0x7c, 0xb2,
+))
+
+
+def player_move_composition(code, named_entries, routines, tables=None, prg=None):
+    """Return verified metadata for the player movement dispatcher.
+
+    The routine's table is a tail dispatch: selected state routines consume
+    the original B1D6 caller frame.  Require the physics callee, but permit
+    an individual state target to remain on the translated dispatcher so the
+    semantic wrapper never changes the native-function allowlist contract.
+    """
+    entry = named_entries.get('player_proc_player_move')
+    if entry != _PLAYER_MOVE_FINGERPRINT[0]:
+        return None
+    if len(_PLAYER_MOVE_BODY) != _PLAYER_MOVE_FINGERPRINT[1]:
+        return None
+    if any(address not in code for address in _PLAYER_MOVE_BODY):
+        return None
+    digest = hashlib.sha256(json.dumps(
+        [code[address] for address in _PLAYER_MOVE_BODY],
+        separators=(',', ':')).encode()).hexdigest()
+    if digest != _PLAYER_MOVE_FINGERPRINT[2]:
+        return None
+    # The table must be recovered from the explicit .addr data following the
+    # verified tbljmp call.  Never infer these destinations from arbitrary ROM
+    # bytes: a changed table must fall back to the translated dispatcher.
+    if tables is None or tables.get(0xb1fb) != {target for _, target in _PLAYER_MOVE_TABLE}:
+        return None
+    # The recovered table map is intentionally set-valued.  Also verify the
+    # exact ordered little-endian words in the PRG, so a state permutation
+    # cannot authorize the wrong semantic branch.
+    table_offset = 0xb1fe - 0x8000
+    if (prg is None or len(prg) < table_offset + len(_PLAYER_MOVE_TABLE_BYTES) or
+            prg[table_offset:table_offset + len(_PLAYER_MOVE_TABLE_BYTES)] !=
+            _PLAYER_MOVE_TABLE_BYTES):
+        return None
+    # The semantic wrapper needs a C-returning physics callee so it can resume
+    # at B1EB after preserving the exact synthetic JSR frame.
+    if 0xb2fd not in routines:
+        return None
+    return {
+        'entry': entry,
+        'physics': 0xb2fd,
+        'targets': dict(_PLAYER_MOVE_TABLE),
+    }
+
+
+def emit_player_move_composition(composition, routines):
+    """Emit the stack-safe C orchestration for player_proc_player_move."""
+    physics = routines[composition['physics']][0]
+    targets = composition['targets']
+    lines = [
+        'static int vs_generated_player_move(VsCpu *restrict c, unsigned depth) {',
+        'uint8_t *ram = c->bus->ram;',
+        'uint8_t state = ram[0x001d];',
+        'uint8_t store_crouch = 1u;',
+        # Invalid initial states must execute the original unbounded table
+        # behavior; do not silently turn them into state 0.
+        'if (state > 3u) return 0;',
+        'c->a = vs_nz(c, 0u);',
+        'c->y = vs_nz(c, ram[0x0754]);',
+        'if (c->y == 0u) {',
+        'c->a = vs_nz(c, state);',
+        'if (state == 0u) c->a = vs_nz(c, ram[0x000b] & 0x04u);',
+        'else store_crouch = 0u;',
+        '}',
+        'if (store_crouch) ram[0x0714] = c->a;',
+        # B1E8 JSR B2FD pushes B1EA, and the physics routine returns there.
+        'vs_push(c, 0xb1); vs_push(c, 0xea);',
+        f'c->pc = 0x{composition["physics"]:04x}; {physics}(c, depth + 1u);',
+        'if (c->pc != 0xb1eb || !c->fuel || c->fault || c->idle || c->yielded) return 1;',
+        'c->a = vs_nz(c, ram[0x070b]);',
+        'if (c->a != 0u) { vs_fast_return(c); return 1; }',
+        # Physics may change the state (for example when initiating a jump).
+        # If it somehow leaves the verified four-state domain, resume the
+        # translated tail at B1F0 after the already-completed work.
+        'state = ram[0x001d];',
+        'if (state > 3u) { c->pc = 0xb1f0; return 1; }',
+        'c->a = vs_nz(c, state);',
+        'vs_cmp(c, c->a, 3u);',
+        'if (state != 3u) { c->y = vs_nz(c, 0x18u); ram[0x0789] = c->y; }',
+        # B1FB JSR tbljmp pushes B1FD.  tbljmp consumes that frame and
+        # supplies the selected target in c->pc; selected routines are tail
+        # calls, so no second frame is pushed here.
+        'vs_push(c, 0xb1); vs_push(c, 0xfd);',
+        'vs_fast_table_jump(c);',
+        'switch (c->pc) {',
+    ]
+    for state, target in sorted(targets.items()):
+        lines.append(f'case 0x{target:04x}:')
+        if target in routines:
+            lines += [f'c->pc = 0x{target:04x}; {routines[target][0]}(c, depth + 1u);',
+                      'return 1;']
+        else:
+            # Let the page dispatcher execute the omitted state routine.  The
+            # table frame is already consumed and the target remains a tail
+            # transfer to the original B1D6 caller.
+            lines += ['return 1;']
+    lines += ['default: return 1;', '}', '}']
+    return lines
+
 
 def _reachable_body(code, start, limit):
     """Decode one routine's local control-flow body, excluding JSR targets."""
@@ -1242,6 +1362,8 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
     native_entries.update(routines)
     composition = (game_proc_composition(code, named_entries, routines)
                    if native_functions else None)
+    player_composition = (player_move_composition(code, named_entries, routines, tables, prg)
+                          if native_functions else None)
     lines = ['/* Generated privately from verified VS input. Do not distribute game data. */',
              '#include "vs_cpu.h"', '#include "vs_fast_paths.h"']
     if profile: lines.append('uint32_t vs_profile[32768];')
@@ -1283,6 +1405,10 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
             depth = 'depth' if routine else '0u'
             emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS) && !defined(VS_PAGE_DISPATCH_ONLY)',
                             f'if (vs_generated_game_proc_scenery_scroll(c, {depth})) return;', '#endif']
+        if player_composition and a == player_composition['entry']:
+            depth = 'depth' if routine else '0u'
+            emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS) && !defined(VS_PAGE_DISPATCH_ONLY)',
+                            f'if (vs_generated_player_move(c, {depth})) return;', '#endif']
         return emitted
 
     if routines:
@@ -1293,6 +1419,10 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
         if composition:
             lines += ['#if !defined(VS_REFERENCE_KERNELS)']
             lines += emit_game_proc_composition(routines)
+            lines += ['#endif']
+        if player_composition:
+            lines += ['#if !defined(VS_REFERENCE_KERNELS)']
+            lines += emit_player_move_composition(player_composition, routines)
             lines += ['#endif']
         for entry, (name, body) in routines.items():
             lines += [f'static void {name}(VsCpu *restrict c, unsigned depth) {{',
