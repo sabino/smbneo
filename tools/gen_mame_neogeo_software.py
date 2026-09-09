@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import zlib
@@ -33,9 +34,14 @@ def file_hashes(path: Path) -> tuple[str, str]:
     return f"{zlib.crc32(data) & 0xFFFFFFFF:08x}", hashlib.sha1(data).hexdigest()
 
 
-def build_software_list(rom_dir: Path) -> ET.Element:
+def build_software_list(rom_dir: Path, game_name: str = GAME_NAME,
+                        title: str = "Super Mario Bros. Neo") -> ET.Element:
+    if not re.fullmatch(r'[a-z0-9_]{1,16}', game_name):
+        raise ValueError('invalid cartridge shortname')
+    parts = tuple((area, name.replace('smbneo-', game_name + '-'), size, offset, flag)
+                  for area, name, size, offset, flag in ROM_PARTS)
     files: dict[str, Path] = {}
-    for _, filename, expected_size, _, _ in ROM_PARTS:
+    for _, filename, expected_size, _, _ in parts:
         path = rom_dir / filename
         if not path.is_file():
             raise ValueError(f"missing cartridge ROM: {path}")
@@ -50,8 +56,8 @@ def build_software_list(rom_dir: Path) -> ET.Element:
         "softwarelist",
         {"name": "neogeo", "description": "Local Neo Geo cartridge tests"},
     )
-    software = ET.SubElement(software_list, "software", {"name": GAME_NAME})
-    ET.SubElement(software, "description").text = "Super Mario Bros. Neo"
+    software = ET.SubElement(software_list, "software", {"name": game_name})
+    ET.SubElement(software, "description").text = title
     ET.SubElement(software, "year").text = "2026"
     ET.SubElement(software, "publisher").text = "Community port"
     ET.SubElement(
@@ -66,7 +72,7 @@ def build_software_list(rom_dir: Path) -> ET.Element:
     )
 
     areas: dict[str, ET.Element] = {}
-    for area_name, filename, size, offset, loadflag in ROM_PARTS:
+    for area_name, filename, size, offset, loadflag in parts:
         if area_name not in areas:
             attributes = {
                 "name": area_name,
@@ -91,8 +97,9 @@ def build_software_list(rom_dir: Path) -> ET.Element:
     return software_list
 
 
-def write_software_list(rom_dir: Path, output: Path) -> None:
-    root = build_software_list(rom_dir)
+def write_software_list(rom_dir: Path, output: Path, game_name: str = GAME_NAME,
+                        title: str = "Super Mario Bros. Neo") -> None:
+    root = build_software_list(rom_dir, game_name, title)
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode")
     output.parent.mkdir(parents=True, exist_ok=True)

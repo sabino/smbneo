@@ -62,7 +62,7 @@ pub(all) enum AsmItem {
 pub(all) struct BasicBlockLink {
   bb: BasicBlock
   is_fallthrough: Bool
-} derive (Show)
+}
 
 pub(all) struct BasicBlock {
   id: Int
@@ -72,7 +72,7 @@ pub(all) struct BasicBlock {
   successors: Array[BasicBlockLink]
   mut is_subroutine_entry: Bool
   mut subroutine: AsmSubroutine?
-} derive (Show)
+}
 
 pub(all) struct AsmSubroutine {
   name: String
@@ -80,7 +80,7 @@ pub(all) struct AsmSubroutine {
   entry: BasicBlock
   mut exit: BasicBlock
   internal_labels: Set[String]
-} derive (Show)
+}
 
 // subroutines with a flat array of items instead of basic blocks
 pub(all) struct AsmFlatSubroutine {

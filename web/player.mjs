@@ -2,27 +2,53 @@ import {
   EXPECTED_NES_SHA1,
   adaptCartridgeForWeb,
   adaptCompatibilityCartridgeForNative,
+  adaptVsCartridgeForWeb,
   buildCanonicalEntries,
   buildCartridgeFromNes,
   buildNeoSdFile,
   buildPuzzledpEntries,
+  buildVsCanonicalEntries,
+  buildVsCartridgeFromSource,
+  buildVsNeoSdFile,
   classifyInput,
   formatBytes,
   sha1Hex,
 } from "./compat.mjs";
 
-const EMULATORJS_DATA =
-  "https://cdn.emulatorjs.org/4.2.3/data/";
+const EMULATORJS_DATA = "https://cdn.emulatorjs.org/4.2.3/data/";
 const EMULATORJS_LOADER = `${EMULATORJS_DATA}loader.js`;
 const ZIP_TIMESTAMP = new Date(2026, 0, 1, 0, 0, 0);
 
+const EDITION_UI = Object.freeze({
+  home: Object.freeze({
+    fileAccept: ".nes,.zip,application/zip,application/x-nes-rom",
+    launcherTitle: "Home edition",
+    launcherCopy:
+      "Choose your supported Super Mario Bros. (World) game image.",
+    waitingStatus: "Waiting for a local .nes file or ZIP.",
+    startButton: "Play SMBNeo",
+  }),
+  vs: Object.freeze({
+    fileAccept: ".zip,application/zip",
+    launcherTitle: "VS Arcade Edition",
+    launcherCopy:
+      "Choose your canonical MAME suprmrio.zip set (seven verified chips).",
+    waitingStatus: "Waiting for your local suprmrio.zip.",
+    startButton: "Play VS Arcade Edition",
+  }),
+});
+
 const fileInput = document.querySelector("#game-file");
 const fileButton = document.querySelector(".file-button");
+const editionInputs = [...document.querySelectorAll('input[name="edition"]')];
+const launcherTitle = document.querySelector("#launcher-title");
+const launcherCopy = document.querySelector("#launcher-copy");
 const status = document.querySelector("#load-status");
 const gameWrap = document.querySelector("#game-wrap");
 const launcher = document.querySelector("#launcher");
 const game = document.querySelector("#game");
 const downloads = document.querySelector("#downloads");
+const downloadsTitle = document.querySelector("#downloads-title");
 const canonicalDownload = document.querySelector("#download-canonical");
 const neoSdDownload = document.querySelector("#download-neosd");
 const compatibilityDownload = document.querySelector("#download-compatible");
@@ -31,6 +57,7 @@ let downloadArchives = {};
 
 const playerState = {
   phase: "waiting",
+  edition: "home",
   inputKind: null,
   controls: {
     up: "up arrow",
@@ -50,6 +77,10 @@ const playerState = {
 };
 window.__smbneoPlayerState = playerState;
 
+function selectedEdition() {
+  return editionInputs.find((input) => input.checked)?.value ?? "home";
+}
+
 function setStatus(message, state = "") {
   status.textContent = message;
   if (state) {
@@ -62,7 +93,35 @@ function setStatus(message, state = "") {
 
 function setBusy(busy) {
   fileInput.disabled = busy;
+  for (const input of editionInputs) {
+    input.disabled = busy;
+  }
   fileButton.setAttribute("aria-disabled", busy ? "true" : "false");
+}
+
+function clearDownloads() {
+  downloadArchives = {};
+  downloads.hidden = true;
+  canonicalDownload.disabled = true;
+  neoSdDownload.disabled = true;
+  compatibilityDownload.disabled = true;
+  delete playerState.downloads;
+}
+
+function applyEditionUi() {
+  const edition = selectedEdition();
+  const ui = EDITION_UI[edition];
+  playerState.edition = edition;
+  fileInput.accept = ui.fileAccept;
+  fileInput.value = "";
+  launcherTitle.textContent = ui.launcherTitle;
+  launcherCopy.textContent = ui.launcherCopy;
+  clearDownloads();
+  setStatus(ui.waitingStatus);
+}
+
+for (const input of editionInputs) {
+  input.addEventListener("change", applyEditionUi);
 }
 
 async function digestHex(algorithm, bytes) {
@@ -86,25 +145,40 @@ async function fetchVerifiedBytes(path, expectedSha256, label) {
   return bytes;
 }
 
+function validVsOffsets(offsets) {
+  return ["native", "web"].every((profile) =>
+    ["prg", "chr", "palette"].every((field) =>
+      Number.isInteger(offsets?.[profile]?.[field]),
+    ),
+  );
+}
+
 async function loadConfig() {
   const response = await fetch(
     new URL("build-manifest.json", document.baseURI),
-    { cache: "no-store" }
+    { cache: "no-store" },
   );
   if (!response.ok) {
     throw new Error(`player configuration could not be loaded (${response.status})`);
   }
   const config = await response.json();
+  const home = config.editions?.home;
+  const vs = config.editions?.vs;
   if (
     config.project !== "SMBNeo" ||
     config.product?.shortname !== "smbneo" ||
     config.product?.title !== "Super Mario Bros. Neo" ||
     config.fbneo_driver !== "puzzledp" ||
-    config.downloads?.canonical?.filename !== "smbneo.zip" ||
-    config.downloads?.neosd?.filename !== "smbneo.neo" ||
-    config.downloads?.compatibility?.filename !== "puzzledp.zip" ||
-    !Number.isInteger(config.title_patch_offsets?.native) ||
-    !Number.isInteger(config.title_patch_offsets?.web)
+    home?.downloads?.canonical?.filename !== "smbneo.zip" ||
+    home?.downloads?.neosd?.filename !== "smbneo.neo" ||
+    home?.downloads?.compatibility?.filename !== "puzzledp.zip" ||
+    !Number.isInteger(home?.patch_offsets?.native) ||
+    !Number.isInteger(home?.patch_offsets?.web) ||
+    vs?.downloads?.canonical?.filename !== "vssmbneo.zip" ||
+    vs?.downloads?.neosd?.filename !== "vssmbneo.neo" ||
+    vs?.downloads?.compatibility?.filename !== "puzzledp.zip" ||
+    vs?.source_chips !== 7 ||
+    !validVsOffsets(vs?.patch_offsets)
   ) {
     throw new Error("player configuration is not compatible with this build");
   }
@@ -117,7 +191,7 @@ function downloadArchive(kind) {
     return;
   }
   const url = URL.createObjectURL(
-    new Blob([archive.bytes], { type: archive.mimeType })
+    new Blob([archive.bytes], { type: archive.mimeType }),
   );
   const link = document.createElement("a");
   link.href = url;
@@ -129,60 +203,53 @@ function downloadArchive(kind) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-canonicalDownload.addEventListener(
-  "click",
-  () => downloadArchive("canonical")
-);
-neoSdDownload.addEventListener(
-  "click",
-  () => downloadArchive("neosd")
-);
+canonicalDownload.addEventListener("click", () => downloadArchive("canonical"));
+neoSdDownload.addEventListener("click", () => downloadArchive("neosd"));
 compatibilityDownload.addEventListener(
   "click",
-  () => downloadArchive("compatibility")
+  () => downloadArchive("compatibility"),
 );
 
 function enableDownloads(
   canonicalArchive,
   neoSdImage,
   compatibilityArchive,
-  config,
+  editionConfig,
 ) {
+  const editionDownloads = editionConfig.downloads;
   downloadArchives = {
     canonical: {
-      filename: config.downloads.canonical.filename,
+      filename: editionDownloads.canonical.filename,
       bytes: canonicalArchive,
       mimeType: "application/zip",
     },
     neosd: {
-      filename: config.downloads.neosd.filename,
+      filename: editionDownloads.neosd.filename,
       bytes: neoSdImage,
       mimeType: "application/octet-stream",
     },
     compatibility: {
-      filename: config.downloads.compatibility.filename,
+      filename: editionDownloads.compatibility.filename,
       bytes: compatibilityArchive,
       mimeType: "application/zip",
     },
   };
+  canonicalDownload.textContent =
+    `Download ${editionDownloads.canonical.filename}`;
+  neoSdDownload.textContent = `Download ${editionDownloads.neosd.filename}`;
+  compatibilityDownload.textContent =
+    `Download ${editionDownloads.compatibility.filename}`;
   canonicalDownload.disabled = false;
   neoSdDownload.disabled = false;
   compatibilityDownload.disabled = false;
+  downloadsTitle.textContent = `${editionConfig.title} is ready`;
   downloads.hidden = false;
-  playerState.downloads = {
-    canonical: {
-      filename: config.downloads.canonical.filename,
-      bytes: canonicalArchive.length,
-    },
-    neosd: {
-      filename: config.downloads.neosd.filename,
-      bytes: neoSdImage.length,
-    },
-    compatibility: {
-      filename: config.downloads.compatibility.filename,
-      bytes: compatibilityArchive.length,
-    },
-  };
+  playerState.downloads = Object.fromEntries(
+    Object.entries(downloadArchives).map(([kind, archive]) => [
+      kind,
+      { filename: archive.filename, bytes: archive.bytes.length },
+    ]),
+  );
 }
 
 function zipEntries(entries) {
@@ -196,16 +263,16 @@ function zipEntries(entries) {
         } else {
           resolve(archive);
         }
-      }
+      },
     );
   });
 }
 
-function installEmulator(gameArchive, config) {
+function installEmulator(gameArchive, config, edition) {
   const gameFile = new File(
     [gameArchive],
     "puzzledp.zip",
-    { type: "application/zip" }
+    { type: "application/zip" },
   );
 
   window.EJS_player = "#game";
@@ -222,10 +289,9 @@ function installEmulator(gameArchive, config) {
   window.EJS_dontExtractBIOS = true;
   window.EJS_pathtodata = EMULATORJS_DATA;
   window.EJS_startOnLoaded = false;
-  window.EJS_startButtonName = "Play SMBNeo";
+  window.EJS_startButtonName = EDITION_UI[edition].startButton;
   window.EJS_alignStartButton = "center";
-  window.EJS_backgroundImage =
-    new URL("title.png", document.baseURI).href;
+  window.EJS_backgroundImage = new URL("title.png", document.baseURI).href;
   window.EJS_backgroundBlur = false;
   window.EJS_backgroundColor = "#050505";
   window.EJS_color = "#e26b31";
@@ -276,97 +342,131 @@ function installEmulator(gameArchive, config) {
   document.body.append(loader);
 }
 
-async function prepareSelectedFile(file) {
+async function buildHomeCartridge(source, templateEntries, editionConfig) {
+  if (source.kind === "vs") {
+    throw new Error("choose VS Arcade Edition to use suprmrio.zip");
+  }
+  if (source.kind === "cartridge") {
+    return source.profile === "compatibility"
+      ? adaptCompatibilityCartridgeForNative(
+          source.cartridge,
+          templateEntries,
+          editionConfig.patch_offsets,
+        )
+      : source.cartridge;
+  }
+
+  setStatus("Checking the game revision…", "busy");
+  const sourceSha1 = await sha1Hex(source.rom);
+  if (sourceSha1 !== EXPECTED_NES_SHA1) {
+    throw new Error("this is not the supported Super Mario Bros. (World) revision");
+  }
+  setStatus("Converting Home edition graphics for the Neo Geo…", "busy");
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  return buildCartridgeFromNes(
+    source.rom,
+    templateEntries,
+    editionConfig.patch_offsets.native,
+  );
+}
+
+async function prepareSelectedFile(file, edition) {
   if (window.fflate === undefined) {
     throw new Error("the archive library did not load");
   }
 
   const config = await loadConfig();
+  const editionConfig = config.editions[edition];
   const selectedBytes = new Uint8Array(await file.arrayBuffer());
   const source = classifyInput(selectedBytes, window.fflate.unzipSync);
   playerState.inputKind = source.kind;
+  playerState.edition = edition;
 
-  setStatus("Loading the ROM-free Neo Geo template…", "busy");
+  if (edition === "vs" && source.kind !== "vs") {
+    throw new Error(
+      "VS Arcade Edition requires the canonical seven-chip suprmrio.zip set",
+    );
+  }
+
+  setStatus(`Loading the ROM-free ${editionConfig.title} template…`, "busy");
   const templateBytes = await fetchVerifiedBytes(
-    config.template.path,
-    config.template.sha256,
-    "Neo Geo template"
+    editionConfig.template.path,
+    editionConfig.template.sha256,
+    `${editionConfig.title} template`,
   );
   const templateEntries = window.fflate.unzipSync(templateBytes);
 
   let cartridge;
-  if (source.kind === "cartridge") {
-    cartridge = source.profile === "compatibility"
-      ? adaptCompatibilityCartridgeForNative(
-          source.cartridge,
-          templateEntries,
-          config.title_patch_offsets
-        )
-      : source.cartridge;
-  } else {
-    setStatus("Checking the game revision…", "busy");
-    const sourceSha1 = await sha1Hex(source.rom);
-    if (sourceSha1 !== EXPECTED_NES_SHA1) {
-      throw new Error(
-        "this is not the supported Super Mario Bros. (World) revision"
-      );
-    }
-
-    setStatus("Converting graphics for the Neo Geo…", "busy");
+  let canonicalEntries;
+  let neoSdImage;
+  let webCartridge;
+  if (edition === "vs") {
+    setStatus("Converting both VS graphics banks and arcade palette…", "busy");
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    cartridge = buildCartridgeFromNes(
+    cartridge = buildVsCartridgeFromSource(
       source.rom,
       templateEntries,
-      config.title_patch_offsets.native
+      editionConfig.patch_offsets.native,
+    );
+    canonicalEntries = buildVsCanonicalEntries(cartridge);
+    neoSdImage = buildVsNeoSdFile(cartridge);
+    webCartridge = adaptVsCartridgeForWeb(
+      source.rom,
+      cartridge,
+      templateEntries,
+      editionConfig.patch_offsets.web,
+    );
+  } else {
+    cartridge = await buildHomeCartridge(source, templateEntries, editionConfig);
+    canonicalEntries = buildCanonicalEntries(cartridge);
+    neoSdImage = buildNeoSdFile(cartridge);
+    webCartridge = adaptCartridgeForWeb(
+      cartridge,
+      templateEntries,
+      editionConfig.patch_offsets,
     );
   }
 
-  setStatus("Preparing the canonical SMBNeo cartridge…", "busy");
+  setStatus(`Compressing ${editionConfig.downloads.canonical.filename}…`, "busy");
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  const canonicalEntries = buildCanonicalEntries(cartridge);
   const canonicalArchive = await zipEntries(canonicalEntries);
-
-  setStatus("Packing the NeoSD image…", "busy");
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  const neoSdImage = buildNeoSdFile(cartridge);
-
-  setStatus("Adapting the cartridge for the browser player…", "busy");
-  const webCartridge = adaptCartridgeForWeb(
-    cartridge,
-    templateEntries,
-    config.title_patch_offsets
-  );
 
   await fetchVerifiedBytes(
     config.bios.path,
     config.bios.sha256,
-    "open Neo Geo BIOS"
+    "open Neo Geo BIOS",
   );
 
-  setStatus("Preparing the FBNeo compatibility package…", "busy");
+  setStatus("Preparing the internal FBNeo compatibility package…", "busy");
   await new Promise((resolve) => requestAnimationFrame(resolve));
   const fbneoEntries = buildPuzzledpEntries(
     webCartridge,
     (completed, total) => {
       if (completed < total) {
         setStatus(
-          `Preparing the FBNeo compatibility package (${completed + 1}/${total})…`,
-          "busy"
+          `Preparing the browser cartridge (${completed + 1}/${total})…`,
+          "busy",
         );
       }
-    }
+    },
   );
 
   setStatus("Compressing the browser cartridge…", "busy");
   const launchArchive = await zipEntries(fbneoEntries);
-  enableDownloads(canonicalArchive, neoSdImage, launchArchive, config);
+  enableDownloads(
+    canonicalArchive,
+    neoSdImage,
+    launchArchive,
+    editionConfig,
+  );
   playerState.archiveBytes = launchArchive.length;
   playerState.phase = "loading-emulator";
   setStatus(
-    `Cartridge ready (${formatBytes(launchArchive.length)}). Loading the player…`,
-    "ready"
+    `${editionConfig.title} ready (${formatBytes(launchArchive.length)}). ` +
+      "Loading the player…",
+    "ready",
   );
-  installEmulator(launchArchive, config);
+  installEmulator(launchArchive, config, edition);
 }
 
 fileInput.addEventListener("change", async () => {
@@ -375,10 +475,11 @@ fileInput.addEventListener("change", async () => {
     return;
   }
 
+  const edition = selectedEdition();
   setBusy(true);
   setStatus(`Reading ${file.name}…`, "busy");
   try {
-    await prepareSelectedFile(file);
+    await prepareSelectedFile(file, edition);
   } catch (error) {
     console.error(error);
     setBusy(false);
@@ -386,3 +487,5 @@ fileInput.addEventListener("change", async () => {
     setStatus(error instanceof Error ? error.message : String(error), "error");
   }
 });
+
+applyEditionUi();

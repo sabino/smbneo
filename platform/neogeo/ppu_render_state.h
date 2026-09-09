@@ -7,6 +7,13 @@
 extern uint32_t neogeo_ppu_hud_generation;
 extern uint32_t neogeo_ppu_palette_generation;
 
+/* Apply a decoded run to nametable RAM and dirty state only. Reject pattern,
+ * palette, wrapping or unsupported runs without changing any state. */
+uint8_t neogeo_ppu_write_nametable_run(
+    uint16_t destination, const uint8_t *source, uint8_t count,
+    uint16_t increment, uint8_t repeat
+);
+
 #define NEOGEO_PPU_BACKGROUND_RENDER_BANKS 2u
 #define NEOGEO_PPU_BACKGROUND_DIRTY_BYTES 8u
 

@@ -1,5 +1,10 @@
 # Neo Geo port architecture
 
+This document describes the home SMBNeo edition and its long-running renderer
+and performance work. The VS arcade edition shares the reviewed Neo Geo
+platform layer but ships a separate CPU-free direct-C gameplay runtime; see
+[VS. Super Mario Bros. Neo](../variants/vs/README.md).
+
 ## Milestone status
 
 The current milestone is a bootable, playable, performance-characterized Neo Geo

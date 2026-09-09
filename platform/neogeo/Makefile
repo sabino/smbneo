@@ -16,6 +16,12 @@ WEB_NATIVE_PROM := $(WEB_BUILD)/smbneo-p1.p1
 WEB_PROM := $(WEB_BUILD)/smbneo-web-p1.p1
 WEB_MROM := $(WEB_BUILD)/smbneo-m1.m1
 WEB_VROM := $(WEB_BUILD)/smbneo-v1.v1
+VS_WEB_NATIVE_BUILD := $(abspath $(WEB_BUILD)/vs-native)
+VS_WEB_FBNEO_BUILD := $(abspath $(WEB_BUILD)/vs-fbneo)
+VS_WEB_NATIVE_ELF := $(VS_WEB_NATIVE_BUILD)/vssmbneo-template.elf
+VS_WEB_NATIVE_PROM := $(VS_WEB_NATIVE_BUILD)/vssmbneo-p1.p1
+VS_WEB_FBNEO_ELF := $(VS_WEB_FBNEO_BUILD)/vssmbneo-template.elf
+VS_WEB_FBNEO_PROM := $(VS_WEB_FBNEO_BUILD)/vssmbneo-web-p1.p1
 WEB_SITE ?= $(ROOT)/dist/pages
 PPU_STATE_TEST := $(BUILD)/test_neogeo_ppu_render_state
 BACKGROUND_UPDATE_PLAN_TEST := $(BUILD)/test_neogeo_background_update_plan
@@ -232,7 +238,7 @@ REPLAY_WINDOW_TOOL := $(ROOT)/tools/neogeo_replay_window.py
 .PHONY: \
 	all elf test test-vram-batch-sanitize verify verify-codegen \
 	verify-sound-driver assets \
-	native-roms cart compat-cart hardware-cart neosd-cart run web \
+	native-roms cart compat-cart hardware-cart neosd-cart run web vs-web-templates \
 	mame-list mame-cart mame-run mame-capture \
 	replay-cart replay-run replay-rendered-evidence clean FORCE
 
@@ -1141,7 +1147,14 @@ $(WEB_VROM): $(TRIANGLE_VROM) | $(WEB_BUILD)
 	cp $(TRIANGLE_VROM) $@
 	chmod 0644 $@
 
-web: $(WEB_NATIVE_PROM) $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) verify-sound-driver
+vs-web-templates:
+	$(MAKE) -C $(ROOT)/variants/vs -f web.mk \
+		BUILD="$(VS_WEB_NATIVE_BUILD)" FBNEO=0 template
+	$(MAKE) -C $(ROOT)/variants/vs -f web.mk \
+		BUILD="$(VS_WEB_FBNEO_BUILD)" FBNEO=1 template
+
+web: $(WEB_NATIVE_PROM) $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) \
+		verify-sound-driver vs-web-templates
 	@test -f "$(WEB_BIOS)" || { \
 		echo "ngdevkit NullBIOS is missing: $(WEB_BIOS)" >&2; \
 		exit 2; \
@@ -1152,6 +1165,10 @@ web: $(WEB_NATIVE_PROM) $(WEB_PROM) $(WEB_MROM) $(WEB_VROM) verify-sound-driver
 		--native-prom $(WEB_NATIVE_PROM) \
 		--web-elf $(WEB_TARGET) \
 		--web-prom $(WEB_PROM) \
+		--vs-native-elf $(VS_WEB_NATIVE_ELF) \
+		--vs-native-prom $(VS_WEB_NATIVE_PROM) \
+		--vs-web-elf $(VS_WEB_FBNEO_ELF) \
+		--vs-web-prom $(VS_WEB_FBNEO_PROM) \
 		--mrom $(WEB_MROM) \
 		--vrom $(WEB_VROM) \
 		--bios "$(WEB_BIOS)" \

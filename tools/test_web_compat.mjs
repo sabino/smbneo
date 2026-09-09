@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,19 +8,32 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  VS_CARTRIDGE_ENTRIES,
+  VS_SOURCE_CHIPS,
+  VS_WEB_PROM_ENTRY,
   adaptCartridgeForWeb,
   adaptCompatibilityCartridgeForNative,
+  adaptVsCartridgeForWeb,
   buildCanonicalEntries,
   buildCartridgeFromNes,
   buildNeoSdFile,
   buildPuzzledpEntries,
   buildGraphics,
+  buildVsCanonicalEntries,
+  buildVsCartridgeFromSource,
+  buildVsGraphics,
+  buildVsNeoSdFile,
   classifyInput,
+  convertVsPalette,
   crc32,
   extractChr,
+  extractVsRom,
   forceTailCrc32,
   parseNeoSdHeader,
   patchTemplateProm,
+  patchVsTemplateProm,
+  patchWordSwappedPayload,
+  sha1HexSync,
   validatePackedBcdNgh,
 } from "../web/compat.mjs";
 
@@ -89,6 +103,34 @@ function expandAndOrient(tile8, orientation) {
   return output;
 }
 
+function decodeNesTileReference(chr, tileIndex) {
+  const output = new Uint8Array(64);
+  const offset = tileIndex * 16;
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      const shift = 7 - x;
+      output[y * 8 + x] =
+        ((chr[offset + y] >>> shift) & 1) |
+        (((chr[offset + y + 8] >>> shift) & 1) << 1);
+    }
+  }
+  return output;
+}
+
+function decodeSromTile(srom, tileIndex) {
+  const output = new Uint8Array(64);
+  let offset = tileIndex * 32;
+  for (const [pixelA, pixelB] of [[4, 5], [6, 7], [0, 1], [2, 3]]) {
+    for (let y = 0; y < 8; y += 1) {
+      const packed = srom[offset];
+      output[y * 8 + pixelA] = packed & 0x0f;
+      output[y * 8 + pixelB] = packed >>> 4;
+      offset += 1;
+    }
+  }
+  return output;
+}
+
 function syntheticRom() {
   const rom = new Uint8Array(16 + 32 * 1024 + 8 * 1024);
   rom.set([0x4e, 0x45, 0x53, 0x1a, 2, 1, 1, 0], 0);
@@ -104,6 +146,81 @@ function syntheticRom() {
     rom[chrOffset + 0x1ec0 + index] = (index * 29 + 7) & 0xff;
   }
   return rom;
+}
+
+function nodeSha1(bytes) {
+  return createHash("sha1").update(bytes).digest("hex");
+}
+
+function syntheticVsArchive() {
+  const entries = {};
+  const chips = VS_SOURCE_CHIPS.map((chip, chipIndex) => {
+    const bytes = Uint8Array.from(
+      { length: chip.size },
+      (_, index) => chip.region === "palette"
+        ? (index * 5 + chipIndex) & 7
+        : (index * 37 + (index >>> 5) * 11 + chipIndex * 53) & 0xff,
+    );
+    entries[`owned/${chip.name}`] = bytes;
+    return {
+      ...chip,
+      crc32: crc32(bytes),
+      sha1: nodeSha1(bytes),
+    };
+  });
+  return { entries, chips };
+}
+
+function makeVsProm(offsets, fill = 0xff) {
+  const prom = new Uint8Array(CART_SIZES.p);
+  prom.fill(fill);
+  for (const [name, size] of [
+    ["prg", 0x8000],
+    ["chr", 0x4000],
+    ["palette", 0x0080],
+  ]) {
+    prom.fill(0, offsets[name], offsets[name] + size);
+  }
+  return prom;
+}
+
+function referenceNeoGeoColor(rgb) {
+  let best;
+  for (const sharedLow of [0, 1]) {
+    for (let red = 0; red < 32; red += 1) {
+      for (let green = 0; green < 32; green += 1) {
+        for (let blue = 0; blue < 32; blue += 1) {
+          const errors = [red, green, blue].map((component, index) =>
+            Math.abs(rgb[index] - (component * 8 + sharedLow * 4))
+          );
+          const word = (
+            ((sharedLow ^ 1) << 15) |
+            ((red & 1) << 14) |
+            ((green & 1) << 13) |
+            ((blue & 1) << 12) |
+            ((red >>> 1) << 8) |
+            ((green >>> 1) << 4) |
+            (blue >>> 1)
+          );
+          const candidate = [
+            errors.reduce((total, error) => total + error * error, 0),
+            Math.max(...errors),
+            word,
+          ];
+          if (
+            best === undefined ||
+            candidate[0] < best[0] ||
+            (candidate[0] === best[0] && candidate[1] < best[1]) ||
+            (candidate[0] === best[0] && candidate[1] === best[1] &&
+              candidate[2] < best[2])
+          ) {
+            best = candidate;
+          }
+        }
+      }
+    }
+  }
+  return best[2];
 }
 
 test("raw iNES input is recognized and its CHR bank is converted", () => {
@@ -154,6 +271,367 @@ test("raw iNES input is recognized and its CHR bank is converted", () => {
       `orientation ${orientation}`,
     );
   }
+});
+
+test("canonical suprmrio chip fingerprints classify and extract exact regions", () => {
+  assert.deepEqual(
+    VS_SOURCE_CHIPS.map(({ name, size, crc32: crc, sha1 }) =>
+      [name, size, crc, sha1]),
+    [
+      ["mds-sm4-4__1dor6d_e.1d or 6d", 8192, 0xbe4d5436,
+        "08162a7c987f1939d09bebdb676f596c86abf465"],
+      ["mds-sm4-4__1cor6c_e.1c or 6c", 8192, 0x5e3fb550,
+        "de4494e4dd52f7f7b04cf1d9019fd89fb90eaca9"],
+      ["mds-sm4-4__1bor6b_e.1b or 6b", 8192, 0xb1b87893,
+        "8563ceaca664cf4495ef1020c07179ca7e4af9f3"],
+      ["mds-sm4-4__1aor6a_e.1a or 6a", 8192, 0x1abf053c,
+        "f17db88ce0c9bf1ed88dc16b9650f11d10835cec"],
+      ["mds-sm4-4__2bor8b_e.2b or 8b", 8192, 0x42418d40,
+        "22ab61589742cfa4cc6856f7205d7b4b8310bc4d"],
+      ["mds-sm4-4__2aor8a_e.2a or 8a", 8192, 0x15506b86,
+        "69ecf7a3cc8bf719c1581ec7c0d68798817d416f"],
+      ["rp2c04-0004.pal", 192, 0x0c2e8e4d,
+        "0f9090225eb1f08ae5072d40af3e95547cbce05f"],
+    ],
+  );
+  assert.equal(
+    sha1HexSync(new TextEncoder().encode("abc")),
+    "a9993e364706816aba3e25717850c26c9cd0d89d",
+  );
+
+  const { entries, chips } = syntheticVsArchive();
+  entries["owned/"] = new Uint8Array();
+  const zipSignature = Uint8Array.from([0x50, 0x4b, 0x03, 0x04]);
+  const classified = classifyInput(
+    zipSignature,
+    () => entries,
+    { vsChips: chips },
+  );
+  assert.equal(classified.kind, "vs");
+  assert.equal(classified.profile, "canonical");
+  assert.equal(classified.rom.prg.length, 0x8000);
+  assert.equal(classified.rom.chr.length, 0x4000);
+  assert.equal(classified.rom.palette.length, 192);
+
+  const extracted = extractVsRom(entries, chips);
+  assert.deepEqual(extracted, classified.rom);
+  let offset = 0;
+  for (const chip of chips.filter(({ region }) => region === "prg")) {
+    const source = entries[`owned/${chip.name}`];
+    assert.deepEqual(extracted.prg.slice(offset, offset + chip.size), source);
+    offset += chip.size;
+  }
+  offset = 0;
+  for (const chip of chips.filter(({ region }) => region === "chr")) {
+    const source = entries[`owned/${chip.name}`];
+    assert.deepEqual(extracted.chr.slice(offset, offset + chip.size), source);
+    offset += chip.size;
+  }
+  assert.deepEqual(
+    extracted.palette,
+    entries["owned/rp2c04-0004.pal"],
+  );
+});
+
+test("VS archive classification rejects incomplete, ambiguous or altered chips", () => {
+  const zipSignature = Uint8Array.from([0x50, 0x4b, 0x03, 0x04]);
+  const fixture = syntheticVsArchive();
+
+  const missing = { ...fixture.entries };
+  delete missing["owned/rp2c04-0004.pal"];
+  assert.throws(
+    () => classifyInput(zipSignature, () => missing,
+      { vsChips: fixture.chips }),
+    /missing rp2c04-0004\.pal/,
+  );
+
+  const extra = { ...fixture.entries, "owned/readme.txt": new Uint8Array() };
+  assert.throws(
+    () => extractVsRom(extra, fixture.chips),
+    /unexpected readme\.txt/,
+  );
+
+  const firstName = fixture.chips[0].name;
+  const duplicate = {
+    ...fixture.entries,
+    [`another/${firstName}`]: fixture.entries[`owned/${firstName}`],
+  };
+  assert.throws(
+    () => extractVsRom(duplicate, fixture.chips),
+    /more than one/,
+  );
+
+  const altered = { ...fixture.entries };
+  altered[`owned/${firstName}`] = altered[`owned/${firstName}`].slice();
+  altered[`owned/${firstName}`][19] ^= 0x80;
+  assert.throws(
+    () => extractVsRom(altered, fixture.chips),
+    /CRC is/,
+  );
+
+  const shaOnly = fixture.chips.map((chip, index) => index === 0
+    ? { ...chip, crc32: crc32(altered[`owned/${firstName}`]) }
+    : chip);
+  assert.throws(
+    () => extractVsRom(altered, shaOnly),
+    /SHA-1 is/,
+  );
+
+  assert.throws(
+    () => extractVsRom(fixture.entries),
+    /CRC is/,
+    "synthetic data must never pass the production fingerprints",
+  );
+});
+
+test("VS graphics exhaustively match both CHR banks and all orientations", () => {
+  const chr = Uint8Array.from(
+    { length: 0x4000 },
+    (_, index) => (index * 37 + (index >>> 4) * 19 + 11) & 0xff,
+  );
+  const graphics = buildVsGraphics(chr);
+  assert.equal(graphics.c1.length, CART_SIZES.c1);
+  assert.equal(graphics.c2.length, CART_SIZES.c2);
+  assert.equal(graphics.s.length, CART_SIZES.s);
+  assert.ok(graphics.c1.slice(0, 257 * 64).every((value) => value === 0));
+  assert.ok(graphics.c2.every((value) => value === 0));
+  assert.ok(graphics.s.slice(0, 32).every((value) => value === 0));
+  assert.ok(
+    graphics.s.slice(1025 * 32, 1026 * 32)
+      .every((value) => value === 0),
+  );
+  assert.ok(
+    decodeSromTile(graphics.s, 1026).every((value) => value === 1),
+  );
+
+  for (let tileIndex = 0; tileIndex < 1024; tileIndex += 1) {
+    const tile = decodeNesTileReference(chr, tileIndex);
+    assert.deepEqual(
+      decodeSromTile(graphics.s, 1 + tileIndex),
+      tile,
+      `S-ROM tile ${tileIndex}`,
+    );
+    for (let orientation = 0; orientation < 4; orientation += 1) {
+      const outputTile = 257 + orientation * 1024 + tileIndex;
+      assert.deepEqual(
+        decodeCromTile(graphics.c1, graphics.c2, outputTile),
+        expandAndOrient(tile, orientation),
+        `C-ROM tile ${tileIndex}, orientation ${orientation}`,
+      );
+    }
+  }
+  assert.ok(
+    graphics.c1.slice((257 + 4 * 1024) * 64)
+      .every((value) => value === 0),
+  );
+  assert.throws(() => buildVsGraphics(chr.slice(1)), /16384 VS CHR/);
+});
+
+test("VS palette conversion matches the native nearest-color algorithm", () => {
+  const palette = Uint8Array.from(
+    { length: 192 },
+    (_, index) => (index * 5 + (index >>> 4)) & 7,
+  );
+  const converted = convertVsPalette(palette);
+  assert.equal(converted.length, 128);
+  for (let index = 0; index < 64; index += 1) {
+    const rgb = [...palette.slice(index * 3, index * 3 + 3)].map(
+      (value) => (value << 5) | (value << 2) | (value >>> 1),
+    );
+    const expected = referenceNeoGeoColor(rgb);
+    assert.equal(converted[index * 2], expected >>> 8, `color ${index} high`);
+    assert.equal(converted[index * 2 + 1], expected & 0xff, `color ${index} low`);
+  }
+  assert.throws(() => convertVsPalette(palette.slice(1)), /192 VS palette/);
+  const invalid = palette.slice();
+  invalid[0] = 8;
+  assert.throws(() => convertVsPalette(invalid), /three-bit range/);
+});
+
+test("browser VS assets are byte-identical to the native Python generator", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smbneo-vs-assets-"));
+  try {
+    const chr = Uint8Array.from(
+      { length: 0x4000 },
+      (_, index) => (index * 43 + (index >>> 6) * 17 + 3) & 0xff,
+    );
+    const palette = Uint8Array.from(
+      { length: 192 },
+      (_, index) => (index * 3 + (index >>> 3)) & 7,
+    );
+    await writeFile(join(directory, "chr.bin"), chr);
+    await writeFile(join(directory, "palette.bin"), palette);
+    const toolsDirectory = fileURLToPath(new URL("./", import.meta.url));
+    const python = [
+      "import sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[2])",
+      "from gen_vs_assets import generate",
+      "from gen_neogeo_palette import encode_neogeo_color",
+      "from vs_rom import VsRom",
+      "root = Path(sys.argv[1])",
+      "chr_data = (root / 'chr.bin').read_bytes()",
+      "pal = (root / 'palette.bin').read_bytes()",
+      "generate(VsRom(bytes(32768), chr_data, pal), root / 'generated')",
+      "words = []",
+      "for index in range(64):",
+      "    rgb = tuple((v << 5) | (v << 2) | (v >> 1) for v in pal[index*3:index*3+3])",
+      "    words.append(encode_neogeo_color(rgb))",
+      "(root / 'palette-neogeo.bin').write_bytes(b''.join(word.to_bytes(2, 'big') for word in words))",
+    ].join("\n");
+    const completed = spawnSync(
+      "python3",
+      ["-c", python, directory, toolsDirectory],
+      { encoding: "utf8" },
+    );
+    assert.equal(completed.status, 0, completed.stderr);
+
+    const graphics = buildVsGraphics(chr);
+    assert.deepEqual(
+      graphics.c1,
+      new Uint8Array(await readFile(join(directory, "generated/vssmbneo-c1.c1"))),
+    );
+    assert.deepEqual(
+      graphics.c2,
+      new Uint8Array(await readFile(join(directory, "generated/vssmbneo-c2.c2"))),
+    );
+    assert.deepEqual(
+      graphics.s,
+      new Uint8Array(await readFile(join(directory, "generated/vssmbneo-s1.s1"))),
+    );
+    assert.deepEqual(
+      convertVsPalette(palette),
+      new Uint8Array(await readFile(join(directory, "palette-neogeo.bin"))),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("VS templates produce canonical, web-donor and NeoSD outputs locally", () => {
+  const fixture = syntheticVsArchive();
+  const vsRom = extractVsRom(fixture.entries, fixture.chips);
+  const nativeOffsets = { prg: 0x1000, chr: 0x9200, palette: 0xd400 };
+  const webOffsets = { prg: 0x12000, chr: 0x1a200, palette: 0x1e400 };
+  const nativeProm = makeVsProm(nativeOffsets);
+  const webProm = makeVsProm(webOffsets);
+  const templates = {
+    [VS_CARTRIDGE_ENTRIES.p]: nativeProm,
+    [VS_WEB_PROM_ENTRY]: webProm,
+    [VS_CARTRIDGE_ENTRIES.m]: new Uint8Array(CART_SIZES.m),
+    [VS_CARTRIDGE_ENTRIES.v]: new Uint8Array(CART_SIZES.v),
+  };
+
+  const generic = patchWordSwappedPayload(
+    new Uint8Array(CART_SIZES.p),
+    Uint8Array.from([0x12, 0x34, 0x56, 0x78]),
+    0x100,
+    "fixture",
+  );
+  assert.deepEqual([...generic.slice(0x100, 0x104)], [0x34, 0x12, 0x78, 0x56]);
+  assert.throws(
+    () => patchWordSwappedPayload(generic, new Uint8Array(3), 0x100),
+    /word-swapped patch range/,
+  );
+
+  const patched = patchVsTemplateProm(nativeProm, vsRom, nativeOffsets);
+  const logicalPalette = convertVsPalette(vsRom.palette);
+  for (const [name, payload] of [
+    ["prg", vsRom.prg],
+    ["chr", vsRom.chr],
+    ["palette", logicalPalette],
+  ]) {
+    for (let index = 0; index < payload.length; index += 1) {
+      assert.equal(
+        patched[nativeOffsets[name] + (index ^ 1)],
+        payload[index],
+        `${name} logical byte ${index}`,
+      );
+    }
+  }
+  assert.equal(patched[0], 0xff);
+  assert.equal(nativeProm[nativeOffsets.prg], 0, "template must stay immutable");
+
+  const nonzeroPlaceholder = nativeProm.slice();
+  nonzeroPlaceholder[nativeOffsets.chr + 20] = 1;
+  assert.throws(
+    () => patchVsTemplateProm(nonzeroPlaceholder, vsRom, nativeOffsets),
+    /placeholder is not zero-filled/,
+  );
+  assert.throws(
+    () => patchVsTemplateProm(nativeProm, vsRom,
+      { ...nativeOffsets, chr: nativeOffsets.prg + 2 }),
+    /patches overlap/,
+  );
+  assert.throws(
+    () => patchVsTemplateProm(nativeProm, vsRom,
+      { ...nativeOffsets, palette: nativeOffsets.palette + 1 }),
+    /word-swapped patch range/,
+  );
+
+  const cartridge = buildVsCartridgeFromSource(
+    vsRom,
+    templates,
+    nativeOffsets,
+  );
+  for (const [part, size] of Object.entries(CART_SIZES)) {
+    assert.equal(cartridge[part].length, size, part);
+  }
+  assert.deepEqual(cartridge.p, patched);
+
+  const canonical = buildVsCanonicalEntries(cartridge);
+  assert.deepEqual(
+    Object.keys(canonical).sort(),
+    Object.values(VS_CARTRIDGE_ENTRIES).sort(),
+  );
+  for (const [part, name] of Object.entries(VS_CARTRIDGE_ENTRIES)) {
+    assert.deepEqual(canonical[name], cartridge[part], name);
+    assert.notEqual(canonical[name], cartridge[part], `${name} must be copied`);
+  }
+
+  const webCartridge = adaptVsCartridgeForWeb(
+    vsRom,
+    cartridge,
+    templates,
+    webOffsets,
+  );
+  assert.equal(webCartridge.c1, cartridge.c1);
+  assert.equal(webCartridge.c2, cartridge.c2);
+  for (const [name, payload] of [
+    ["prg", vsRom.prg],
+    ["chr", vsRom.chr],
+    ["palette", logicalPalette],
+  ]) {
+    for (let index = 0; index < payload.length; index += 1) {
+      assert.equal(
+        webCartridge.p[webOffsets[name] + (index ^ 1)],
+        payload[index],
+        `web ${name} logical byte ${index}`,
+      );
+    }
+  }
+
+  const neo = buildVsNeoSdFile(cartridge);
+  const header = parseNeoSdHeader(neo);
+  assert.equal(header.name, "VS. Super Mario Bros. Neo");
+  assert.equal(header.ngh, 0x2027);
+  assert.deepEqual(
+    neo.slice(header.sections.p.start, header.sections.p.end),
+    cartridge.p,
+  );
+
+  const donor = buildPuzzledpEntries(webCartridge);
+  assert.deepEqual(Object.keys(donor).sort(), [
+    "202-c1.bin",
+    "202-c2.bin",
+    "202-m1.bin",
+    "202-p1.bin",
+    "202-s1.bin",
+    "202-v1.bin",
+  ]);
+  assert.equal(donor["202-p1.bin"].length, 0x80000);
+  assert.equal(donor["202-p1.bin"][webOffsets.prg], vsRom.prg[1]);
+  assert.equal(donor["202-p1.bin"][webOffsets.prg + 1], vsRom.prg[0]);
 });
 
 test("title payload is placed in the word-swapped P-ROM", () => {
@@ -601,9 +1079,13 @@ test("the browser mapping preserves the Neo Geo control layout", async () => {
   assert.match(playerSource, /zipEntries\(fbneoEntries\)/);
   assert.match(playerSource, /buildCanonicalEntries\(cartridge\)/);
   assert.match(playerSource, /buildNeoSdFile\(cartridge\)/);
-  assert.match(playerSource, /config\.downloads\.canonical\.filename/);
-  assert.match(playerSource, /config\.downloads\.neosd\.filename/);
-  assert.match(playerSource, /config\.downloads\.compatibility\.filename/);
+  assert.match(playerSource, /editionDownloads\.canonical\.filename/);
+  assert.match(playerSource, /editionDownloads\.neosd\.filename/);
+  assert.match(playerSource, /editionDownloads\.compatibility\.filename/);
+  assert.match(playerSource, /buildVsCartridgeFromSource/);
+  assert.match(playerSource, /buildVsCanonicalEntries/);
+  assert.match(playerSource, /buildVsNeoSdFile/);
+  assert.match(playerSource, /adaptVsCartridgeForWeb/);
   assert.match(playerSource, /downloadArchive\("canonical"\)/);
   assert.match(playerSource, /downloadArchive\("neosd"\)/);
   assert.match(playerSource, /downloadArchive\("compatibility"\)/);
@@ -615,6 +1097,10 @@ test("the browser mapping preserves the Neo Geo control layout", async () => {
   );
   assert.match(pageSource, /id="download-neosd"/);
   assert.match(pageSource, /Download smbneo\.neo/);
+  assert.match(pageSource, /value="home" checked/);
+  assert.match(pageSource, /value="vs"/);
+  assert.match(pageSource, /VS Arcade Edition/);
+  assert.match(pageSource, /suprmrio\.zip/);
   assert.match(pageSource, /<kbd>A<\/kbd><kbd>S<\/kbd>/);
   assert.match(pageSource, /<kbd>Q<\/kbd><kbd>W<\/kbd>/);
   assert.match(pageSource, /A and B both jump; C and D both run/);

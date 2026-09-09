@@ -1,0 +1,484 @@
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+import warnings
+import zipfile
+import zlib
+
+from vs_rom import Chip, CHIPS, PALETTE, load_vs_rom, verify_chip
+from translate_vs import (instructions, translate, OPS, live_flags, emit_instruction,
+                          semantic_fast_paths, native_routines, native_tables,
+                          game_proc_composition, emit_game_proc_composition,
+                          player_move_composition, emit_player_move_composition,
+                          _GAME_PROC_CHILDREN, _SCENERY_CHILD, _PLAYER_MOVE_BODY,
+                          _PLAYER_MOVE_TABLE, _PLAYER_MOVE_TABLE_BYTES,
+                          _PLAYER_MOVE_FINGERPRINT)
+
+
+class VsInputTests(unittest.TestCase):
+    def test_chip_checks_size_crc_and_sha(self):
+        data = b'local synthetic test'
+        good = Chip('test', len(data), f'{zlib.crc32(data):08x}', hashlib.sha1(data).hexdigest())
+        verify_chip(data, good)
+        for chip in (Chip('test', len(data) + 1, good.crc32, good.sha1),
+                     Chip('test', len(data), '00000000', good.sha1),
+                     Chip('test', len(data), good.crc32, '0' * 40)):
+            with self.assertRaises(ValueError): verify_chip(data, chip)
+
+    def test_input_order_and_rejection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'input.zip'
+            # Fixture content is synthetic, with matching synthetic identities.
+            chips = tuple(Chip(c.name, c.size, f'{zlib.crc32(bytes([i])*c.size):08x}',
+                               hashlib.sha1(bytes([i])*c.size).hexdigest()) for i, c in enumerate(CHIPS))
+            with zipfile.ZipFile(path, 'w') as z:
+                for i in reversed(range(6)): z.writestr(chips[i].name, bytes([i]) * 8192)
+            with patch('vs_rom.CHIPS', chips):
+                rom = load_vs_rom(path)
+                self.assertEqual(rom.prg, b''.join(bytes([i]) * 8192 for i in range(4)))
+                self.assertEqual(rom.chr, bytes([4]) * 8192 + bytes([5]) * 8192)
+                self.assertEqual(len(rom.reference_image()), 49168)
+                self.assertIsNone(rom.palette)
+            with self.assertRaises(ValueError): load_vs_rom(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', UserWarning)
+                with zipfile.ZipFile(path, 'a') as z: z.writestr(chips[0].name, bytes(8192))
+            with self.assertRaisesRegex(ValueError, 'Duplicate'): load_vs_rom(path)
+            with zipfile.ZipFile(path, 'w') as z: z.writestr('Super Mario Bros.nes', b'NES\x1a')
+            with self.assertRaisesRegex(ValueError, 'canonical'): load_vs_rom(path)
+
+
+class TranslationTests(unittest.TestCase):
+    def test_player_move_composition_is_fingerprint_and_table_gated(self):
+        code = {
+            0xb1d6: ('LDA', 'n', 0), 0xb1d8: ('LDY', 'w', 0x0754),
+            0xb1db: ('BNE', 'r', 8), 0xb1dd: ('LDA', 'z', 0x1d),
+            0xb1df: ('BNE', 'r', 7), 0xb1e1: ('LDA', 'z', 0x0b),
+            0xb1e3: ('AND', 'n', 4), 0xb1e5: ('STA', 'w', 0x0714),
+            0xb1e8: ('JSR', 'w', 0xb2fd), 0xb1eb: ('LDA', 'w', 0x070b),
+            0xb1ee: ('BNE', 'r', 22), 0xb1f0: ('LDA', 'z', 0x1d),
+            0xb1f2: ('CMP', 'n', 3), 0xb1f4: ('BEQ', 'r', 5),
+            0xb1f6: ('LDY', 'n', 24), 0xb1f8: ('STY', 'w', 0x0789),
+            0xb1fb: ('JSR', 'w', 0x90bb), 0xb206: ('RTS', 'i', 0),
+        }
+        self.assertEqual(tuple(code), _PLAYER_MOVE_BODY)
+        self.assertEqual(len(_PLAYER_MOVE_BODY), _PLAYER_MOVE_FINGERPRINT[1])
+        routines = {0xb2fd: ('vs_fn_physics_b2fd', set())}
+        names = {'player_proc_player_move': 0xb1d6}
+        tables = {0xb1fb: {target for _, target in _PLAYER_MOVE_TABLE}}
+        prg = bytearray(32768)
+        prg[0xb1fe - 0x8000:0xb206 - 0x8000] = _PLAYER_MOVE_TABLE_BYTES
+        self.assertIsNotNone(player_move_composition(code, names, routines, tables, prg))
+        self.assertIsNone(player_move_composition(code, names, routines, {}, prg))
+        self.assertIsNone(player_move_composition(
+            code, names, routines, {0xb1fb: {0xb207, 0xb223, 0xb21a}}, prg))
+        self.assertIsNone(player_move_composition(
+            {**code, 0xb1d6: ('NOP', 'i', 0)}, names, routines, tables, prg))
+        self.assertIsNone(player_move_composition(code, names, {}, tables, prg))
+        self.assertIsNone(player_move_composition(
+            code, {'player_proc_player_move': 0xb1d7}, routines, tables, prg))
+        reordered = bytearray(prg)
+        reordered[0xb1fe - 0x8000:0xb206 - 0x8000] = bytes(
+            (0x23, 0xb2, 0x07, 0xb2, 0x1a, 0xb2, 0x7c, 0xb2))
+        self.assertIsNone(player_move_composition(code, names, routines, tables, reordered))
+
+    def test_player_move_composition_emits_state_tail_and_fallback_contract(self):
+        targets = dict(_PLAYER_MOVE_TABLE)
+        routines = {0xb2fd: ('vs_fn_physics_b2fd', set())}
+        routines.update({target: (f'vs_fn_state_{target:04x}', set())
+                         for target in targets.values()})
+        output = '\n'.join(emit_player_move_composition(
+            {'physics': 0xb2fd, 'targets': targets}, routines))
+        self.assertIn('if (state > 3u) return 0;', output)
+        self.assertIn('uint8_t store_crouch = 1u;', output)
+        self.assertIn('if (store_crouch) ram[0x0714] = c->a;', output)
+        self.assertIn('vs_push(c, 0xb1); vs_push(c, 0xea);', output)
+        self.assertIn('c->pc = 0xb2fd; vs_fn_physics_b2fd(c, depth + 1u);', output)
+        self.assertIn('if (c->pc != 0xb1eb || !c->fuel || c->fault || c->idle || c->yielded) return 1;', output)
+        self.assertIn('if (state > 3u) { c->pc = 0xb1f0; return 1; }', output)
+        self.assertIn('vs_push(c, 0xb1); vs_push(c, 0xfd);', output)
+        self.assertIn('vs_fast_table_jump(c);', output)
+        for target in targets.values():
+            self.assertIn(f'case 0x{target:04x}:', output)
+            self.assertIn(f'c->pc = 0x{target:04x}; vs_fn_state_{target:04x}(c, depth + 1u);', output)
+        # Table-selected state routines consume the original caller frame;
+        # composition must not synthesize another JSR frame for them.
+        table_tail = output[output.index('switch (c->pc) {'):]
+        self.assertNotIn('vs_push(c, 0xb2)', table_tail)
+
+    def test_translate_emits_player_move_composition_only_for_verified_table(self):
+        code = {
+            0x8000: ('JSR', 'w', 0xb1d6), 0x8003: ('RTS', 'i', 0),
+            0xb1d6: ('LDA', 'n', 0), 0xb1d8: ('LDY', 'w', 0x0754),
+            0xb1db: ('BNE', 'r', 8), 0xb1dd: ('LDA', 'z', 0x1d),
+            0xb1df: ('BNE', 'r', 7), 0xb1e1: ('LDA', 'z', 0x0b),
+            0xb1e3: ('AND', 'n', 4), 0xb1e5: ('STA', 'w', 0x0714),
+            0xb1e8: ('JSR', 'w', 0xb2fd), 0xb1eb: ('LDA', 'w', 0x070b),
+            0xb1ee: ('BNE', 'r', 22), 0xb1f0: ('LDA', 'z', 0x1d),
+            0xb1f2: ('CMP', 'n', 3), 0xb1f4: ('BEQ', 'r', 5),
+            0xb1f6: ('LDY', 'n', 24), 0xb1f8: ('STY', 'w', 0x0789),
+            0xb1fb: ('JSR', 'w', 0x90bb), 0xb206: ('RTS', 'i', 0),
+            0x90bb: ('RTS', 'i', 0), 0xb2fd: ('RTS', 'i', 0),
+        }
+        debug = ('sym\tname="player_proc_player_move",val=0xb1d6,type=lab\n'
+                 'sym\tname="tbljmp",val=0x90bb,type=lab\n')
+        good_table = {0xb1fb: {target for _, target in _PLAYER_MOVE_TABLE}}
+        good_prg = bytearray(32768)
+        good_prg[0xb1fe - 0x8000:0xb206 - 0x8000] = _PLAYER_MOVE_TABLE_BYTES
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x90bb: ('vs_fast_table_jump(c); return;', None)}), \
+             patch('translate_vs.native_tables', return_value=good_table):
+            source, _ = translate(good_prg, debug, Path('.'),
+                                  native_allowlist={0xb1d6, 0xb2fd})
+        self.assertIn('static int vs_generated_player_move', source)
+        self.assertIn('if (vs_generated_player_move(c, depth)) return;', source)
+        bad_table = {0xb1fb: {0xb207, 0xb223, 0xb21a}}
+        bad_prg = bytearray(good_prg)
+        bad_prg[0xb1fe - 0x8000:0xb206 - 0x8000] = bytes(
+            (0x23, 0xb2, 0x07, 0xb2, 0x1a, 0xb2, 0x7c, 0xb2))
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x90bb: ('vs_fast_table_jump(c); return;', None)}), \
+             patch('translate_vs.native_tables', return_value=bad_table):
+            source, _ = translate(bad_prg, debug, Path('.'),
+                                  native_allowlist={0xb2fd})
+        self.assertNotIn('static int vs_generated_player_move', source)
+
+    def test_scheduler_composition_requires_verified_bodies_and_all_children(self):
+        # Synthetic instruction maps exercise the recognizer without importing
+        # any donor ROM bytes.  The expected fingerprint is patched only for
+        # this tiny fixture; production constants remain tied to the linked VS
+        # disassembly.
+        game = {0xad6e: ('LDA', 'n', 1), 0xad70: ('JSR', 'w', 0x9000),
+                0xad73: ('RTS', 'i', 0)}
+        scenery = {0xae1c: ('LDA', 'n', 1), 0xae1e: ('RTS', 'i', 0)}
+        code = {**game, **scenery}
+        digest_game = hashlib.sha256(json.dumps(
+            [code[a] for a in sorted(game)], separators=(',', ':')).encode()).hexdigest()
+        digest_scenery = hashlib.sha256(json.dumps(
+            [code[a] for a in sorted(scenery)], separators=(',', ':')).encode()).hexdigest()
+        targets = {target for target, _, _, _ in _GAME_PROC_CHILDREN}
+        targets.update((0x9000, _SCENERY_CHILD[0]))
+        routines = {target: (f'vs_fn_child_{target:04x}', set()) for target in targets}
+        with patch('translate_vs._GAME_PROC_FINGERPRINT', (0xad6e, 3, digest_game)), \
+             patch('translate_vs._SCENERY_SCROLL_FINGERPRINT', (0xae1c, 2, digest_scenery)):
+            self.assertIsNotNone(game_proc_composition(
+                code, {'game_proc': 0xad6e,
+                       'game_proc_scenery_scroll': 0xae1c}, routines))
+            self.assertIsNone(game_proc_composition(
+                code, {'game_proc': 0xad6e,
+                       'game_proc_scenery_scroll': 0xae1c}, {}))
+        changed = dict(game); changed[0xad6e] = ('LDA', 'n', 2)
+        with patch('translate_vs._GAME_PROC_FINGERPRINT', (0xad6e, 3, digest_game)), \
+             patch('translate_vs._SCENERY_SCROLL_FINGERPRINT', (0xae1c, 2, digest_scenery)):
+            self.assertIsNone(game_proc_composition(
+                {**changed, **scenery},
+                {'game_proc': 0xad6e, 'game_proc_scenery_scroll': 0xae1c}, routines))
+
+    def test_scheduler_composition_emits_stack_safe_whole_routine(self):
+        targets = {target for target, _, _, _ in _GAME_PROC_CHILDREN}
+        targets.add(_SCENERY_CHILD[0])
+        routines = {target: (f'vs_fn_child_{target:04x}', set()) for target in targets}
+        output = '\n'.join(emit_game_proc_composition(routines))
+        self.assertIn('ram[0x06fc + c->x]', output)
+        self.assertNotIn('ram[(uint8_t)(0x06fc + c->x)]', output)
+        self.assertIn('if (c->p & VS_N) { vs_fast_return(c); return 1; }', output)
+        self.assertIn('if (!c->fuel) { c->pc = 0xadb0; return 1; }', output)
+        self.assertIn('c->x = vs_nz(c, 0x01);', output)
+        self.assertIn('c->x = vs_nz(c, (uint8_t)(c->x - 1));', output)
+        self.assertIn('ram[0x000d] = c->a;', output)
+        self.assertIn('ram[0x000c] = c->a;', output)
+        self.assertIn('vs_push(c, 0xae); vs_push(c, 0x3e);', output)
+        self.assertIn('vs_fn_child_a18b(c, depth + 1u);', output)
+        # The scheduler's observable order is part of the contract: player,
+        # mode gate, projection, actor pass, position/render work, blocks,
+        # misc/effects, then firefly and input cleanup.
+        order = [output.index(f'vs_fn_child_{target:04x}(c, depth + 1u);')
+                 for target in (0xaef7, 0xb4d1, 0xbf60, 0x86a4,
+                                0xf0e5, 0xf08f, 0xee46, 0xbde3,
+                                0xbd7f, 0xba8a, 0xb8b0, 0xb66c,
+                                0xb709, 0xb5fc, 0x8be2, 0xb135)]
+        self.assertEqual(order, sorted(order))
+
+    def test_semantic_loop_requires_every_operation_and_safe_ram(self):
+        code = {0x8000: ('LDA', 'n', 248), 0x8002: ('STA', 'wy', 512),
+                **{0x8000 + i: ('INY', 'i', 0) for i in range(5, 9)},
+                0x8009: ('BNE', 'r', 247), 0x800b: ('RTS', 'i', 0)}
+        self.assertIn(0x8000, semantic_fast_paths(code, {}))
+        for address in code:
+            bad = dict(code); bad[address] = ('NOP', 'i', 0)
+            self.assertNotIn(0x8000, semantic_fast_paths(bad, {}))
+        for base in (0, 0x2000, 0x4000, 0x8000):
+            bad = dict(code); bad[0x8002] = ('STA', 'wy', base)
+            self.assertNotIn(0x8000, semantic_fast_paths(bad, {}))
+        # A known symbol alone can never authorize an unrelated helper.
+        self.assertNotIn(0x8002, semantic_fast_paths(code, {'render_chr_pair_do': 0x8002}))
+
+    def test_flag_liveness_overwrites_branches_and_barriers(self):
+        code = {0x8000: ('LDA', 'n', 7), 0x8002: ('LDX', 'n', 8),
+                0x8004: ('BEQ', 'r', 2), 0x8006: ('LDA', 'n', 9),
+                0x8008: ('RTS', 'i', 0)}
+        live = live_flags(code)
+        self.assertEqual(live[0x8000] & 0x82, 0)
+        self.assertEqual(live[0x8002] & 0x82, 0x82)  # taken path reaches RTS
+        for barrier in ('JSR', 'PHP', 'PLP', 'RTI', 'RTS'):
+            code = {0x8000: ('LDA', 'n', 7), 0x8002: (barrier, 'i', 0)}
+            self.assertEqual(live_flags(code)[0x8000], 0xff)
+        # A page exit must preserve even a flag overwritten in the next page.
+        code = {0x80fe: ('LDA', 'n', 7), 0x8100: ('LDA', 'n', 8)}
+        self.assertEqual(live_flags(code)[0x80fe], 0xff)
+        code = {0x8000: ('LDA', 'n', 7), 0x8002: ('JMP', 'w', 0x8002)}
+        self.assertEqual(live_flags(code)[0x8000], 0xff)
+
+    def test_flag_specialization_keeps_io_and_nested_expressions(self):
+        output = '\n'.join(emit_instruction(0x8000, 'INC', 'w', 0x2007, 0))
+        self.assertIn('vs_nz_live(c, v, 0x00); vs_wr(c, addr, v);', output)
+        self.assertIn('(void)vs_nz(c, v); vs_wr(c, addr, v);', output)
+        output = '\n'.join(emit_instruction(0x8000, 'SBC', 'z', 4, 1))
+        self.assertIn('vs_adc_live(c, (uint8_t)~(c->bus->ram[addr]), 0x01);', output)
+
+    def fixture(self, root, source, code, spans):
+        (root / 'source.s').write_text(source)
+        debug = 'file\tid=0,name="source.s"\nseg\tid=0,name="CODE",start=0x8000\n'
+        for i, (start, size) in enumerate(spans):
+            debug += f'span\tid={i},seg=0,start={start},size={size}\nline\tid={i},file=0,line={i + 1},span={i}\n'
+        return code + bytes(32768 - len(code)), debug
+
+    def test_static_branches_anonymous_labels_and_untyped_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prg, dbg = self.fixture(root, 'lda #0\nbne :-\nrts\n.res 1\n',
+                                    bytes([0xa9, 0, 0xd0, 0xfc, 0x60, 0xea]), [(0, 2), (2, 2), (4, 1), (5, 1)])
+            output, count = translate(prg, dbg, root, native_allowlist=())
+            self.assertEqual(count, 3)
+            self.assertNotIn(0x8005, instructions(prg, dbg, root))
+            self.assertIn('goto L8000;', output)
+            self.assertNotIn('switch (opcode)', output)
+            self.assertEqual(translate(prg, dbg, root, native_allowlist=())[0], output)
+
+    def test_mismatched_code_and_jump_into_data_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prg, dbg = self.fixture(root, 'lda #0\n', bytes([0xa2, 0]), [(0, 2)])
+            with self.assertRaisesRegex(ValueError, 'mismatch'):
+                translate(prg, dbg, root, native_allowlist=())
+            prg, dbg = self.fixture(root, 'jmp $8003\n.res 1\n', bytes([0x4c, 3, 0x80, 0x60]), [(0, 3), (3, 1)])
+            with self.assertRaisesRegex(ValueError, 'Unmapped direct'):
+                translate(prg, dbg, root, native_allowlist=())
+
+    def test_opcode_inventory(self):
+        self.assertEqual(len(OPS), 256)
+        self.assertEqual(sum(op != '-' for op in OPS), 151)
+
+    def test_native_routines_follow_control_flow_not_address_pages(self):
+        code = {0x8000: ('JSR', 'w', 0x80fe), 0x8003: ('JMP', 'w', 0x8003),
+                0x80fe: ('LDA', 'n', 3), 0x8100: ('JSR', 'w', 0x8200),
+                0x8103: ('JMP', 'w', 0x8200), 0x8200: ('RTS', 'i', 0)}
+        routines = native_routines(code, {'actor_step': 0x80fe, 'unused_data': 0x8300})
+        self.assertEqual(set(routines), {0x80fe, 0x8200})
+        self.assertEqual(routines[0x80fe], ('vs_fn_actor_step_80fe', {0x80fe, 0x8100, 0x8103}))
+        with patch('translate_vs.instructions', return_value=code):
+            generated, _ = translate(bytes(32768), '', Path('.'),
+                                      native_allowlist={0x80fe, 0x8200})
+            fallback, _ = translate(bytes(32768), '', Path('.'), native_functions=False)
+        self.assertIn('vs_fn_sub_8200(c, depth + 1u);', generated)
+        self.assertIn('c->pc != 0x8103', generated)
+        self.assertIn('depth >= 16u', generated)
+        self.assertNotIn('vs_fn_', fallback)
+
+    def test_native_allowlist_selects_calls_and_keeps_omitted_jsr_on_pages(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8003: ('JSR', 'w', 0x8200),
+                0x8006: ('RTS', 'i', 0), 0x8100: ('RTS', 'i', 0),
+                0x8200: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code):
+            source, _ = translate(bytes(32768), '', Path('.'),
+                                  native_allowlist={0x8100})
+        self.assertIn('static void vs_fn_sub_8100', source)
+        self.assertNotIn('static void vs_fn_sub_8200', source)
+        self.assertIn('vs_fn_sub_8100(c, 0u);', source)
+        self.assertIn('vs_push(c, 0x80); vs_push(c, 0x05); { c->pc = 0x8200; return; }', source)
+
+    def test_native_allowlist_rejects_stale_policy_and_reports_deterministic_stats(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8100: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code):
+            stats = {}
+            translate(bytes(32768), '', Path('.'), native_allowlist={0x8100}, stats=stats)
+            self.assertEqual(stats['native_function_policy'], 'allowlist-v1')
+            self.assertEqual(stats['native_allowlist_count'], 1)
+            self.assertEqual(stats['native_routine_count'], 1)
+            self.assertEqual(stats['semantic_native_routine_count'], 0)
+            self.assertEqual(stats['native_table_target_count'], 0)
+            self.assertEqual(stats['native_table_direct_target_count'], 0)
+            self.assertEqual(stats['native_allowlist_sha256'],
+                             '148f7f53058a1788821aacd2ae8f3264f0cc3da0f1fd55e71f21974362d9f58e')
+            disabled = {}
+            translate(bytes(32768), '', Path('.'), native_functions=False,
+                      stats=disabled)
+            self.assertEqual(disabled['native_function_policy'], 'disabled')
+            self.assertEqual(disabled['native_routine_count'], 0)
+            self.assertIsNone(disabled['native_allowlist_sha256'])
+            with self.assertRaisesRegex(ValueError, 'not verified routines'):
+                translate(bytes(32768), '', Path('.'), native_allowlist={0x8200})
+
+    def test_semantic_routine_survives_an_empty_explicit_allowlist(self):
+        code = {0x8000: ('JSR', 'w', 0x8100), 0x8003: ('RTS', 'i', 0),
+                0x8100: ('RTS', 'i', 0)}
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.semantic_fast_paths',
+                   return_value={0x8100: ('c->a = 1;', None)}):
+            source, _ = translate(bytes(32768), '', Path('.'),
+                                  native_allowlist=())
+        self.assertIn('static void vs_fn_sub_8100', source)
+        self.assertIn('c->a = 1;', source)
+
+    def test_native_tables_require_explicit_address_data_and_known_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = bytearray(0x201)
+            data[:9] = bytes([0x20, 0, 0x82, 0, 0x81, 1, 0x81, 2, 0x81])
+            data[0x100:0x103] = bytes([0xea, 0x60, 0x60])
+            data[0x200] = 0x60
+            prg, debug = self.fixture(root,
+                'jsr $8200\n.addr $8100\n.addr $8101\n.word $8102\nnop\nrts\nrts\nrts\n',
+                bytes(data), [(0, 3), (3, 2), (5, 2), (7, 2),
+                              (0x100, 1), (0x101, 1), (0x102, 1), (0x200, 1)])
+            code = instructions(prg, debug, root)
+            self.assertEqual(native_tables(prg, debug, root, code, 0x8200),
+                             {0x8000: {0x8100, 0x8101}})
+            self.assertEqual(native_tables(prg, debug, root, code, 0x8100), {})
+            changed = bytearray(prg); changed[3:5] = bytes([0, 0x83])
+            self.assertEqual(native_tables(changed, debug, root, code, 0x8200), {})
+            with self.assertRaisesRegex(ValueError, 'address-table'):
+                native_tables(prg, debug.replace('start=3,size=2', 'start=3,size=3'), root, code, 0x8200)
+
+    @unittest.skipUnless(shutil.which('cc'), 'C compiler required')
+    def test_native_calls_preserve_stack_escapes_and_bounded_resume(self):
+        # All instructions here are synthetic, not extracted game content.
+        code = {}
+        entries = []
+        def fragment(address, operations):
+            from translate_vs import LENGTH
+            for op, mode, value in operations:
+                code[address] = op, mode, value
+                address += LENGTH[mode]
+        def main(address, callee):
+            entries.append(address)
+            fragment(address, [('JSR', 'w', callee), ('JMP', 'w', address + 3)])
+
+        main(0x8000, 0x8100)  # nested direct calls across address pages
+        fragment(0x8100, [('LDA', 'n', 1), ('JSR', 'w', 0x8200), ('INX', 'i', 0), ('RTS', 'i', 0)])
+        fragment(0x8200, [('LDA', 'n', 2), ('RTS', 'i', 0)])
+        entries.append(0x8400)  # shared tail also used as a direct callee
+        fragment(0x8400, [('JSR', 'w', 0x8500), ('JSR', 'w', 0x8600), ('JMP', 'w', 0x8406)])
+        fragment(0x8500, [('LDX', 'n', 17), ('JMP', 'w', 0x8600)])
+        fragment(0x8600, [('INC', 'z', 9), ('RTS', 'i', 0)])
+        main(0x8800, 0x8900)  # computed jump escapes the C chain
+        fragment(0x8900, [('LDA', 'n', 0x20), ('STA', 'z', 6), ('LDA', 'n', 0x8a),
+                          ('STA', 'z', 7), ('JMP', 'ind', 6)])
+        fragment(0x8a20, [('INC', 'z', 8), ('RTS', 'i', 0)])
+        main(0x8c00, 0x8d00)  # callee rewrites its return address
+        fragment(0x8c03, [('LDA', 'n', 99), ('NOP', 'i', 0), ('JMP', 'w', 0x8c06)])
+        fragment(0x8d00, [('PLA', 'i', 0), ('CLC', 'i', 0), ('ADC', 'n', 3),
+                          ('PHA', 'i', 0), ('RTS', 'i', 0)])
+        main(0x9000, 0x9100)  # callee discards a caller's return frame
+        fragment(0x9100, [('JSR', 'w', 0x9200), ('LDA', 'n', 99), ('RTS', 'i', 0)])
+        fragment(0x9200, [('PLA', 'i', 0), ('PLA', 'i', 0), ('RTS', 'i', 0)])
+        entries.append(0x9400)  # deeper than the bounded C stack, still returns
+        fragment(0x9400, [('LDX', 'n', 40), ('JSR', 'w', 0x9500), ('JMP', 'w', 0x9405)])
+        fragment(0x9500, [('DEX', 'i', 0), ('BEQ', 'r', 3), ('JSR', 'w', 0x9500), ('RTS', 'i', 0)])
+        main(0x9800, 0x9900)  # yields on an otherwise unlabeled back edge
+        fragment(0x9900, [('LDX', 'n', 40), ('DEX', 'i', 0), ('BNE', 'r', 0xfd), ('RTS', 'i', 0)])
+        main(0x9c00, 0x9d00)  # RTI ends execution even inside a native call
+        fragment(0x9d00, [('RTI', 'i', 0)])
+        main(0xa000, 0xa100)  # explicit table call, including unexpected targets
+        fragment(0xa100, [('LDA', 'z', 0), ('JSR', 'w', 0xa500)])
+        fragment(0xa500, [('ASL', 'a', 0), ('TAY', 'i', 0), ('PLA', 'i', 0),
+                          ('STA', 'z', 4), ('PLA', 'i', 0), ('STA', 'z', 5),
+                          ('INY', 'i', 0), ('LDA', 'iy', 4), ('STA', 'z', 6),
+                          ('INY', 'i', 0), ('LDA', 'iy', 4), ('STA', 'z', 7),
+                          ('JMP', 'ind', 6)])
+        fragment(0xa600, [('LDA', 'n', 42), ('RTS', 'i', 0)])
+        fragment(0xa700, [('LDA', 'n', 7), ('RTS', 'i', 0)])
+        self.assertEqual(semantic_fast_paths(code, {'tbljmp': 0xa500})[0xa500],
+                         ('vs_fast_table_jump(c); return;', None))
+        # Computed destinations must remain explicit native dispatch entries.
+        debug = ('sym\tname="computed_target",val=0x8a20,type=lab\n'
+                 'sym\tname="tbljmp",val=0xa500,type=lab\n'
+                 'sym\tname="unexpected_target",val=0xa700,type=lab\n')
+        with patch('translate_vs.instructions', return_value=code), \
+             patch('translate_vs.native_tables', return_value={0xa102: {0xa600}}):
+            selected = {0x8100, 0x8200, 0x8500, 0x8600, 0x8900,
+                        0x8d00, 0x9100, 0x9200, 0x9500, 0x9900,
+                        0x9d00, 0xa100, 0xa500}
+            source, _ = translate(bytes(32768), debug, Path('.'),
+                                  native_allowlist=selected)
+        self.assertNotIn('vs_fast_table_jump(c);\nswitch (c->pc) {\ncase 0xa600:',
+                         source)
+        self.assertIn('vs_fast_table_jump(c);\nswitch (c->pc) {\ndefault: return;',
+                      source)
+        self.assertNotIn('vs_fn_sub_a600', source)
+        include = Path(__file__).resolve().parents[1] / 'variants' / 'vs'
+        harness = r'''
+#include "vs_cpu.h"
+#include <assert.h>
+#include <stdio.h>
+void vs_program_reference(VsCpu *, unsigned);
+static uint8_t prg[32768];
+static const uint16_t entries[] = { ENTRIES };
+int main(void) {
+    unsigned checks = 0;
+    prg[0x2105] = 0; prg[0x2106] = 0xa6;
+    prg[0x2107] = 0; prg[0x2108] = 0xa7;
+    for (unsigned e = 0; e < sizeof(entries) / sizeof(entries[0]); ++e)
+    for (unsigned pattern = 0; pattern < 256; ++pattern)
+    for (unsigned budget = 1; budget <= 16; budget *= 4) {
+        VsBus a, b; VsCpu want, got;
+        vs_bus_init(&a, prg, prg);
+        for (unsigned i = 0; i < sizeof(a.ram); ++i) a.ram[i] = (uint8_t)(pattern + 13 * i);
+        vs_cpu_init(&want, &a);
+        want.pc = entries[e]; want.s = (uint8_t)(pattern * 37);
+        want.p = (uint8_t)pattern; want.x = (uint8_t)pattern;
+        b = a; got = want; got.bus = &b;
+        vs_program_reference(&want, 10000);
+        unsigned rounds = 0;
+        while (!got.idle && !got.fault && !got.yielded && rounds++ < 10000)
+            vs_program_run(&got, budget);
+        if (rounds >= 10000 || want.pc != got.pc || want.s != got.s ||
+            want.a != got.a || want.x != got.x || want.y != got.y || want.p != got.p ||
+            want.fault != got.fault || want.idle != got.idle ||
+            want.yielded != got.yielded || want.in_nmi != got.in_nmi ||
+            memcmp(a.ram, b.ram, sizeof(a.ram)) ||
+            memcmp(a.extra_ram, b.extra_ram, sizeof(a.extra_ram))) {
+            fprintf(stderr, "call fixture %04x pattern %u budget %u rounds %u: pc %04x/%04x flags %02x/%02x\n",
+                    entries[e], pattern, budget, rounds, want.pc, got.pc, want.p, got.p);
+            return 1;
+        }
+        ++checks;
+    }
+    printf("Native call/escape/resume fixtures: %u cases passed\n", checks);
+    return 0;
+}
+'''.replace('ENTRIES', ', '.join(hex(e) for e in entries))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'program.c').write_text(source)
+            (root / 'test.c').write_text(harness)
+            def run(args):
+                result = subprocess.run(args, cwd=root, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            flags = ['cc', '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror',
+                     '-Wno-unused-label', '-I', str(include)]
+            run(flags + ['-Dvs_program_run=vs_program_reference', '-c', 'program.c', '-o', 'reference.o'])
+            for extra in ([], ['-DVS_PAGE_DISPATCH_ONLY'], ['-DVS_REFERENCE_KERNELS']):
+                run(flags + ['-DSMB_VS'] + extra + ['-c', 'program.c', '-o', 'native.o'])
+                run(flags + ['test.c', str(include / 'vs_bus.c'), 'reference.o', 'native.o', '-o', 'test'])
+                run([str(root / 'test')])
+
+
+if __name__ == '__main__': unittest.main()

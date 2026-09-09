@@ -8,7 +8,7 @@ suberror PipelineError {
 
 fn read_rom() -> String raise PipelineError {
   try @fs.read_file_to_string("src/smb.asm") catch {
-    err => raise IOError(Show::to_string(err))
+    err => raise IOError(@debug.to_string(err))
   } noraise {
     assembly => assembly
   }

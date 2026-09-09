@@ -1,7 +1,37 @@
 # Tested toolchain snapshot
 
-The current workstation validation snapshot, last refreshed on 2026-07-25,
-uses:
+## Current host and generator (2026-09-08)
+
+The host regression suite and code generator have been validated with:
+
+| Component | Tested version |
+| --- | --- |
+| Host GCC | 16.2.1 |
+| Python / Pillow | 3.14.7 / 12.3.0 |
+| Node.js | 26.8.1 |
+| MoonBit | `moon 0.1.20260904`, `moonc v0.10.12+1634b282e` |
+| MoonBit extra library | `moonbitlang/x@0.5.1` |
+
+All 79 MoonBit tests pass, and isolated regeneration matches all five
+checked-in generated C/header files byte-for-byte. The migration updates
+parsing/error-display APIs and removes unused debug-print derivations on the
+recursive control-flow graph; it does not change generated game code.
+
+After a fresh MoonBit installation, initialize its registry before testing:
+
+```bash
+moon update
+moon test
+make -C platform/neogeo verify-codegen PKG_CONFIG=true
+make ci
+```
+
+This host/generator result is separate from cross-compiler and physical-hardware
+validation.
+
+## Earlier full workstation snapshot (2026-07-25)
+
+The previous full cross-toolchain and emulator validation used:
 
 | Component | Tested version |
 | --- | --- |
@@ -18,8 +48,8 @@ uses:
 | MAME | 0.264 |
 | Z80 assembler | SDCC `sdas` V02.00 |
 
-These versions describe one validated workstation; they are not a strict
-dependency lock.
+These historical versions are not a strict dependency lock or the required OS.
+Use the newer MoonBit/compiler-library pair above for the current generator.
 
 The ROM-free host lane needs GNU Make, a C compiler, Python 3, Pillow, and
 Node.js:
@@ -40,6 +70,32 @@ The generated browser site also needs ngdevkit and its cross-toolchain:
 ```bash
 make web
 ```
+
+The VS arcade cartridge uses the same cross-toolchain. Its normal build uses
+the checked-in direct-C runtime and needs only the user-owned, verified arcade
+set; cc65 and the reference checkout are not runtime or release-build
+dependencies:
+
+```bash
+make -C variants/vs neogeo-cart \
+  VS_ROM="/path/to/suprmrio.zip"
+# variants/vs/build/rom/vssmbneo.zip
+# variants/vs/build/rom/vssmbneo.neo
+# variants/vs/build/rom/gngeo_data.zip
+# variants/vs/build/mame/hash/neogeo.xml
+```
+
+cc65 plus the pinned source/debug reference are needed only when regenerating
+or differentially validating that direct-C core:
+
+```bash
+make -C variants/vs native-differential \
+  VS_ROM="/path/to/suprmrio.zip" \
+  VS_REFERENCE="/path/to/vs-reference"
+```
+
+See the [VS edition guide](../variants/vs/README.md) for the exact source-set
+requirements and emulator commands.
 
 The normal cartridge target creates the canonical full native package:
 

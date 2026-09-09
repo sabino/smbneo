@@ -7,7 +7,14 @@
 
 all: test
 
-ci: test web-test
+ci: test web-test vs-test
+
+.PHONY: vs-test vs-reference
+vs-test:
+	$(MAKE) -C variants/vs test native-test
+
+vs-reference:
+	$(MAKE) -C variants/vs reference
 
 # ROM-free host regression suite. PKG_CONFIG=true prevents the cross-toolchain
 # probe from being required for tests that compile and run on the host.
@@ -16,6 +23,8 @@ test:
 
 web-test:
 	node --test tools/test_web_compat.mjs
+	node --check web/player.mjs
+	python3 -m unittest tools.test_build_web_player
 
 # Full target verification requires MoonBit and the ngdevkit cross-toolchain.
 verify:

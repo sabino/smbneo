@@ -23,7 +23,7 @@ void neogeo_video_render(void);
  */
 void neogeo_video_wait_for_present(void);
 
-#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH)
+#if defined(SMB_NEOGEO_REPLAY_WINDOW_BENCH) || defined(SMB_VS)
 /* Force a complete rebuild when selective rendering resumes after a gap. */
 void neogeo_video_benchmark_invalidate(void);
 #endif

@@ -68,6 +68,7 @@ fm2/
 *.svg
 *.sav
 platform/neogeo/build/
+variants/vs/build/
 _build/
 __pycache__/
 .venv/
