@@ -849,6 +849,97 @@ def semantic_fast_paths(code, named_entries):
     return result
 
 
+# game_proc is a high fan-out scheduler.  Its native children already have
+# independently verified C entry points, so composing this small dispatcher
+# removes the translated branch/JSR glue without changing any child semantics.
+# Keep the authorization deliberately tied to the complete linked shape: an
+# address/name match alone must never enable a semantic rewrite.
+_GAME_PROC_FINGERPRINT = (
+    0xad6e, 72,
+    'f783e2dcbab8c15349e66708e5cf7b752b39d9e2ca68071f571b470578683e39',
+)
+_SCENERY_SCROLL_FINGERPRINT = (
+    0xae1c, 15,
+    'd4da66ecc62b4d52dcf8ea4b144f76b76bc9990a5d2cb2f6a3b40224c475a2f4',
+)
+
+# (target, continuation, high return byte, low return byte).  The return
+# bytes are kept explicit because these calls are part of the 6502 stack
+# contract, not merely C function calls.
+_GAME_PROC_CHILDREN = (
+    (0xaef7, 0xada3, 0xad, 0xa2),
+    (0xb4d1, 0xadae, 0xad, 0xad),
+    (0xbf60, 0xadb5, 0xad, 0xb4),
+    (0x86a4, 0xadb8, 0xad, 0xb7),
+    (0xf0e5, 0xadc0, 0xad, 0xbf),
+    (0xf08f, 0xadc3, 0xad, 0xc2),
+    (0xee46, 0xadc6, 0xad, 0xc5),
+    (0xbde3, 0xadc9, 0xad, 0xc8),
+    (0xbd7f, 0xadd0, 0xad, 0xcf),
+    (0xbd7f, 0xadd6, 0xad, 0xd5),
+    (0xba8a, 0xadd9, 0xad, 0xd8),
+    (0xb8b0, 0xaddc, 0xad, 0xdb),
+    (0xb66c, 0xaddf, 0xad, 0xde),
+    (0xb709, 0xade2, 0xad, 0xe1),
+    (0xb5fc, 0xade5, 0xad, 0xe4),
+    (0x8be2, 0xade8, 0xad, 0xe7),
+    (0x977e, 0xadff, 0xad, 0xfe),
+    (0xb135, 0xae0e, 0xae, 0x0d),
+    (0xb147, 0xae14, 0xae, 0x13),
+)
+_SCENERY_CHILD = (0xa18b, 0xae3f, 0xae, 0x3e)
+
+
+def _reachable_body(code, start, limit):
+    """Decode one routine's local control-flow body, excluding JSR targets."""
+    pending, seen = [start], set()
+    while pending:
+        address = pending.pop()
+        if address in seen or not start <= address < limit:
+            continue
+        if address not in code:
+            return None
+        seen.add(address)
+        op, mode, operand = code[address]
+        nxt = address + LENGTH[mode]
+        if op == 'JSR':
+            pending.append(nxt)
+        elif op == 'RTS':
+            continue
+        elif op == 'JMP' and mode == 'w':
+            pending.append(operand)
+        elif mode == 'r':
+            pending.extend((nxt, (nxt + (operand if operand < 128 else operand - 256)) & 0xffff))
+        else:
+            pending.append(nxt)
+    return seen
+
+
+def _body_fingerprint(code, start, limit, expected_count):
+    body = _reachable_body(code, start, limit)
+    if body is None or len(body) != expected_count:
+        return None
+    decoded = [code[address] for address in sorted(body)]
+    return hashlib.sha256(json.dumps(decoded, separators=(',', ':')).encode()).hexdigest()
+
+
+def game_proc_composition(code, named_entries, routines):
+    """Return verified composition metadata for the two scheduler routines."""
+    game = named_entries.get('game_proc')
+    scenery = named_entries.get('game_proc_scenery_scroll')
+    if game != _GAME_PROC_FINGERPRINT[0] or scenery != _SCENERY_SCROLL_FINGERPRINT[0]:
+        return None
+    if _body_fingerprint(code, game, scenery, _GAME_PROC_FINGERPRINT[1]) != _GAME_PROC_FINGERPRINT[2]:
+        return None
+    if _body_fingerprint(code, scenery, 0xae40, _SCENERY_SCROLL_FINGERPRINT[1]) != _SCENERY_SCROLL_FINGERPRINT[2]:
+        return None
+    targets = {target for target, _, _, _ in _GAME_PROC_CHILDREN}
+    targets.add(_SCENERY_CHILD[0])
+    if any(target not in routines for target in targets):
+        return None
+    return {'game': game, 'scenery': scenery}
+
+
 def native_tables(prg, debug, source_root, code, table_entry):
     """Read only explicit .addr spans following a verified table-jump call.
 
@@ -941,6 +1032,136 @@ def emit_native_call(name, entry, depth, continuation=None):
     return lines
 
 
+def emit_game_proc_composition(routines):
+    """Emit C for the verified game scheduler and its scenery tail."""
+    def child(target, continuation, high, low):
+        name = routines[target][0]
+        return [f'vs_push(c, 0x{high:02x}); vs_push(c, 0x{low:02x});',
+                f'c->pc = 0x{target:04x}; {name}(c, depth + 1u);',
+                f'if (c->pc != 0x{continuation:04x} || !c->fuel || c->fault || c->idle || c->yielded) return 1;']
+
+    lines = [
+        'static int vs_generated_game_proc_scenery_scroll(VsCpu *restrict c, unsigned depth);',
+        'static int vs_generated_game_proc(VsCpu *restrict c, unsigned depth);',
+        'static int vs_generated_game_proc_scenery_scroll(VsCpu *restrict c, unsigned depth) {',
+        'if (!c->fuel || depth >= 16u) { c->pc = 0xae1c; return 1; }',
+        'uint8_t *ram = c->bus->ram;',
+        'c->a = vs_nz(c, ram[0x0773]);',
+        'vs_cmp(c, c->a, 0x06);',
+        'if (c->p & VS_Z) { vs_fast_return(c); return 1; }',
+        'c->a = vs_nz(c, ram[0x071f]);',
+        'if (c->p & VS_Z) {',
+        'c->a = vs_nz(c, ram[0x073d]);',
+        'vs_cmp(c, c->a, 0x20);',
+        'if (c->p & VS_N) { vs_fast_return(c); return 1; }',
+        'if (!(c->p & VS_N)) {',
+        'c->a = vs_nz(c, ram[0x073d]);',
+        'vs_adc(c, (uint8_t)~0x20);',
+        'ram[0x073d] = c->a;',
+        'c->a = vs_nz(c, 0x00);',
+        'ram[0x0340] = c->a;',
+        '}',
+        '}',
+    ]
+    lines += child(*_SCENERY_CHILD)
+    lines += ['vs_fast_return(c);', 'return 1;', '}',
+              'static int vs_generated_game_proc(VsCpu *restrict c, unsigned depth) {',
+              'if (!c->fuel || depth >= 16u) { c->pc = 0xad6e; return 1; }',
+              'uint8_t *ram = c->bus->ram; uint8_t v = 0, skip_firefl2 = 0;',
+              'c->a = vs_nz(c, ram[0x077a]);',
+              'if (c->p & VS_Z) {',
+              'c->a = vs_nz(c, ram[0x06fc]);',
+              'c->a = vs_nz(c, c->a | ram[0x06fd]);',
+              '} else {',
+              'c->x = vs_nz(c, ram[0x0753]);',
+              'c->a = vs_nz(c, ram[0x06fc + c->x]);',
+              '}',
+              'ram[0x06fc] = c->a;',
+              'c->a = vs_nz(c, c->a & 0x01);',
+              'if (!(c->p & VS_Z)) {',
+              'c->a = vs_nz(c, ram[0x06fc]);',
+              'c->a = vs_nz(c, c->a & 0xfd);',
+              'ram[0x06fc] = c->a;',
+              '}',
+              'c->a = vs_nz(c, ram[0x06fc]);',
+              'c->a = vs_nz(c, c->a & 0x04);',
+              'if (!(c->p & VS_Z)) {',
+              'c->a = vs_nz(c, ram[0x06fc]);',
+              'c->a = vs_nz(c, c->a & 0xf7);',
+              'ram[0x06fc] = c->a;',
+              '}',
+    ]
+    lines += child(*_GAME_PROC_CHILDREN[0])
+    lines += [
+        'c->a = vs_nz(c, ram[0x0772]);',
+        'vs_cmp(c, c->a, 0x03);',
+        'if (!(c->p & VS_C)) { vs_fast_return(c); return 1; }',
+        ]
+    lines += child(*_GAME_PROC_CHILDREN[1])
+    # The actor/score pair is the only repeated part of the scheduler.  Keep
+    # its six-slot loop in C while retaining the original RAM slot write and
+    # child continuation checks.
+    lines += ['c->x = vs_nz(c, 0x00);', 'for (;;) {', 'ram[0x08] = c->x;']
+    lines += child(*_GAME_PROC_CHILDREN[2])
+    lines += child(*_GAME_PROC_CHILDREN[3])
+    lines += ['c->x = vs_nz(c, (uint8_t)(c->x + 1));',
+              'vs_cmp(c, c->x, 0x06);',
+              'if (!(c->p & VS_Z)) {',
+              'if (!c->fuel) { c->pc = 0xadb0; return 1; }',
+              '--c->fuel;', 'continue;', '}', 'break;', '}']
+    for call in _GAME_PROC_CHILDREN[4:8]:
+        lines += child(*call)
+    lines += ['c->x = vs_nz(c, 0x01);', 'ram[0x08] = c->x;']
+    lines += child(*_GAME_PROC_CHILDREN[8])
+    lines += ['c->x = vs_nz(c, (uint8_t)(c->x - 1));', 'ram[0x08] = c->x;']
+    lines += child(*_GAME_PROC_CHILDREN[9])
+    for call in _GAME_PROC_CHILDREN[10:16]:
+        lines += child(*call)
+    lines += [
+        'c->a = vs_nz(c, ram[0x00b5]);',
+        'vs_cmp(c, c->a, 0x02);',
+        'if (c->p & VS_N) {',
+        'c->a = vs_nz(c, ram[0x079f]);',
+        'if (c->p & VS_Z) {',
+    ]
+    lines += child(*_GAME_PROC_CHILDREN[18])
+    lines += [
+        'skip_firefl2 = 1;',
+        '} else {',
+        'vs_cmp(c, c->a, 0x04);',
+        'if (c->p & VS_Z) {',
+        'c->a = vs_nz(c, ram[0x077f]);',
+        'if (c->p & VS_Z) {',
+    ]
+    lines += child(*_GAME_PROC_CHILDREN[16])
+    lines += [
+        '}',
+        '}',
+        '}',
+        '}',
+        'if (!skip_firefl2) {',
+        'c->y = vs_nz(c, ram[0x079f]);',
+        'c->a = vs_nz(c, ram[0x0009]);',
+        'vs_cmp(c, c->y, 0x08);',
+        'if (!(c->p & VS_C)) {',
+    ]
+    for _ in range(2):
+        lines += ['v = c->a; c->p = (c->p & ~VS_C) | (v & 1);',
+                  'v = (uint8_t)(v >> 1); c->a = vs_nz(c, v);']
+    lines += [
+        '}',
+        'v = c->a; c->p = (c->p & ~VS_C) | (v & 1);',
+        'v = (uint8_t)(v >> 1); c->a = vs_nz(c, v);',
+    ]
+    lines += child(*_GAME_PROC_CHILDREN[17])
+    lines += [
+        '}',
+        'c->a = vs_nz(c, ram[0x000a]);', 'ram[0x000d] = c->a;',
+              'c->a = vs_nz(c, 0x00);', 'ram[0x000c] = c->a;',
+              'return vs_generated_game_proc_scenery_scroll(c, depth);', '}']
+    return lines
+
+
 def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
               native_functions: bool = True) -> tuple[str, int]:
     page_bits = 8
@@ -983,6 +1204,8 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
     table_targets = {target for targets in tables.values() for target in targets}
     routines = native_routines(code, named_entries, table_targets) if native_functions else {}
     native_entries.update(routines)
+    composition = (game_proc_composition(code, named_entries, routines)
+                   if native_functions else None)
     lines = ['/* Generated privately from verified VS input. Do not distribute game data. */',
              '#include "vs_cpu.h"', '#include "vs_fast_paths.h"']
     if profile: lines.append('uint32_t vs_profile[32768];')
@@ -1012,6 +1235,14 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
             suffix = '' if target is None else f' goto L{target:04x};'
             emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS)',
                             f'{action}{suffix}', '#endif']
+        if composition and a == composition['game']:
+            depth = 'depth' if routine else '0u'
+            emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS) && !defined(VS_PAGE_DISPATCH_ONLY)',
+                            f'if (vs_generated_game_proc(c, {depth})) return;', '#endif']
+        if composition and a == composition['scenery']:
+            depth = 'depth' if routine else '0u'
+            emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS) && !defined(VS_PAGE_DISPATCH_ONLY)',
+                            f'if (vs_generated_game_proc_scenery_scroll(c, {depth})) return;', '#endif']
         return emitted
 
     if routines:
@@ -1019,6 +1250,10 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
                   '/* Bounded native call chains; the RAM return stack remains canonical. */']
         lines += [f'static void {name}(VsCpu *restrict c, unsigned depth);'
                   for name, _ in routines.values()]
+        if composition:
+            lines += ['#if !defined(VS_REFERENCE_KERNELS)']
+            lines += emit_game_proc_composition(routines)
+            lines += ['#endif']
         for entry, (name, body) in routines.items():
             lines += [f'static void {name}(VsCpu *restrict c, unsigned depth) {{',
                       f'if (!c->fuel || depth >= 16u) {{ c->pc = 0x{entry:04x}; return; }}',

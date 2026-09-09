@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,7 +12,9 @@ import zlib
 
 from vs_rom import Chip, CHIPS, PALETTE, load_vs_rom, verify_chip
 from translate_vs import (instructions, translate, OPS, live_flags, emit_instruction,
-                          semantic_fast_paths, native_routines, native_tables)
+                          semantic_fast_paths, native_routines, native_tables,
+                          game_proc_composition, emit_game_proc_composition,
+                          _GAME_PROC_CHILDREN, _SCENERY_CHILD)
 
 
 class VsInputTests(unittest.TestCase):
@@ -48,6 +51,62 @@ class VsInputTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_scheduler_composition_requires_verified_bodies_and_all_children(self):
+        # Synthetic instruction maps exercise the recognizer without importing
+        # any donor ROM bytes.  The expected fingerprint is patched only for
+        # this tiny fixture; production constants remain tied to the linked VS
+        # disassembly.
+        game = {0xad6e: ('LDA', 'n', 1), 0xad70: ('JSR', 'w', 0x9000),
+                0xad73: ('RTS', 'i', 0)}
+        scenery = {0xae1c: ('LDA', 'n', 1), 0xae1e: ('RTS', 'i', 0)}
+        code = {**game, **scenery}
+        digest_game = hashlib.sha256(json.dumps(
+            [code[a] for a in sorted(game)], separators=(',', ':')).encode()).hexdigest()
+        digest_scenery = hashlib.sha256(json.dumps(
+            [code[a] for a in sorted(scenery)], separators=(',', ':')).encode()).hexdigest()
+        targets = {target for target, _, _, _ in _GAME_PROC_CHILDREN}
+        targets.update((0x9000, _SCENERY_CHILD[0]))
+        routines = {target: (f'vs_fn_child_{target:04x}', set()) for target in targets}
+        with patch('translate_vs._GAME_PROC_FINGERPRINT', (0xad6e, 3, digest_game)), \
+             patch('translate_vs._SCENERY_SCROLL_FINGERPRINT', (0xae1c, 2, digest_scenery)):
+            self.assertIsNotNone(game_proc_composition(
+                code, {'game_proc': 0xad6e,
+                       'game_proc_scenery_scroll': 0xae1c}, routines))
+            self.assertIsNone(game_proc_composition(
+                code, {'game_proc': 0xad6e,
+                       'game_proc_scenery_scroll': 0xae1c}, {}))
+        changed = dict(game); changed[0xad6e] = ('LDA', 'n', 2)
+        with patch('translate_vs._GAME_PROC_FINGERPRINT', (0xad6e, 3, digest_game)), \
+             patch('translate_vs._SCENERY_SCROLL_FINGERPRINT', (0xae1c, 2, digest_scenery)):
+            self.assertIsNone(game_proc_composition(
+                {**changed, **scenery},
+                {'game_proc': 0xad6e, 'game_proc_scenery_scroll': 0xae1c}, routines))
+
+    def test_scheduler_composition_emits_stack_safe_whole_routine(self):
+        targets = {target for target, _, _, _ in _GAME_PROC_CHILDREN}
+        targets.add(_SCENERY_CHILD[0])
+        routines = {target: (f'vs_fn_child_{target:04x}', set()) for target in targets}
+        output = '\n'.join(emit_game_proc_composition(routines))
+        self.assertIn('ram[0x06fc + c->x]', output)
+        self.assertNotIn('ram[(uint8_t)(0x06fc + c->x)]', output)
+        self.assertIn('if (c->p & VS_N) { vs_fast_return(c); return 1; }', output)
+        self.assertIn('if (!c->fuel) { c->pc = 0xadb0; return 1; }', output)
+        self.assertIn('c->x = vs_nz(c, 0x01);', output)
+        self.assertIn('c->x = vs_nz(c, (uint8_t)(c->x - 1));', output)
+        self.assertIn('ram[0x000d] = c->a;', output)
+        self.assertIn('ram[0x000c] = c->a;', output)
+        self.assertIn('vs_push(c, 0xae); vs_push(c, 0x3e);', output)
+        self.assertIn('vs_fn_child_a18b(c, depth + 1u);', output)
+        # The scheduler's observable order is part of the contract: player,
+        # mode gate, projection, actor pass, position/render work, blocks,
+        # misc/effects, then firefly and input cleanup.
+        order = [output.index(f'vs_fn_child_{target:04x}(c, depth + 1u);')
+                 for target in (0xaef7, 0xb4d1, 0xbf60, 0x86a4,
+                                0xf0e5, 0xf08f, 0xee46, 0xbde3,
+                                0xbd7f, 0xba8a, 0xb8b0, 0xb66c,
+                                0xb709, 0xb5fc, 0x8be2, 0xb135)]
+        self.assertEqual(order, sorted(order))
+
     def test_semantic_loop_requires_every_operation_and_safe_ram(self):
         code = {0x8000: ('LDA', 'n', 248), 0x8002: ('STA', 'wy', 512),
                 **{0x8000 + i: ('INY', 'i', 0) for i in range(5, 9)},
