@@ -321,6 +321,9 @@ def semantic_fast_paths(code, named_entries):
         ('actor_oob_proc', 44,
          'edb1d0eecc751178f3eb45e32cedb4be1b79cd8733094490c3d4cd20f1c7ca72',
          'if (vs_fast_actor_oob_proc(c)) return;'),
+        ('render_actor_clear_offscr', 40,
+         '8a6525a058dc95579702069936dac95d66856453b6133834f732060c4b43158b',
+         'if (vs_fast_render_actor_clear_offscr(c)) return;'),
     ):
         start = named_entries.get(name)
         if start is None:
@@ -410,6 +413,35 @@ def semantic_fast_paths(code, named_entries):
             init_digest == '956ce2485f6ed51dad652d29b7d505e867d8418f872ecd6ce3ded7a3643f9a3d'
         ):
             result[actor_loop] = ('if (vs_fast_actor_loop_no_spawn(c)) return;', None)
+
+    render_tiles = named_entries.get('render_actor_tiles')
+    render_pair = named_entries.get('render_actor_chr_pair')
+    if render_tiles is not None and render_pair is not None:
+        tile_body = []
+        cursor = render_tiles
+        for _ in range(4):
+            tile_body.append(code.get(cursor))
+            if tile_body[-1] is None:
+                break
+            cursor += LENGTH[tile_body[-1][1]]
+        pair_body = []
+        pair_cursor = render_pair
+        for _ in range(5):
+            pair_body.append(code.get(pair_cursor))
+            if pair_body[-1] is None:
+                break
+            pair_cursor += LENGTH[pair_body[-1][1]]
+        tile_digest = hashlib.sha256(
+            json.dumps(tile_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        pair_digest = hashlib.sha256(
+            json.dumps(pair_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            tile_digest == 'fa163b1ef14fdffe172e3f9fb12ea738706390bac638bf9e3f20ea61fb9b12bd' and
+            pair_digest == '50b64dc2ef458cce7f02753ba8150611b881c140ee646312b8806032d43dfe1c'
+        ):
+            result[render_tiles] = ('vs_fast_render_actor_tiles(c);', cursor)
     start = named_entries.get('tbljmp')
     if start is not None:
         a, body = start, []

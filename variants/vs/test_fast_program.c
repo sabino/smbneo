@@ -15,7 +15,7 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.pc = entry; want.x = (uint8_t)x; want.y = (uint8_t)y;
     want.a = (uint8_t)pattern; want.p = (uint8_t)(x ^ y ^ pattern);
     want.s = (uint8_t)(pattern + y);
-    if (entry == 0xd5bd)
+    if (entry == 0xd5bd || entry == 0xe9a8 || entry == 0xeac1)
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -43,6 +43,21 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         reference.ram[0x071b] = 0;
         reference.ram[0x06cb] = 0;
         reference.ram[0x0398] = 0;
+    }
+    if (entry == 0xeac1) {
+        reference.ram[8] = (uint8_t)(x % 6u);
+        reference.ram[0x03d1] = (uint8_t)(pattern & 0x1fu);
+    }
+    if (entry == 0xe9a8) {
+        unsigned slot = x % 6u;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0xeb] = (uint8_t)(pattern & 0xe0u);
+        reference.ram[0x06e5u + slot] = (uint8_t)(pattern & 0xe0u);
+        reference.ram[0xef] = 6;
+        reference.ram[0xec] = 0;
+        reference.ram[0x036a] = 0;
+        reference.ram[0x0109] = 0;
+        reference.ram[0x03d1] = 0;
     }
     optimized = reference; got = want; got.bus = &optimized;
     vs_program_reference(&want, 200000);
@@ -122,6 +137,8 @@ int main(int argc, char **argv) {
         compare(data, 0xef41, seed >> 8, seed, seed * 71);
         compare(data, 0xd5bd, seed % 6u, seed >> 8, seed * 73);
         compare(data, 0xbfea, seed % 5u, seed >> 8, seed * 79);
+        compare(data, 0xeac1, seed >> 8, seed, seed * 83);
+        compare(data, 0xe9a8, seed >> 8, seed, seed * 89);
     }
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }

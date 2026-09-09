@@ -82,6 +82,18 @@ static inline void vs_fast_render_actor_pair(VsCpu *c) {
     vs_fast_render_pair(c);
 }
 
+static inline void vs_fast_render_actor_tiles(VsCpu *c) {
+    static const uint8_t returns[3] = {0xac, 0xaf, 0xb2};
+
+    c->y = vs_nz(c, c->bus->ram[0xeb]);
+    for (unsigned pair = 0; pair < 3; ++pair) {
+        vs_push(c, 0xe9);
+        vs_push(c, returns[pair]);
+        vs_fast_render_actor_pair(c);
+        vs_fast_return(c);
+    }
+}
+
 static inline int vs_fast_misc_proc_inactive(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
 
@@ -176,6 +188,65 @@ static inline void vs_fast_rol_a(VsCpu *c) {
     uint8_t carry = (c->p & VS_C) != 0;
     c->p = (c->p & ~VS_C) | (value >> 7);
     c->a = vs_nz(c, (uint8_t)((value << 1) | carry));
+}
+
+static inline void vs_fast_render_actor_clear_h(
+    VsCpu *c,
+    uint8_t offset,
+    uint8_t return_low
+) {
+    uint8_t *ram = c->bus->ram;
+
+    c->a = vs_nz(c, offset);
+    vs_push(c, 0xea);
+    vs_push(c, return_low);
+    c->p &= ~VS_C;
+    vs_adc(c, ram[(0x06e5u + c->x) & 0x07ffu]);
+    c->y = vs_nz(c, c->a);
+    /* JSR render_offscr_top_clear at $eb23 stores $eb25. */
+    vs_push(c, 0xeb);
+    vs_push(c, 0x25);
+    c->a = vs_nz(c, 0xf8);
+    ram[0x0200u + c->y] = c->a;
+    ram[0x0208u + c->y] = c->a;
+    vs_fast_return(c);
+    ram[0x0210u + c->y] = c->a;
+    vs_fast_return(c);
+}
+
+static inline int vs_fast_render_actor_clear_offscr(VsCpu *c) {
+    uint8_t bits = c->bus->ram[0x03d1];
+
+    /* The common actor path is only horizontally clipped. Vertical clipping
+     * and its possible actor erase retain the complete translated routine. */
+    if ((bits & 0xe0u) != 0u || c->bus->ram[8] >= 6u || c->s < 0x40u)
+        return 0;
+    c->x = vs_nz(c, c->bus->ram[8]);
+    c->a = vs_nz(c, bits);
+    vs_fast_lsr_a(c);
+    vs_fast_lsr_a(c);
+    vs_fast_lsr_a(c);
+    vs_push(c, c->a);
+    if (c->p & VS_C)
+        vs_fast_render_actor_clear_h(c, 4, 0xd0);
+
+    c->a = vs_nz(c, vs_pop(c));
+    vs_fast_lsr_a(c);
+    vs_push(c, c->a);
+    if (c->p & VS_C)
+        vs_fast_render_actor_clear_h(c, 0, 0xda);
+
+    c->a = vs_nz(c, vs_pop(c));
+    vs_fast_lsr_a(c);
+    vs_fast_lsr_a(c);
+    vs_push(c, c->a);
+    c->a = vs_nz(c, vs_pop(c));
+    vs_fast_lsr_a(c);
+    vs_push(c, c->a);
+    c->a = vs_nz(c, vs_pop(c));
+    vs_fast_lsr_a(c);
+    vs_fast_return(c);
+    return 1;
 }
 
 static inline void vs_fast_pos_bits_diff(VsCpu *c, uint8_t return_low) {
