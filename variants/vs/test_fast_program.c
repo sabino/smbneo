@@ -16,6 +16,15 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.a = (uint8_t)pattern; want.p = (uint8_t)(x ^ y ^ pattern);
     want.s = (uint8_t)(pattern + y);
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
+    reference.pads[0] = (uint8_t)pattern;
+    reference.pads[1] = (uint8_t)(pattern * 37u + y);
+    reference.latch[0] = (uint8_t)(pattern ^ x);
+    reference.latch[1] = (uint8_t)(pattern + x + y);
+    reference.strobe = (uint8_t)(pattern & 1u);
+    reference.dips = (uint8_t)(pattern * 11u);
+    reference.coin_service = (uint8_t)(pattern & 0x64u);
+    if (entry == 0xba8a)
+        memset(reference.ram + 0x2a, 0, 9);
     optimized = reference; got = want; got.bus = &optimized;
     vs_program_reference(&want, 200000);
     vs_program_run(&got, 200000);
@@ -30,8 +39,25 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         assert(0);
     }
     assert(want.idle == got.idle && want.in_nmi == got.in_nmi && want.yielded == got.yielded);
-    assert(memcmp(reference.ram, optimized.ram, sizeof(reference.ram)) == 0);
+    if (memcmp(reference.ram, optimized.ram, sizeof(reference.ram)) != 0) {
+        for (unsigned i = 0; i < sizeof(reference.ram); ++i) {
+            if (reference.ram[i] != optimized.ram[i]) {
+                fprintf(stderr,
+                        "entry=%04x seed=%u/%u/%u ram[%04x] want=%02x got=%02x\n",
+                        entry, x, y, pattern, i, reference.ram[i], optimized.ram[i]);
+                break;
+            }
+        }
+        assert(0);
+    }
     assert(memcmp(reference.extra_ram, optimized.extra_ram, sizeof(reference.extra_ram)) == 0);
+    assert(memcmp(reference.latch, optimized.latch, sizeof(reference.latch)) == 0);
+    assert(reference.strobe == optimized.strobe);
+    assert(reference.chr_bank == optimized.chr_bank);
+    assert(reference.ram_control == optimized.ram_control);
+    assert(reference.counter_latch == optimized.counter_latch);
+    assert(reference.counter_line == optimized.counter_line);
+    assert(reference.coin_counter == optimized.coin_counter);
     ++cases;
 }
 int main(int argc, char **argv) {
@@ -46,5 +72,23 @@ int main(int argc, char **argv) {
         compare(data, 0x8275, 0, y, status);
     for (unsigned seed = 0; seed < 65536; ++seed)
         compare(data, 0x8212, seed >> 8, seed, seed * 29);
+    for (unsigned seed = 0; seed < 65536; ++seed) {
+        compare(data, 0xeb07, seed >> 8, seed, seed * 7);
+        compare(data, 0xeb0f, seed >> 8, seed, seed * 11);
+        compare(data, 0xf15b, seed >> 8, seed, seed * 17);
+        compare(data, 0xf19e, seed >> 8, seed, seed * 19);
+        compare(data, 0xe348, seed >> 8, seed, seed * 23);
+    }
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0x9125, seed & 1u, seed >> 8, seed * 29);
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0x9256, seed >> 8, seed, seed * 31);
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0xba8a, seed >> 8, seed, seed * 47);
+    for (unsigned seed = 0; seed < 65536; ++seed) {
+        compare(data, 0xf125, seed >> 8, seed, seed * 37);
+        compare(data, 0xbe1e, seed >> 8, seed, seed * 41);
+        compare(data, 0xe1f2, seed >> 8, seed, seed * 43);
+    }
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }

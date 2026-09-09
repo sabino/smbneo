@@ -298,7 +298,31 @@ def semantic_fast_paths(code, named_entries):
         # operands and branches, from the verified SM4-4 E reference.
         digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
         if digest == '52b0d0b34ee0ccfe79674ddafbef6eabc9d9a516134a5950be611f1c5639e870':
-            result[start] = ('vs_fast_render_pair(c);', a - 1)
+            result[start] = ('vs_fast_render_pair(c); vs_fast_return(c); return;', None)
+    for name, count, expected, action in (
+        ('render_actor_chr_pair', 5,
+         '50b64dc2ef458cce7f02753ba8150611b881c140ee646312b8806032d43dfe1c',
+         'vs_fast_render_actor_pair(c); vs_fast_return(c); return;'),
+        ('render_chr_pair', 2,
+         '42ce39eac366bd5e84e69d7e0fe0491622899df41078eae9a5e93b62823efca6',
+         'vs_fast_render_pair_right(c); vs_fast_return(c); return;'),
+        ('misc_proc', 49,
+         '84d7bfbe10bb06430f68d1f08e5fbef38716eaee6b226c7d0fc51d90151717f7',
+         'if (vs_fast_misc_proc_inactive(c)) return;'),
+    ):
+        start = named_entries.get(name)
+        if start is None:
+            continue
+        body, a = [], start
+        for _ in range(count):
+            ins = code.get(a)
+            if ins is None:
+                break
+            body.append(ins)
+            a += LENGTH[ins[1]]
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if len(body) == count and digest == expected:
+            result[start] = (action, None)
     start = named_entries.get('tbljmp')
     if start is not None:
         a, body = start, []
@@ -317,6 +341,72 @@ def semantic_fast_paths(code, named_entries):
         digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
         if digest == 'f94b014c05ed7c56da8bd0e38168cbbb2267af4778a0cd545e8f0cf69918866f':
             result[start] = ('vs_fast_nmi_oam_shuffle(c);', a - 1)
+    routines = {
+        'joypad_read_do': (21, 'b04474690ca931f11f562b0092a6e7dfefea6fc28acb12fd9fc2203543eda46b',
+                           'vs_fast_joypad_read_do(c);'),
+        'col_box_buffer': (37, '0a8c68a9f05633c3cbb20d2f43e4254fab8738ec42efdce557885abc255552df',
+                           'vs_fast_col_box_buffer(c);'),
+        'stats_score_hi_check_do': (17, '49349a425f4879e1c462b7d9c9598719f0066c297b1995694a30bbae9524ab8d',
+                                    'vs_fast_stats_score_hi_check_do(c);'),
+        'motion_x_do': (38, '34446f0bd877b97ab0ccbe68e61ab85adc38b6707f78e6b4340d9eb1ac5cbe13',
+                        'vs_fast_motion_x_do(c);'),
+        'col_box_proc': (36, 'e1f5a4cb13dd3a8e91f18a8ea7b43dabb77ebe02132f8b8e763ffdc244f2b938',
+                         'vs_fast_col_box_proc(c);'),
+        'pos_bits_get_do_x': (25, '42d792d7740f7fc14606f2c861a1cf04f903e6898ef520d53089ca41e267d758',
+                              'vs_fast_pos_bits_get_do_x(c);'),
+        'pos_bits_get_do_y': (25, 'dca26da57092fcb2e7e2d1a5687e2d7ab576ca20a340538248597abfa13b86fa',
+                              'vs_fast_pos_bits_get_do_y(c);'),
+        'pos_bits_get': (15, '02adfccc13fb79abbbff6190b3a113cc343c2a2c84846bed26e0faf325da9ff0',
+                         'vs_fast_pos_bits_get(c);'),
+    }
+    for name, (count, expected, action) in routines.items():
+        start = named_entries.get(name)
+        if start is None:
+            continue
+        a, body = start, []
+        for _ in range(count):
+            ins = code.get(a)
+            if ins is None:
+                break
+            body.append(ins)
+            a += LENGTH[ins[1]]
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if len(body) == count and digest == expected:
+            result[start] = (action, a - LENGTH[body[-1][1]])
+    start = named_entries.get('nmi_timers_tick')
+    if start is not None:
+        body, a = [], start
+        for _ in range(12):
+            ins = code.get(a)
+            if ins is None:
+                break
+            body.append(ins); a += LENGTH[ins[1]]
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if (len(body) == 12 and
+                digest == 'acfad2351823e51ee4732d1d72ca322c01b140c2d5b7d82e54a572f1079928ff'):
+            result[start] = ('vs_fast_nmi_timers(c);', a)
+    start = named_entries.get('nmi_rand')
+    if start is not None:
+        body, a = [], start
+        for _ in range(15):
+            ins = code.get(a)
+            if ins is None:
+                break
+            body.append(ins); a += LENGTH[ins[1]]
+        digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+        if (len(body) == 15 and
+                digest == 'de79b7d38db5f79f664910f7d57b1a70d490bc66fd75617ed5abe9c9d9fbe393'):
+            result[start] = ('vs_fast_nmi_rand(c);', a)
+        # The following fixed delay aligns NES writes after sprite-zero. Neo Geo
+        # presents the split independently, so only its final CPU state matters.
+        full, cursor = [], start
+        while cursor in code and len(full) < 64:
+            ins = code[cursor]; full.append(ins); cursor += LENGTH[ins[1]]
+            if ins[0] == 'RTI':
+                break
+        full_digest = hashlib.sha256(json.dumps(full, separators=(',', ':')).encode()).hexdigest()
+        if full_digest == '7dc715fb66ddba8a2663df5bf520421853052567c741087aeb8aa124bc057401':
+            result[0x81d9] = ('vs_fast_nmi_hblank_delay(c);', 0x81de)
     return result
 
 
