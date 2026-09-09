@@ -15,8 +15,30 @@ typedef struct {
 enum { VS_C = 1, VS_Z = 2, VS_I = 4, VS_D = 8, VS_B = 16,
        VS_U = 32, VS_V = 64, VS_N = 128 };
 
-static inline uint8_t vs_rd(VsCpu *c, uint16_t a) { return vs_bus_read(c->bus, a); }
-static inline void vs_wr(VsCpu *c, uint16_t a, uint8_t v) { vs_bus_write(c->bus, a, v); }
+static inline uint8_t vs_rd(VsCpu *c, uint16_t a) {
+    VsBus *bus = c->bus;
+
+    if (a < 0x2000u)
+        return bus->ram[a & 0x07ffu];
+    if (a >= 0x6000u && a < 0x8000u)
+        return bus->extra_ram[a & 0x07ffu];
+    if (a >= 0x8000u && bus->prg)
+        return bus->prg[a - 0x8000u];
+    return vs_bus_read(bus, a);
+}
+static inline void vs_wr(VsCpu *c, uint16_t a, uint8_t v) {
+    VsBus *bus = c->bus;
+
+    if (a < 0x2000u) {
+        bus->ram[a & 0x07ffu] = v;
+        return;
+    }
+    if (a >= 0x6000u && a < 0x8000u) {
+        bus->extra_ram[a & 0x07ffu] = v;
+        return;
+    }
+    vs_bus_write(bus, a, v);
+}
 static inline uint8_t vs_nz(VsCpu *c, uint8_t v) {
     c->p = (c->p & ~(VS_N | VS_Z)) | (v & VS_N) | (v == 0 ? VS_Z : 0);
     return v;
