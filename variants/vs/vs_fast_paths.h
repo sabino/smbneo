@@ -19,6 +19,97 @@ static inline int vs_fast_stride_fill(VsCpu *c, unsigned base, uint8_t fill) {
     return 1;
 }
 
+/* Batch the ordinary 13-metatile background column.  This is the same
+ * semantic rendering pass used by the regular game core, adapted to retain
+ * the VS CPU's complete observable register, scratch-RAM and status state.
+ * Non-empty display-list offsets retain the byte-ordered translated path
+ * because its writes can alias data that later iterations still consume. */
+static inline int vs_fast_meta_render_area(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    const uint8_t *prg = c->bus->prg;
+    uint8_t buffer_offset;
+    uint8_t attribute_column;
+    uint8_t metatile_side;
+    uint8_t attribute_row = 0u;
+    uint8_t row;
+
+    if (!prg || ram[0x0340] != 0u)
+        return 0;
+
+    buffer_offset = 0u;
+    attribute_column = (uint8_t)(ram[0x0726] & 1u);
+    metatile_side = (uint8_t)(((ram[0x071f] & 1u) ^ 1u) << 1);
+    ram[5] = attribute_column;
+    ram[0] = buffer_offset;
+    ram[0x0341] = ram[0x0720];
+    ram[0x0342] = ram[0x0721];
+    ram[0x0343] = 0x9au;
+    ram[4] = 0u;
+
+    for (row = 0u; row < 13u; ++row) {
+        uint8_t metatile = ram[0x06a1u + row];
+        uint8_t palette = (uint8_t)(metatile >> 6);
+        uint8_t graphics_low = prg[0x8d09u - 0x8000u + palette];
+        uint8_t graphics_high = prg[0x8d0du - 0x8000u + palette];
+        uint16_t graphics_address = (uint16_t)(
+            graphics_low | ((uint16_t)graphics_high << 8));
+        uint8_t tile_offset = (uint8_t)(metatile << 2);
+        uint8_t tile_index;
+        uint8_t attribute_bits;
+
+        ram[1] = row;
+        ram[3] = (uint8_t)(metatile & 0xc0u);
+        ram[6] = graphics_low;
+        ram[7] = graphics_high;
+        ram[2] = tile_offset;
+
+        /* ASL of a zero-or-one value clears carry before the source ADC.  Use
+         * the real helper so the final iteration also preserves V exactly. */
+        c->p &= (uint8_t)~VS_C;
+        c->a = metatile_side;
+        vs_adc(c, tile_offset);
+        tile_index = c->a;
+        ram[0x0344u + buffer_offset] =
+            vs_rd(c, (uint16_t)(graphics_address + tile_index));
+        ram[0x0345u + buffer_offset] =
+            vs_rd(c, (uint16_t)(graphics_address + tile_index + 1u));
+
+        if (attribute_column == 0u) {
+            attribute_bits = (uint8_t)(
+                palette << ((row & 1u) != 0u ? 4u : 0u));
+        } else {
+            attribute_bits = (uint8_t)(
+                palette << ((row & 1u) != 0u ? 6u : 2u));
+        }
+        ram[3] = attribute_bits;
+        ram[0x03f9u + attribute_row] = (uint8_t)(
+            ram[0x03f9u + attribute_row] | attribute_bits);
+        if ((row & 1u) != 0u)
+            ++attribute_row;
+        ram[4] = attribute_row;
+
+        buffer_offset = (uint8_t)(buffer_offset + 2u);
+        ram[0] = buffer_offset;
+    }
+
+    c->x = 13u;
+    c->y = (uint8_t)(buffer_offset + 3u);
+    ram[0x0341u + c->y] = 0u;
+    ram[0x0340] = c->y;
+    ++ram[0x0721];
+    if ((ram[0x0721] & 0x1fu) == 0u) {
+        ram[0x0721] = 0x80u;
+        ram[0x0720] ^= 0x04u;
+    }
+
+    /* The final CPX has carry set; meta_render_attr_end then loads six. */
+    c->p |= VS_C;
+    c->a = vs_nz(c, 6u);
+    ram[0x0773] = c->a;
+    vs_fast_return(c);
+    return 1;
+}
+
 /* Exact semantic sprite-row operation. This edits emulated OAM in ordinary
  * RAM, never physical Neo Geo VRAM. The translator validates the entire source
  * instruction body before selecting this helper; unknown bodies fall back. */

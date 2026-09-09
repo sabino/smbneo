@@ -579,6 +579,30 @@ def semantic_fast_paths(code, named_entries):
             actor_digest == '33660d865d87d0bbb982fe4b63ce912cc64de58240c43d0a4729e985f2a91bc2'
         ):
             result[render_actor] = ('if (vs_fast_render_goomba_state0(c)) return;', None)
+
+    # Rendering one ordinary area column traverses 13 metatiles and crosses a
+    # generated C page boundary on every row.  Fingerprint the complete source
+    # routine before replacing it with the equivalent batched operation.
+    meta_render_area = named_entries.get('meta_render_area')
+    meta_render_attr = named_entries.get('meta_render_attr')
+    if meta_render_area is not None and meta_render_attr is not None:
+        meta_body = [
+            code[a] for a in sorted(code)
+            if meta_render_area <= a < meta_render_attr
+        ]
+        meta_digest = hashlib.sha256(
+            json.dumps(meta_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            len(meta_body) == 89 and
+            meta_digest == '803b5506021a203ea34a36c3a9dd6943f469fc1291d630dfc4baa62d850b843b' and
+            # The routine tail-jumps to the shared command terminator.
+            code.get(0x8bbe) == ('LDA', 'n', 6) and
+            code.get(0x8bc0) == ('STA', 'w', 0x0773) and
+            code.get(0x8bc3) == ('RTS', 'i', 0)
+        ):
+            result[meta_render_area] = ('if (vs_fast_meta_render_area(c)) return;', None)
+
     start = named_entries.get('tbljmp')
     if start is not None:
         a, body = start, []

@@ -29,6 +29,16 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     reference.coin_service = (uint8_t)(pattern & 0x64u);
     if (entry == 0xba8a)
         memset(reference.ram + 0x2a, 0, 9);
+    if (entry == 0x8aaf) {
+        reference.ram[0x0340] = x >= 256u ? (uint8_t)x : 0;
+        reference.ram[0x071f] = (uint8_t)(pattern & 7u);
+        reference.ram[0x0720] = (uint8_t)(0x20u | (pattern & 4u));
+        reference.ram[0x0721] = (uint8_t)pattern;
+        reference.ram[0x0726] = (uint8_t)(pattern >> 1);
+        for (unsigned row = 0; row < 13; ++row)
+            reference.ram[0x06a1u + row] =
+                (uint8_t)(pattern + row * (x + 17u));
+    }
     if (entry == 0xef41)
         reference.ram[7] = (uint8_t)(1u + (pattern & 3u));
     if (entry == 0xbfea || entry == 0xbf60) {
@@ -251,6 +261,13 @@ int main(int argc, char **argv) {
         compare(data, 0x9256, seed >> 8, seed, seed * 31);
     for (unsigned seed = 0; seed < 65536; ++seed)
         compare(data, 0xba8a, seed >> 8, seed, seed * 47);
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0x8aaf, seed >> 8, seed, seed * 151);
+    /* Nonempty offsets can alias the attribute buffer. Check every offset's
+     * fallback, both column parities and both metatile sides. */
+    for (unsigned offset = 1; offset < 256; ++offset)
+        for (unsigned mode = 0; mode < 4; ++mode)
+            compare(data, 0x8aaf, 256u + offset, offset * 11u, mode);
     for (unsigned seed = 0; seed < 65536; ++seed) {
         compare(data, 0xf125, seed >> 8, seed, seed * 37);
         compare(data, 0xbe1e, seed >> 8, seed, seed * 41);
