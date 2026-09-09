@@ -324,6 +324,18 @@ def semantic_fast_paths(code, named_entries):
         ('render_actor_clear_offscr', 40,
          '8a6525a058dc95579702069936dac95d66856453b6133834f732060c4b43158b',
          'if (vs_fast_render_actor_clear_offscr(c)) return;'),
+        ('col_player_actor_proc', 3,
+         'a74d1fd16eb604fc52b00f3bfe16f0dede2f7b450275ae2231d0dd4f00435cab',
+         'if (vs_fast_col_player_actor_odd(c)) return;'),
+        ('col_actor_pos_y_diff', 5,
+         'd4e4325349dc2b68fab71f410db180db57f8f7c58eab2fabea6562f50d39db71',
+         'vs_fast_col_actor_pos_y_diff(c); return;'),
+        ('col_actor_check_side_do', 19,
+         'f4e68e8d3e1bc746bff781601e78a20b4781a50d244f7b66386392f978c16295',
+         'if (vs_fast_col_actor_check_side_do(c)) return;'),
+        ('col_bg_proc_check_non_solid', 10,
+         '7c15458a530e1dbc7d2a9295cae2ba815913100c25e93391674e768bc154ba29',
+         'vs_fast_col_bg_non_solid(c); return;'),
     ):
         start = named_entries.get(name)
         if start is None:
@@ -365,6 +377,32 @@ def semantic_fast_paths(code, named_entries):
                  'ba797b0764e36b6dcb49d0b26197f6ab1e4916deb15d9fe6c6a213d285e36710'),
             ),
             'vs_fast_pos_calc_x_rel_actor(c); return;',
+        ),
+        (
+            'col_box_buffer_check_actor',
+            (
+                ('col_box_buffer_check_actor', 7,
+                 '9c40d677c266f838dd19bea39b87e35ca17220743d213304f273a854e9cbb08c'),
+                ('col_box_buffer_check_do', 4,
+                 'c449624b4e5ff2faf686c0d12cde0b38ae31d3cc036ffbb4ed11dfc20a468be6'),
+                ('col_box_buffer', 37,
+                 '0a8c68a9f05633c3cbb20d2f43e4254fab8738ec42efdce557885abc255552df'),
+            ),
+            'vs_fast_col_box_buffer_check_actor(c); return;',
+        ),
+        (
+            'col_actor_block_col',
+            (
+                ('col_actor_block_col', 3,
+                 '322caa004f0b8b4a9984df99da2320bcbc7b4060c6e392419b2a0b98545daf23'),
+                ('col_box_buffer_check_actor', 7,
+                 '9c40d677c266f838dd19bea39b87e35ca17220743d213304f273a854e9cbb08c'),
+                ('col_box_buffer_check_do', 4,
+                 'c449624b4e5ff2faf686c0d12cde0b38ae31d3cc036ffbb4ed11dfc20a468be6'),
+                ('col_box_buffer', 37,
+                 '0a8c68a9f05633c3cbb20d2f43e4254fab8738ec42efdce557885abc255552df'),
+            ),
+            'vs_fast_col_actor_block_col(c); return;',
         ),
     )
     for entry_name, members, action in chained_routines:
@@ -442,6 +480,62 @@ def semantic_fast_paths(code, named_entries):
             base_digest == '321140d5c489194c532d65fb73d0d3d8b6353a6962837a501768514e5efb5a64'
         ):
             result[actor_base] = ('if (vs_fast_actor_proc_base_state0(c)) return;', None)
+
+    # The no-overlap actor scanner depends on the complete caller plus both
+    # geometry leaves.  Requiring all three fingerprints keeps the optimized
+    # decision table tied to the verified linked VS implementation.
+    actor_collision = named_entries.get('col_actor_actor_proc')
+    actor_collision_do = named_entries.get('col_actor_actor_do')
+    actor_box_get = named_entries.get('col_actor_box_get')
+    col_bg_proc = named_entries.get('col_bg_proc')
+    col_base_actor = named_entries.get('col_base_actor')
+    col_buffer_actor = named_entries.get('col_box_buffer_check_actor')
+    actor_collision_members = (
+        (actor_collision, actor_collision_do, 63,
+         '150e1e51e196898c579b2619d0cde4ea06a7b4a7cd63bbad1c01246567068a8c'),
+        (actor_box_get, col_bg_proc, 10,
+         'c13a05f11d20bcfdce2eb1a1bb5c811d4b3dec440a49475630055f56614189f0'),
+        (col_base_actor, col_buffer_actor, 45,
+         'e1047aa37492ed1e159cd80c9b5203d2a5248c6a6c4e0a119f18c70027456495'),
+    )
+    if all(start is not None and end is not None for start, end, _, _ in actor_collision_members):
+        valid = True
+        for start, end, count, expected in actor_collision_members:
+            body = [code[a] for a in sorted(code) if start <= a < end]
+            digest = hashlib.sha256(
+                json.dumps(body, separators=(',', ':')).encode()
+            ).hexdigest()
+            if len(body) != count or digest != expected:
+                valid = False
+                break
+        if valid:
+            result[actor_collision] = ('if (vs_fast_col_actor_actor_exit(c)) return;', None)
+
+    actor_ground = named_entries.get('col_actor_ground_proc')
+    actor_bounce = named_entries.get('col_actor_bounce_proc')
+    actor_block = named_entries.get('col_actor_block_col')
+    actor_non_solid = named_entries.get('col_bg_proc_check_non_solid')
+    projectile_collision = named_entries.get('col_proj_proc')
+    ground_members = (
+        (actor_ground, actor_bounce, 207,
+         '07c3229d5b14de7d3b865330d95d4052d3af85c8fbb3bb3e6edc3d2e2f54f32a'),
+        (actor_block, actor_non_solid, 3,
+         '322caa004f0b8b4a9984df99da2320bcbc7b4060c6e392419b2a0b98545daf23'),
+        (actor_non_solid, projectile_collision, 10,
+         '7c15458a530e1dbc7d2a9295cae2ba815913100c25e93391674e768bc154ba29'),
+    )
+    if all(start is not None and end is not None for start, end, _, _ in ground_members):
+        valid = True
+        for start, end, count, expected in ground_members:
+            body = [code[a] for a in sorted(code) if start <= a < end]
+            digest = hashlib.sha256(
+                json.dumps(body, separators=(',', ':')).encode()
+            ).hexdigest()
+            if len(body) != count or digest != expected:
+                valid = False
+                break
+        if valid:
+            result[actor_ground] = ('if (vs_fast_col_actor_ground(c)) return;', None)
 
     render_tiles = named_entries.get('render_actor_tiles')
     render_pair = named_entries.get('render_actor_chr_pair')

@@ -1196,6 +1196,479 @@ static inline int vs_fast_actor_loop_no_spawn(VsCpu *c) {
     return 1;
 }
 
+/* Player/enemy contact is deliberately split across alternating frames.  The
+ * odd-frame half is only an LSR and RTS, but entering the generic translated
+ * routine for it once per active actor is comparatively expensive. */
+static inline int vs_fast_col_player_actor_odd(VsCpu *c) {
+    uint8_t frame = c->bus->ram[9];
+
+    if ((frame & 1u) == 0u)
+        return 0;
+    c->a = vs_nz(c, frame);
+    vs_fast_lsr_a(c);
+    vs_fast_return(c);
+    return 1;
+}
+
+typedef enum {
+    VS_FAST_PAIR_UNSAFE = 0,
+    VS_FAST_PAIR_HORIZONTAL,
+    VS_FAST_PAIR_VERTICAL,
+} VsFastPairPolicy;
+
+static inline VsFastPairPolicy vs_fast_actor_pair_policy(
+    const uint8_t *ram, uint8_t first, uint8_t second
+) {
+    uint8_t first_left = ram[0x04acu + first];
+    uint8_t first_top = ram[0x04acu + first + 1u];
+    uint8_t first_right = ram[0x04aeu + first];
+    uint8_t first_bottom = ram[0x04aeu + first + 1u];
+    uint8_t second_left = ram[0x04acu + second];
+    uint8_t second_top = ram[0x04acu + second + 1u];
+    uint8_t second_right = ram[0x04aeu + second];
+    uint8_t second_bottom = ram[0x04aeu + second + 1u];
+
+    if (first_left > first_right || first_top > first_bottom ||
+        second_left > second_right || second_top > second_bottom)
+        return VS_FAST_PAIR_UNSAFE;
+    if (first_right < second_left || first_left > second_right)
+        return VS_FAST_PAIR_HORIZONTAL;
+    if (first_bottom < second_top || first_top > second_bottom)
+        return VS_FAST_PAIR_VERTICAL;
+    return VS_FAST_PAIR_UNSAFE;
+}
+
+static inline int vs_fast_actor_collision_id(uint8_t id) {
+    return id < 0x15u && id != 0x11u && id != 0x0du;
+}
+
+/* Preserve every cheap exit in the alternating actor/actor collision gate and
+ * collapse the overwhelmingly common scan where all earlier actors are either
+ * inactive, excluded, or geometrically separate.  Actual overlaps fall back. */
+static inline int vs_fast_col_actor_actor_exit(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t frame = ram[9];
+    uint8_t actor_id, masked;
+    uint8_t first_box, candidate;
+    uint8_t ignored = 0, separated = 0, horizontal = 0;
+    uint8_t final_carry;
+
+    if ((frame & 1u) == 0u) {
+        c->a = vs_nz(c, frame);
+        vs_fast_lsr_a(c);
+        vs_fast_return(c);
+        return 1;
+    }
+    if (ram[0x074e] == 0u) {
+        c->a = vs_nz(c, frame);
+        vs_fast_lsr_a(c);
+        c->a = vs_nz(c, 0);
+        vs_fast_return(c);
+        return 1;
+    }
+
+    actor_id = ram[(uint8_t)(0x16u + c->x)];
+    masked = ram[(0x03d8u + c->x) & 0x07ffu];
+    if (vs_fast_actor_collision_id(actor_id) && masked == 0u) {
+        uint8_t slot = c->x;
+
+        if (!c->bus->prg || slot >= 6u || ram[8] != slot || c->s < 0x40u)
+            return 0;
+        first_box = (uint8_t)(slot * 4u + 4u);
+        candidate = slot;
+        while (candidate != 0u) {
+            uint8_t bit;
+            uint8_t id;
+            uint8_t second_box;
+            VsFastPairPolicy policy;
+
+            --candidate;
+            bit = (uint8_t)(1u << candidate);
+            if (ram[(uint8_t)(0x0fu + candidate)] == 0u)
+                continue;
+            id = ram[(uint8_t)(0x16u + candidate)];
+            if (!vs_fast_actor_collision_id(id)) {
+                ignored |= bit;
+                continue;
+            }
+            if (ram[0x03d8u + candidate] != 0u)
+                return 0;
+            second_box = (uint8_t)(candidate * 4u + 4u);
+            policy = vs_fast_actor_pair_policy(ram, first_box, second_box);
+            if (policy == VS_FAST_PAIR_UNSAFE)
+                return 0;
+            separated |= bit;
+            if (policy == VS_FAST_PAIR_HORIZONTAL)
+                horizontal |= bit;
+        }
+
+        /* Entry filters. */
+        c->a = vs_nz(c, frame);
+        vs_fast_lsr_a(c);
+        c->a = vs_nz(c, ram[0x074e]);
+        c->a = vs_nz(c, actor_id);
+        vs_cmp(c, c->a, 0x15);
+        vs_cmp(c, c->a, 0x11);
+        vs_cmp(c, c->a, 0x0d);
+        c->a = vs_nz(c, masked);
+
+        /* JSR col_actor_box_get at $d9a7 stores $d9a9. */
+        vs_push(c, 0xd9);
+        vs_push(c, 0xa9);
+        c->a = vs_nz(c, ram[8]);
+        vs_fast_asl_a(c);
+        vs_fast_asl_a(c);
+        c->p &= ~VS_C;
+        vs_adc(c, 4);
+        c->y = vs_nz(c, c->a);
+        c->a = vs_nz(c, ram[0x03d1] & 0x0fu);
+        vs_cmp(c, c->a, 0x0f);
+        vs_fast_return(c);
+        c->x = vs_nz(c, (uint8_t)(c->x - 1u));
+
+        final_carry = (uint8_t)((ram[0x03d1] & 0x0fu) >= 0x0fu);
+        candidate = slot;
+        while (candidate != 0u) {
+            uint8_t bit;
+            uint8_t id;
+
+            --candidate;
+            bit = (uint8_t)(1u << candidate);
+            ram[1] = candidate;
+            c->a = vs_nz(c, c->y);
+            vs_push(c, c->a);
+            c->a = vs_nz(c, ram[(uint8_t)(0x0fu + candidate)]);
+            if (c->a != 0u) {
+                id = ram[(uint8_t)(0x16u + candidate)];
+                c->a = vs_nz(c, id);
+                vs_cmp(c, c->a, 0x15);
+                if (!(c->p & VS_C)) {
+                    vs_cmp(c, c->a, 0x11);
+                    if (!(c->p & VS_Z))
+                        vs_cmp(c, c->a, 0x0d);
+                }
+                if ((ignored & bit) != 0u) {
+                    final_carry = 1;
+                } else {
+                    c->a = vs_nz(c, ram[0x03d8u + candidate]);
+                    c->a = vs_nz(c, candidate);
+                    vs_fast_asl_a(c);
+                    vs_fast_asl_a(c);
+                    c->p &= ~VS_C;
+                    vs_adc(c, 4);
+                    c->x = vs_nz(c, c->a);
+                    /* JSR col_base_actor at $d9cf stores $d9d1. */
+                    vs_push(c, 0xd9);
+                    vs_push(c, 0xd1);
+                    ram[6] = first_box;
+                    ram[7] = (horizontal & bit) != 0u ? 1u : 0u;
+                    c->p &= ~VS_C;
+                    c->y = vs_nz(c, first_box);
+                    vs_fast_return(c);
+                    c->x = vs_nz(c, ram[8]);
+                    c->y = vs_nz(c, ram[1]);
+                    if ((separated & bit) != 0u) {
+                        c->a = vs_nz(c, ram[0x0491u + candidate]);
+                        c->a = vs_nz(c, c->a &
+                            c->bus->prg[0xd983u - 0x8000u + slot]);
+                        ram[0x0491u + candidate] = c->a;
+                        final_carry = 0;
+                    }
+                }
+            }
+            c->a = vs_nz(c, vs_pop(c));
+            c->y = vs_nz(c, c->a);
+            c->x = vs_nz(c, ram[1]);
+            c->x = vs_nz(c, (uint8_t)(c->x - 1u));
+        }
+        c->x = vs_nz(c, ram[8]);
+        c->p = (c->p & ~VS_C) | (final_carry ? VS_C : 0);
+        vs_fast_return(c);
+        return 1;
+    }
+
+    c->a = vs_nz(c, frame);
+    vs_fast_lsr_a(c);
+    c->a = vs_nz(c, ram[0x074e]);
+    c->a = vs_nz(c, actor_id);
+    vs_cmp(c, c->a, 0x15);
+    if (!(c->p & VS_C)) {
+        vs_cmp(c, c->a, 0x11);
+        if (!(c->p & VS_Z)) {
+            vs_cmp(c, c->a, 0x0d);
+            if (!(c->p & VS_Z))
+                c->a = vs_nz(c, masked);
+        }
+    }
+    c->x = vs_nz(c, ram[8]);
+    vs_fast_return(c);
+    return 1;
+}
+
+static inline int vs_fast_col_actor_ground_disabled(VsCpu *c) {
+    uint8_t state = c->bus->ram[(uint8_t)(0x1eu + c->x)];
+
+    if ((state & 0x20u) == 0u)
+        return 0;
+    c->a = vs_nz(c, state);
+    c->a = vs_nz(c, c->a & 0x20u);
+    vs_fast_return(c);
+    return 1;
+}
+
+static inline void vs_fast_col_actor_pos_y_diff(VsCpu *c) {
+    c->a = vs_nz(c, c->bus->ram[(uint8_t)(0xcfu + c->x)]);
+    c->p &= ~VS_C;
+    vs_adc(c, 62);
+    vs_cmp(c, c->a, 68);
+    vs_fast_return(c);
+}
+
+static inline void vs_fast_col_box_buffer(VsCpu *c);
+
+/* Inline both small wrappers around the already verified block-buffer kernel.
+ * This is shared by ground and side probes and retains the otherwise invisible
+ * stack-page writes made by PHA and the nested JSRs. */
+static inline void vs_fast_col_box_buffer_check_actor(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+
+    vs_push(c, c->a);
+    c->a = vs_nz(c, c->x);
+    c->p &= ~VS_C;
+    vs_adc(c, 1);
+    c->x = vs_nz(c, c->a);
+    c->a = vs_nz(c, vs_pop(c));
+
+    /* JSR col_box_buffer at $e2fb stores $e2fd. */
+    vs_push(c, 0xe2);
+    vs_push(c, 0xfd);
+    vs_fast_col_box_buffer(c);
+    vs_fast_return(c);
+    c->x = vs_nz(c, ram[8]);
+    vs_cmp(c, c->a, 0);
+    vs_fast_return(c);
+}
+
+static inline void vs_fast_col_actor_block_col(VsCpu *c) {
+    c->a = vs_nz(c, 0);
+    c->y = vs_nz(c, 0x15);
+    vs_fast_col_box_buffer_check_actor(c);
+}
+
+typedef struct {
+    uint8_t tile;
+} VsFastActorBlockProbe;
+
+static inline VsFastActorBlockProbe vs_fast_actor_block_probe(
+    VsCpu *c, uint8_t slot, uint8_t adder
+) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t object = (uint8_t)(slot + 1u);
+    uint16_t sum = (uint16_t)c->bus->prg[0xe306u - 0x8000u + adder]
+        + ram[(uint8_t)(0x86u + object)];
+    uint8_t adjusted_x = (uint8_t)sum;
+    uint8_t column = (uint8_t)((((ram[(uint8_t)(0x6du + object)]
+        + (sum > 0xffu ? 1u : 0u)) & 1u) << 4) | (adjusted_x >> 4));
+    uint16_t pointer = (uint16_t)((column & 0x10u ? 0x05d0u : 0x0500u)
+        + (column & 15u));
+    uint16_t ysum = (uint16_t)ram[(uint8_t)(0xceu + object)]
+        + c->bus->prg[0xe322u - 0x8000u + adder];
+    uint8_t adjusted_y = (uint8_t)(((uint8_t)ysum & 0xf0u) - 0x20u);
+    VsFastActorBlockProbe result;
+
+    result.tile = ram[(pointer + adjusted_y) & 0x07ffu];
+    return result;
+}
+
+static inline int vs_fast_actor_tile_non_solid(uint8_t tile) {
+    return tile == 0x26u || tile == 0xc2u || tile == 0xc3u ||
+        tile == 0x5fu || tile == 0x60u;
+}
+
+static inline void vs_fast_col_bg_non_solid(VsCpu *c) {
+    static const uint8_t values[5] = {0x26, 0xc2, 0xc3, 0x5f, 0x60};
+
+    for (unsigned i = 0; i < 5; ++i) {
+        vs_cmp(c, c->a, values[i]);
+        if (c->p & VS_Z)
+            break;
+    }
+    vs_fast_return(c);
+}
+
+/* Most actor side checks inspect one tile and find empty space.  Preflight the
+ * tile so a real wall hit still falls back to the complete reversal/sound path,
+ * then execute the two source iterations with exact scratch and stack residue. */
+static inline int vs_fast_col_actor_check_side_do(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+    uint8_t position, direction;
+
+    if (!c->bus->prg || slot >= 6u || ram[8] != slot || c->s < 0x40u)
+        return 0;
+    position = ram[(uint8_t)(0xcfu + slot)];
+    direction = ram[(uint8_t)(0x46u + slot)];
+    if (position >= 0x20u && (direction == 1u || direction == 2u)) {
+        uint8_t adder = direction == 2u ? 0x16u : 0x17u;
+        uint8_t tile = vs_fast_actor_block_probe(c, slot, adder).tile;
+        if (tile != 0u && !vs_fast_actor_tile_non_solid(tile))
+            return 0;
+    }
+
+    c->a = vs_nz(c, position);
+    vs_cmp(c, c->a, 0x20);
+    if (!(c->p & VS_C)) {
+        vs_fast_return(c);
+        return 1;
+    }
+    c->y = vs_nz(c, 0x16);
+    c->a = vs_nz(c, 2);
+    ram[0xeb] = c->a;
+    do {
+        c->a = vs_nz(c, ram[0xeb]);
+        vs_cmp(c, c->a, ram[(uint8_t)(0x46u + c->x)]);
+        if (c->p & VS_Z) {
+            c->a = vs_nz(c, 1);
+            /* JSR col_box_buffer_check_actor at $e068 stores $e06a. */
+            vs_push(c, 0xe0);
+            vs_push(c, 0x6a);
+            vs_fast_col_box_buffer_check_actor(c);
+            if (!(c->p & VS_Z)) {
+                /* JSR col_bg_proc_check_non_solid at $e06d stores $e06f. */
+                vs_push(c, 0xe0);
+                vs_push(c, 0x6f);
+                vs_fast_col_bg_non_solid(c);
+            }
+        }
+        ram[0xeb] = vs_nz(c, (uint8_t)(ram[0xeb] - 1u));
+        c->y = vs_nz(c, (uint8_t)(c->y + 1u));
+        vs_cmp(c, c->y, 0x18);
+    } while (!(c->p & VS_C));
+    vs_fast_return(c);
+    return 1;
+}
+
+/* State-zero Goombas account for the bulk of ordinary ground probes.  This is
+ * the VS counterpart of the regular port's proven semantic ground fast path:
+ * preflight both tiles, retain exceptional bump/reversal behavior as fallback,
+ * and fold the empty/solid-aligned cases without changing game rules. */
+static inline int vs_fast_col_actor_ground(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+    uint8_t state = ram[(uint8_t)(0x1eu + slot)];
+    uint8_t position = ram[(uint8_t)(0xcfu + slot)];
+    uint8_t adjusted = (uint8_t)(position + 62u);
+    uint8_t actor_id;
+    VsFastActorBlockProbe under;
+    int empty_or_non_solid;
+    int offset_outside;
+
+    if ((state & 0x20u) != 0u)
+        return vs_fast_col_actor_ground_disabled(c);
+
+    /* The vertical-range return is valid for every actor state and ID. */
+    if (adjusted < 68u) {
+        c->a = vs_nz(c, state);
+        c->a = vs_nz(c, c->a & 0x20u);
+        /* JSR col_actor_pos_y_diff at $df1d stores $df1f. */
+        vs_push(c, 0xdf);
+        vs_push(c, 0x1f);
+        vs_fast_col_actor_pos_y_diff(c);
+        vs_fast_return(c);
+        return 1;
+    }
+
+    actor_id = ram[(uint8_t)(0x16u + slot)];
+    if (state == 0u && (actor_id == 0x0du || actor_id == 0x11u)) {
+        c->a = vs_nz(c, state);
+        c->a = vs_nz(c, c->a & 0x20u);
+        vs_push(c, 0xdf);
+        vs_push(c, 0x1f);
+        vs_fast_col_actor_pos_y_diff(c);
+        c->y = vs_nz(c, actor_id);
+        vs_cmp(c, c->y, 0x12);
+        vs_cmp(c, c->y, 0x0e);
+        vs_cmp(c, c->y, 0x05);
+        vs_cmp(c, c->y, 0x12);
+        vs_cmp(c, c->y, 0x2e);
+        vs_cmp(c, c->y, 0x07);
+        vs_fast_return(c);
+        return 1;
+    }
+
+    if (!c->bus->prg || slot >= 6u || ram[8] != slot || state != 0u ||
+        actor_id != 6u || c->s < 0x40u)
+        return 0;
+    under = vs_fast_actor_block_probe(c, slot, 0x15);
+    if (under.tile == 0x23u)
+        return 0;
+    if (position >= 0x20u) {
+        uint8_t direction = ram[(uint8_t)(0x46u + slot)];
+        if (direction == 1u || direction == 2u) {
+            uint8_t adder = direction == 2u ? 0x16u : 0x17u;
+            uint8_t tile = vs_fast_actor_block_probe(c, slot, adder).tile;
+            if (tile != 0u && !vs_fast_actor_tile_non_solid(tile))
+                return 0;
+        }
+    }
+    empty_or_non_solid = under.tile == 0u ||
+        vs_fast_actor_tile_non_solid(under.tile);
+    offset_outside = (uint8_t)((position & 0x0fu) - 8u) >= 5u;
+
+    c->a = vs_nz(c, state);
+    c->a = vs_nz(c, c->a & 0x20u);
+    vs_push(c, 0xdf);
+    vs_push(c, 0x1f);
+    vs_fast_col_actor_pos_y_diff(c);
+    c->y = vs_nz(c, actor_id);
+    vs_cmp(c, c->y, 0x12);
+    vs_cmp(c, c->y, 0x0e);
+    vs_cmp(c, c->y, 0x05);
+    vs_cmp(c, c->y, 0x12);
+    vs_cmp(c, c->y, 0x2e);
+    vs_cmp(c, c->y, 0x07);
+
+    /* JSR col_actor_block_col at $df48 stores $df4a. */
+    vs_push(c, 0xdf);
+    vs_push(c, 0x4a);
+    vs_fast_col_actor_block_col(c);
+    if (under.tile != 0u) {
+        /* JSR col_bg_proc_check_non_solid at $df50 stores $df52. */
+        vs_push(c, 0xdf);
+        vs_push(c, 0x52);
+        vs_fast_col_bg_non_solid(c);
+        if (!empty_or_non_solid)
+            vs_cmp(c, c->a, 0x23);
+    }
+
+    if (!empty_or_non_solid) {
+        c->a = vs_nz(c, ram[4]);
+        c->p |= VS_C;
+        vs_adc(c, (uint8_t)~8u);
+        vs_cmp(c, c->a, 5);
+        if (!offset_outside) {
+            c->a = vs_nz(c, ram[(uint8_t)(0x1eu + c->x)]);
+            c->a = vs_nz(c, c->a & 0x40u);
+            c->a = vs_nz(c, ram[(uint8_t)(0x1eu + c->x)]);
+            vs_fast_asl_a(c);
+            c->a = vs_nz(c, ram[(uint8_t)(0x1eu + c->x)]);
+        }
+    }
+
+    if (empty_or_non_solid || offset_outside) {
+        /* The Goomba state-zero branch of col_actor_check_side. */
+        c->a = vs_nz(c, ram[(uint8_t)(0x16u + c->x)]);
+        vs_cmp(c, c->a, 3);
+        c->a = vs_nz(c, ram[(uint8_t)(0x1eu + c->x)]);
+        c->y = vs_nz(c, c->a);
+        vs_fast_asl_a(c);
+        c->a = vs_nz(c, c->bus->prg[0xdf0fu - 0x8000u + c->y]);
+        ram[(uint8_t)(0x1eu + c->x)] = c->a;
+    }
+
+    return vs_fast_col_actor_check_side_do(c);
+}
+
 static inline void vs_fast_col_box_proc_alias_exact(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
 

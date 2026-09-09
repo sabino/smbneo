@@ -16,7 +16,8 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.a = (uint8_t)pattern; want.p = (uint8_t)(x ^ y ^ pattern);
     want.s = (uint8_t)(pattern + y);
     if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
-        entry == 0xeac1 || entry == 0xc9ba)
+        entry == 0xeac1 || entry == 0xc9ba || entry == 0xd98a ||
+        entry == 0xdf17)
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -78,6 +79,112 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         reference.ram[0x0747] = 0;
         reference.ram[0x0796u + slot] = (uint8_t)(pattern % 5u);
         reference.ram[0x03d1] = (uint8_t)(pattern & 0x1fu);
+    }
+    if (entry == 0xd7aa)
+        reference.ram[9] |= 1u;
+    if (entry == 0xd98a) {
+        unsigned slot = x % 6u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        switch (pattern & 7u) {
+        case 0:
+            reference.ram[9] &= (uint8_t)~1u;
+            break;
+        case 1:
+            reference.ram[9] |= 1u;
+            reference.ram[0x074e] = 0;
+            break;
+        case 2:
+            reference.ram[9] |= 1u;
+            reference.ram[0x074e] = 1;
+            reference.ram[0x16u + slot] = 0x15;
+            break;
+        default:
+            reference.ram[9] |= 1u;
+            reference.ram[0x074e] = 1;
+            reference.ram[0x16u + slot] = 6;
+            reference.ram[0x03d8u + slot] = 0;
+            reference.ram[0x03d1] &= 0xf0u;
+            for (unsigned actor = 0; actor <= slot; ++actor) {
+                unsigned box = actor * 4u + 4u;
+                reference.ram[0x0fu + actor] = actor == slot ||
+                    ((pattern >> actor) & 1u) ? 1 : 0;
+                reference.ram[0x16u + actor] = 6;
+                reference.ram[0x03d8u + actor] = 0;
+                reference.ram[0x04acu + box] = actor == slot
+                    ? 100 : (uint8_t)(20u + actor * 12u);
+                reference.ram[0x04acu + box + 1u] = 100;
+                reference.ram[0x04aeu + box] = actor == slot
+                    ? 110 : (uint8_t)(25u + actor * 12u);
+                reference.ram[0x04aeu + box + 1u] = 110;
+            }
+            break;
+        }
+    }
+    if (entry == 0xdf17) {
+        unsigned slot = x % 6u;
+        unsigned mode = pattern & 7u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0x1eu + slot] = 0;
+        reference.ram[0x16u + slot] = 6;
+        reference.ram[0x46u + slot] = 0;
+        if (mode == 0) {
+            reference.ram[0x1eu + slot] = 0x20u;
+        } else if (mode == 1) {
+            reference.ram[0xcfu + slot] = 0;
+        } else if (mode == 2 || mode == 3) {
+            reference.ram[0xcfu + slot] = 0x88;
+            reference.ram[0x16u + slot] = mode == 2 ? 0x0d : 0x11;
+        } else {
+            unsigned object = slot + 1u;
+            unsigned adder = 0x15u;
+            unsigned sum;
+            unsigned column;
+            unsigned pointer;
+            unsigned adjusted_y;
+            uint8_t tile = mode == 7 ? 0 : 0x50;
+
+            reference.ram[0xcfu + slot] = mode == 6 ? 0x80 :
+                (uint8_t)(0x88u + (mode == 5));
+            sum = prg[0xe306u - 0x8000u + adder]
+                + reference.ram[0x86u + object];
+            column = (unsigned)((((reference.ram[0x6du + object]
+                + (sum > 0xffu)) & 1u) << 4) | (((uint8_t)sum) >> 4));
+            pointer = (column & 0x10u ? 0x05d0u : 0x0500u)
+                + (column & 15u);
+            adjusted_y = (uint8_t)((((reference.ram[0xceu + object]
+                + prg[0xe322u - 0x8000u + adder]) & 0xf0u) - 0x20u));
+            reference.ram[(pointer + adjusted_y) & 0x07ffu] = tile;
+        }
+    }
+    if (entry == 0xe054) {
+        unsigned slot = x % 6u;
+        unsigned mode = pattern & 3u;
+        unsigned adder;
+        unsigned object;
+        unsigned sum;
+        unsigned column;
+        unsigned pointer;
+        unsigned adjusted_y;
+
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0xcfu + slot] = mode == 0 ? 0x10 : 0x70;
+        reference.ram[0x46u + slot] = mode < 2 ? 0 : (uint8_t)(mode - 1u);
+        if (mode >= 2) {
+            adder = mode == 2 ? 0x17u : 0x16u;
+            object = slot + 1u;
+            sum = prg[0xe306u - 0x8000u + adder]
+                + reference.ram[0x86u + object];
+            column = (unsigned)((((reference.ram[0x6du + object]
+                + (sum > 0xffu)) & 1u) << 4) | (((uint8_t)sum) >> 4));
+            pointer = (column & 0x10u ? 0x05d0u : 0x0500u)
+                + (column & 15u);
+            adjusted_y = (uint8_t)((((reference.ram[0xceu + object]
+                + prg[0xe322u - 0x8000u + adder]) & 0xf0u) - 0x20u));
+            reference.ram[(pointer + adjusted_y) & 0x07ffu] = 0;
+        }
     }
     optimized = reference; got = want; got.bus = &optimized;
     vs_program_reference(&want, 200000);
@@ -162,6 +269,14 @@ int main(int argc, char **argv) {
         compare(data, 0xbf60, seed % 5u, seed >> 8, seed * 97);
         compare(data, 0xc9ba, seed % 6u, seed >> 8, seed * 101);
         compare(data, 0xe7da, seed % 6u, seed >> 8, seed * 103);
+        compare(data, 0xd7aa, seed % 6u, seed >> 8, seed * 107);
+        compare(data, 0xd98a, seed % 6u, seed >> 8, seed * 109);
+        compare(data, 0xdf17, seed % 6u, seed >> 8, seed * 113);
+        compare(data, 0xe0b1, seed % 6u, seed >> 8, seed * 127);
+        compare(data, 0xe2de, seed % 21u, seed >> 8, seed * 131);
+        compare(data, 0xe104, seed % 6u, seed >> 8, seed * 137);
+        compare(data, 0xe054, seed % 6u, seed >> 8, seed * 139);
+        compare(data, 0xe10b, seed >> 8, seed, seed * 149);
     }
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }
