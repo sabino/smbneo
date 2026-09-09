@@ -15,7 +15,8 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.pc = entry; want.x = (uint8_t)x; want.y = (uint8_t)y;
     want.a = (uint8_t)pattern; want.p = (uint8_t)(x ^ y ^ pattern);
     want.s = (uint8_t)(pattern + y);
-    if (entry == 0xd5bd || entry == 0xe9a8 || entry == 0xeac1)
+    if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
+        entry == 0xeac1 || entry == 0xc9ba)
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -29,7 +30,9 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         memset(reference.ram + 0x2a, 0, 9);
     if (entry == 0xef41)
         reference.ram[7] = (uint8_t)(1u + (pattern & 3u));
-    if (entry == 0xbfea) {
+    if (entry == 0xbfea || entry == 0xbf60) {
+        reference.ram[(uint8_t)(0x0fu + x)] = 0;
+        reference.ram[0x071f] = (uint8_t)(pattern & 7u);
         reference.ram[0x0745] = 0;
         reference.ram[0x06cd] = 0;
         reference.ram[0x0739] = 0;
@@ -43,6 +46,12 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         reference.ram[0x071b] = 0;
         reference.ram[0x06cb] = 0;
         reference.ram[0x0398] = 0;
+    }
+    if (entry == 0xc9ba) {
+        unsigned slot = x % 6u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0x1eu + slot] = 0;
     }
     if (entry == 0xeac1) {
         reference.ram[8] = (uint8_t)(x % 6u);
@@ -58,6 +67,17 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         reference.ram[0x036a] = 0;
         reference.ram[0x0109] = 0;
         reference.ram[0x03d1] = 0;
+    }
+    if (entry == 0xe7da) {
+        unsigned slot = x % 6u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0x16u + slot] = 6;
+        reference.ram[0x1eu + slot] = 0;
+        reference.ram[0x036a] = 0;
+        reference.ram[0x0747] = 0;
+        reference.ram[0x0796u + slot] = (uint8_t)(pattern % 5u);
+        reference.ram[0x03d1] = (uint8_t)(pattern & 0x1fu);
     }
     optimized = reference; got = want; got.bus = &optimized;
     vs_program_reference(&want, 200000);
@@ -139,6 +159,9 @@ int main(int argc, char **argv) {
         compare(data, 0xbfea, seed % 5u, seed >> 8, seed * 79);
         compare(data, 0xeac1, seed >> 8, seed, seed * 83);
         compare(data, 0xe9a8, seed >> 8, seed, seed * 89);
+        compare(data, 0xbf60, seed % 5u, seed >> 8, seed * 97);
+        compare(data, 0xc9ba, seed % 6u, seed >> 8, seed * 101);
+        compare(data, 0xe7da, seed % 6u, seed >> 8, seed * 103);
     }
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }

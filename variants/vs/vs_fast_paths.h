@@ -94,6 +94,38 @@ static inline void vs_fast_render_actor_tiles(VsCpu *c) {
     }
 }
 
+/* Goombas take the overwhelmingly common straight-through actor-render path.
+ * Prepare that path's exact scratch state directly, then rejoin the shared
+ * three-row renderer and offscreen cleanup. */
+static inline int vs_fast_render_goomba_state0(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+
+    if (!c->bus->prg || slot >= 6u || ram[8] != slot ||
+        ram[(uint8_t)(0x16u + slot)] != 6u ||
+        ram[(uint8_t)(0x1eu + slot)] != 0u ||
+        ram[0x036a] != 0u || ram[0x0747] != 0u ||
+        ram[(0x0796u + slot) & 0x07ffu] >= 5u ||
+        (ram[0x03d1] & 0xe0u) != 0u || c->s < 0x40u)
+        return 0;
+
+    ram[2] = ram[(uint8_t)(0xcfu + slot)];
+    ram[5] = ram[0x03ae];
+    ram[0xeb] = ram[(0x06e5u + slot) & 0x07ffu];
+    ram[0x0109] = 0;
+    ram[3] = ram[(uint8_t)(0x46u + slot)];
+    ram[4] = ram[(0x03c5u + slot) & 0x07ffu];
+    ram[0xed] = 0;
+    ram[0xef] = 6;
+    ram[0xec] = 0;
+    if ((ram[9] & 8u) == 0u)
+        ram[3] ^= 3u;
+    ram[4] |= c->bus->prg[0xe7beu - 0x8000u];
+    c->x = c->bus->prg[0xe7a3u - 0x8000u];
+    c->pc = 0xe9a8;
+    return 1;
+}
+
 static inline int vs_fast_misc_proc_inactive(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
 
@@ -936,6 +968,52 @@ static inline void vs_fast_pos_calc_x_rel_actor(VsCpu *c) {
     (void)vs_pop(c);
     c->x = vs_nz(c, ram[8]);
     vs_fast_return(c);
+}
+
+static inline int vs_fast_actor_proc_dispatch(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t mode = ram[(uint8_t)(0x0fu + c->x)];
+
+    if (mode & 0x80u)
+        return 0;
+    c->a = vs_nz(c, mode);
+    vs_push(c, c->a);
+    vs_fast_asl_a(c);
+    c->a = vs_nz(c, vs_pop(c));
+    if (mode != 0u) {
+        c->pc = 0xc7c5;
+        return 1;
+    }
+    c->a = vs_nz(c, ram[0x071f]);
+    c->a = vs_nz(c, c->a & 7u);
+    vs_cmp(c, c->a, 7);
+    if (c->p & VS_Z)
+        vs_fast_return(c);
+    else
+        c->pc = 0xbfea;
+    return 1;
+}
+
+static inline int vs_fast_actor_proc_base_state0(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+    uint8_t speed;
+
+    if (slot >= 6u || ram[(uint8_t)(0x1eu + slot)] != 0u ||
+        ram[8] >= 6u || c->s < 0x40u)
+        return 0;
+    speed = ram[(uint8_t)(0x58u + slot)];
+    vs_push(c, speed);
+    /* State zero selects either of the two zero acceleration entries. */
+    ram[(uint8_t)(0x58u + slot)] = speed;
+    /* JSR motion_x at $ca04 stores $ca06. */
+    vs_push(c, 0xca);
+    vs_push(c, 0x06);
+    vs_fast_motion_x(c);
+    c->a = vs_nz(c, vs_pop(c));
+    ram[(uint8_t)(0x58u + c->x)] = c->a;
+    vs_fast_return(c);
+    return 1;
 }
 
 static inline void vs_fast_actor_erase(VsCpu *c) {

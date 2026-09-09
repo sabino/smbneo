@@ -414,6 +414,35 @@ def semantic_fast_paths(code, named_entries):
         ):
             result[actor_loop] = ('if (vs_fast_actor_loop_no_spawn(c)) return;', None)
 
+    actor_proc = named_entries.get('actor_proc')
+    if actor_proc is not None and actor_loop is not None:
+        proc_body = [
+            code[a] for a in sorted(code) if actor_proc <= a < actor_loop
+        ]
+        proc_digest = hashlib.sha256(
+            json.dumps(proc_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            len(proc_body) == 49 and
+            proc_digest == '38ffffb6683f222c964723cf3f588b78c5fa60cb69e32969a849f8f7ba323114'
+        ):
+            result[actor_proc] = ('if (vs_fast_actor_proc_dispatch(c)) return;', None)
+
+    actor_base = named_entries.get('actor_proc_base')
+    actor_bounce = named_entries.get('actor_proc_bounce')
+    if actor_base is not None and actor_bounce is not None:
+        base_body = [
+            code[a] for a in sorted(code) if actor_base <= a < actor_bounce
+        ]
+        base_digest = hashlib.sha256(
+            json.dumps(base_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            len(base_body) == 67 and
+            base_digest == '321140d5c489194c532d65fb73d0d3d8b6353a6962837a501768514e5efb5a64'
+        ):
+            result[actor_base] = ('if (vs_fast_actor_proc_base_state0(c)) return;', None)
+
     render_tiles = named_entries.get('render_actor_tiles')
     render_pair = named_entries.get('render_actor_chr_pair')
     if render_tiles is not None and render_pair is not None:
@@ -442,6 +471,20 @@ def semantic_fast_paths(code, named_entries):
             pair_digest == '50b64dc2ef458cce7f02753ba8150611b881c140ee646312b8806032d43dfe1c'
         ):
             result[render_tiles] = ('vs_fast_render_actor_tiles(c);', cursor)
+
+    render_actor = named_entries.get('render_actor')
+    if render_actor is not None and render_tiles is not None:
+        actor_body = [
+            code[a] for a in sorted(code) if render_actor <= a < render_tiles
+        ]
+        actor_digest = hashlib.sha256(
+            json.dumps(actor_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            len(actor_body) == 222 and
+            actor_digest == '33660d865d87d0bbb982fe4b63ce912cc64de58240c43d0a4729e985f2a91bc2'
+        ):
+            result[render_actor] = ('if (vs_fast_render_goomba_state0(c)) return;', None)
     start = named_entries.get('tbljmp')
     if start is not None:
         a, body = start, []
