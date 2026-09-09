@@ -300,6 +300,9 @@ def semantic_fast_paths(code, named_entries):
         if digest == '52b0d0b34ee0ccfe79674ddafbef6eabc9d9a516134a5950be611f1c5639e870':
             result[start] = ('vs_fast_render_pair(c); vs_fast_return(c); return;', None)
     for name, count, expected, action in (
+        ('cannon_proc', 52,
+         'b6344a6f877b29a26979467a5808b9a8dc078f9ba70a3693d18202ab7d1cf1db',
+         'if (vs_fast_cannon_proc(c)) return;'),
         ('player_proc_player_physics', 142,
          '9e32d4b02d44599dc63bad5150a179f2366b828bdbad366b6be7e497c995d12a',
          'vs_fast_player_physics(c); return;'),
@@ -366,6 +369,34 @@ def semantic_fast_paths(code, named_entries):
     # These wrappers are only safe when every member of their shared helper
     # chain retains the reviewed instruction shape.
     chained_routines = (
+        (
+            'motion_y_player',
+            (
+                ('motion_y_player', 9,
+                 'cae4af9e9f053f70a939482a928c9d30daac42307c6830513c48d3aafca000da'),
+                ('motion_x_do', 38,
+                 '34446f0bd877b97ab0ccbe68e61ab85adc38b6707f78e6b4340d9eb1ac5cbe13'),
+                ('motion_gravity_do', 3,
+                 'a836b7b438091d196f832f57eaf14241838acead87727398c88563c478750dd3'),
+                ('motion_gravity', 55,
+                 'dcaec7c8f29ecd6b849d0b69bdab6ccc891fa1d14d39032f552dbcf4ea1b48fc'),
+            ),
+            'if (vs_fast_motion_y_player(c)) return;',
+        ),
+        (
+            'motion_y',
+            (
+                ('motion_y', 6,
+                 '49b23d23552cc657310c21bd3bfd24299d5c1281077c6b6951ee22fda620ca67'),
+                ('motion_fall_fast', 12,
+                 'df899df6d95b1681a9ae1be093acc2e2b9132391350acccda2a351194e1040ef'),
+                ('motion_gravity_do', 3,
+                 'a836b7b438091d196f832f57eaf14241838acead87727398c88563c478750dd3'),
+                ('motion_gravity', 55,
+                 'dcaec7c8f29ecd6b849d0b69bdab6ccc891fa1d14d39032f552dbcf4ea1b48fc'),
+            ),
+            'if (vs_fast_motion_y(c)) return;',
+        ),
         (
             'game_scroll',
             (
@@ -505,6 +536,17 @@ def semantic_fast_paths(code, named_entries):
     if scroll in result and named_entries.get('game_scroll_calc') == 0xae71:
         result[0xae71] = ('if (vs_fast_game_scroll(c, 1u)) return;', None)
 
+    # All fall presets share the fully checked actor-gravity chain above.
+    if named_entries.get('motion_y') in result:
+        for name, address, force, cap in (('motion_fall_fast', 0xbe97, 0x7f, 2),
+                                         ('motion_fall_slow', 0xbe9b, 0x0f, 2),
+                                         ('motion_fall_mid', 0xbea1, 0x1c, 3)):
+            entry = named_entries.get(name)
+            if entry == address:
+                result[entry] = (
+                    f'if (vs_fast_motion_fall(c, 0x{force:02x}u, {cap}u)) return;', None
+                )
+
     actor_loop = named_entries.get('actor_loop')
     actor_init_check = named_entries.get('actor_init_check')
     actor_group = named_entries.get('actor_group')
@@ -556,7 +598,30 @@ def semantic_fast_paths(code, named_entries):
             len(base_body) == 67 and
             base_digest == '321140d5c489194c532d65fb73d0d3d8b6353a6962837a501768514e5efb5a64'
         ):
-            result[actor_base] = ('if (vs_fast_actor_proc_base_state0(c)) return;', None)
+            # The complete state policy additionally invokes shared gravity,
+            # horizontal motion and actor cleanup. Validate the whole chain.
+            extra = (
+                ('actor_erase', 10,
+                 'da46d438d54338de15c5f5cb266ee00ff3936e1987923469ec8b34508054a6ea'),
+                ('motion_x', 4,
+                 '7b4d79c3d245d53c9d89b7aaebd8272a7d81380e708388070d15c0f430828655'),
+                ('motion_x_do', 38,
+                 '34446f0bd877b97ab0ccbe68e61ab85adc38b6707f78e6b4340d9eb1ac5cbe13'),
+            )
+            valid = named_entries.get('motion_y') in result
+            for name, count, expected in extra:
+                cursor = named_entries.get(name)
+                body = []
+                for _ in range(count):
+                    ins = code.get(cursor)
+                    if ins is None:
+                        break
+                    body.append(ins)
+                    cursor += LENGTH[ins[1]]
+                digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
+                valid = valid and len(body) == count and digest == expected
+            if valid:
+                result[actor_base] = ('if (vs_fast_actor_proc_base(c)) return;', None)
 
     # The no-overlap actor scanner depends on the complete caller plus both
     # geometry leaves.  Requiring all three fingerprints keeps the optimized

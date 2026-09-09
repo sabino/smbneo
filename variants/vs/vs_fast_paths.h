@@ -1716,6 +1716,53 @@ static inline int vs_fast_motion_gravity(VsCpu *c) {
     return 1;
 }
 
+/* Fold the shared actor fall wrappers into their fixed-point integrator. The
+ * selected force/cap and both nested return-address writes remain identical. */
+static inline int vs_fast_motion_fall(VsCpu *c, uint8_t force, uint8_t cap) {
+    uint8_t *ram = c->bus->ram;
+
+    if (c->x >= 6u || c->s < 0x40u)
+        return 0;
+    ram[0] = force;
+    ++c->x;
+    ram[2] = cap;
+    c->a = 0u;
+    /* JSR motion_gravity_do at $bea8 stores $beaa. */
+    vs_push(c, 0xbe);
+    vs_push(c, 0xaa);
+    (void)vs_fast_motion_gravity(c);
+    c->x = vs_nz(c, ram[8]);
+    vs_fast_return(c);
+    return 1;
+}
+
+static inline int vs_fast_motion_y(VsCpu *c) {
+    if (c->x >= 6u)
+        return 0;
+    return vs_fast_motion_fall(c,
+        c->bus->ram[0x1eu + c->x] == 5u ? 0x20u : 0x3du, 3u);
+}
+
+static inline int vs_fast_motion_y_player(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+
+    if (c->s < 0x40u)
+        return 0;
+    c->x = 0u;
+    c->a = vs_nz(c, ram[0x0747]);
+    if (c->a == 0u) {
+        c->a = vs_nz(c, ram[0x070e]);
+        if (c->a != 0u) {
+            vs_fast_return(c);
+            return 1;
+        }
+    }
+    ram[0] = ram[0x0709];
+    ram[2] = 4u;
+    c->a = 0u;
+    return vs_fast_motion_gravity(c);
+}
+
 /* Relative coordinates are geometry, not an emulated timing primitive. Keep
  * the exact zero-page aliases, flag residue and nested JSR stack writes. */
 static inline void vs_fast_pos_calc_x_rel_do(
@@ -1790,25 +1837,143 @@ static inline int vs_fast_actor_proc_dispatch(VsCpu *c) {
     return 1;
 }
 
-static inline int vs_fast_actor_proc_base_state0(VsCpu *c) {
+/* Scan the three cannon slots in one C pass. An already-existing bullet needs
+ * its full collision/render pipeline, so leave that case untouched. New shots
+ * deliberately begin moving next tick, as in the original spawning branch. */
+static inline int vs_fast_cannon_proc(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t course = ram[0x074e];
+
+    if (course == 0u) {
+        c->a = vs_nz(c, 0u);
+        vs_fast_return(c);
+        return 1;
+    }
+    for (unsigned slot = 0; slot < 3u; ++slot)
+        if (ram[0x16u + slot] == 0x33u)
+            return 0;
+
+    for (int slot = 2; slot >= 0; --slot) {
+        ram[8] = (uint8_t)slot;
+        if (ram[0x0fu + slot] == 0u) {
+            unsigned cannon;
+            c->y = ram[0x06cc];
+            cannon = ram[0x07a8u + slot] & c->bus->prg[0x38aeu + c->y];
+            if (cannon < 6u) {
+                c->y = (uint8_t)cannon;
+                if (ram[0x046bu + cannon] != 0u) {
+                    if (ram[0x047du + cannon] != 0u) {
+                        c->a = ram[0x047du + cannon];
+                        /* The earlier cannon-index CMP left carry clear. */
+                        c->p &= (uint8_t)~VS_C;
+                        vs_adc(c, 0xffu);
+                        ram[0x047du + cannon] = c->a;
+                    } else if (ram[0x0747] == 0u) {
+                        ram[0x047du + cannon] = 14u;
+                        ram[0x6eu + slot] = ram[0x046bu + cannon];
+                        ram[0x87u + slot] = ram[0x0471u + cannon];
+                        c->a = ram[0x0477u + cannon];
+                        c->p |= VS_C;
+                        vs_adc(c, (uint8_t)~8u);
+                        ram[0xcfu + slot] = c->a;
+                        ram[0xb6u + slot] = ram[0x0fu + slot] = 1u;
+                        ram[0x1eu + slot] = 0u;
+                        ram[0x049au + slot] = 9u;
+                        ram[0x16u + slot] = 0x33u;
+                        c->a = 0x33u;
+                        c->p |= VS_C; /* LSR of active=1, before the loads. */
+                        continue;
+                    }
+                }
+            }
+        }
+        c->a = ram[0x16u + slot];
+        vs_cmp(c, c->a, 0x33u);
+    }
+    c->x = vs_nz(c, 0xffu);
+    vs_fast_return(c);
+    return 1;
+}
+
+static inline void vs_fast_actor_erase(VsCpu *c);
+
+/* Walking, falling, kicked shells, defeated actors and recovery all share
+ * this state policy. Collapse the policy and nested movement calls, without
+ * changing the source's priority among its overlapping state bits. */
+static inline int vs_fast_actor_proc_base(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
     uint8_t slot = c->x;
+    uint8_t state;
     uint8_t speed;
+    uint8_t acceleration_profile = 0u;
 
-    if (slot >= 6u || ram[(uint8_t)(0x1eu + slot)] != 0u ||
-        ram[8] >= 6u || c->s < 0x40u)
+    if (slot >= 6u || ram[8] != slot || c->s < 0x48u)
         return 0;
-    speed = ram[(uint8_t)(0x58u + slot)];
+    state = ram[0x1eu + slot];
+    c->y = 0u;
+    if ((state & 0x40u) != 0u ||
+        ((state & 0xa0u) == 0u &&
+         ((state & 7u) == 1u || (state & 7u) == 2u || (state & 7u) == 5u))) {
+        vs_push(c, 0xc9);
+        vs_push(c, 0xdd);
+        (void)vs_fast_motion_y(c);
+        c->y = 0u;
+        if (state == 2u)
+            goto horizontal_only;
+        if ((state & 0x40u) != 0u && ram[0x16u + slot] != 0x2eu)
+            acceleration_profile = 1u;
+    } else if ((state & 0x80u) == 0u) {
+        if ((state & 0x20u) != 0u) {
+            vs_push(c, 0xca);
+            vs_push(c, 0x2a);
+            (void)vs_fast_motion_y(c);
+            goto horizontal_only;
+        }
+        if ((state & 7u) != 0u) {
+            uint8_t timer = ram[0x0796u + slot];
+            if (timer == 0u) {
+                ram[0x1eu + slot] = 0u;
+                c->y = ram[9] & 1u;
+                ram[0x46u + slot] = (uint8_t)(c->y + 1u);
+                if (ram[0x076a] != 0u)
+                    c->y += 2u;
+                c->p = (c->p & ~VS_C) | VS_C;
+                c->a = vs_nz(c, c->bus->prg[0x4917u + c->y]);
+                ram[0x58u + slot] = c->a;
+            } else {
+                c->a = timer;
+                vs_cmp(c, timer, 14u);
+                if (timer == 14u) {
+                    c->a = ram[0x16u + slot];
+                    vs_cmp(c, c->a, 6u);
+                    if (c->a == 6u) {
+                        vs_push(c, 0xca);
+                        vs_push(c, 0x3a);
+                        vs_fast_actor_erase(c);
+                        vs_fast_return(c);
+                    }
+                }
+            }
+            vs_fast_return(c);
+            return 1;
+        }
+    }
+    speed = ram[0x58u + slot];
     vs_push(c, speed);
-    /* State zero selects either of the two zero acceleration entries. */
-    ram[(uint8_t)(0x58u + slot)] = speed;
+    acceleration_profile += (speed & 0x80u) != 0u ? 2u : 0u;
+    ram[0x58u + slot] = (uint8_t)(speed +
+        c->bus->prg[0x4913u + acceleration_profile]);
     /* JSR motion_x at $ca04 stores $ca06. */
     vs_push(c, 0xca);
     vs_push(c, 0x06);
     vs_fast_motion_x(c);
     c->a = vs_nz(c, vs_pop(c));
-    ram[(uint8_t)(0x58u + c->x)] = c->a;
+    ram[0x58u + slot] = c->a;
     vs_fast_return(c);
+    return 1;
+
+horizontal_only:
+    vs_fast_motion_x(c);
     return 1;
 }
 

@@ -101,9 +101,10 @@ The C core batches complete background columns and display-list transfers,
 enemy and player sprite composition, and moving-platform rendering. Player
 physics and animation select the arcade game's existing tables directly;
 acceleration, braking, scrolling, gravity and common collision routines use C
-arithmetic. These follow the regular port's optimization approach while retaining
-the arcade game's movement and clipping rules. The physical Neo Geo renderer is
-shared with SMBNeo.
+arithmetic. Common-enemy states share one C movement policy, including falling,
+shells, defeat and recovery; cannon scheduling uses a single slot scan. These
+follow the regular port's optimization approach while retaining the arcade game's
+movement and clipping rules. The physical Neo Geo renderer is shared with SMBNeo.
 
 ## Hardware safeguards inherited from SMBNeo
 

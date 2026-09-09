@@ -1,10 +1,32 @@
 /* Compare semantic helpers with the original generated instruction functions. */
-#include "vs_cpu.h"
+#include "vs_fast_paths.h"
 #include <stdio.h>
 #include "test_check.h"
 void vs_program_reference(VsCpu *, unsigned);
 
 static unsigned cases;
+static void check_cannon_fallback(const uint8_t *prg) {
+    unsigned checks = 0;
+    for (unsigned slot = 0; slot < 3u; ++slot)
+        for (unsigned mode = 0; mode < 2u; ++mode)
+            for (unsigned flags = 0; flags < 256u; ++flags) {
+                VsBus bus, before_bus;
+                VsCpu cpu, before_cpu;
+                vs_bus_init(&bus, prg, prg + 32768);
+                bus.ram[0x074e] = 1u;
+                bus.ram[0x16u + slot] = 0x33u;
+                bus.ram[0x0fu + slot] = (uint8_t)mode;
+                vs_cpu_init(&cpu, &bus);
+                cpu.p = (uint8_t)flags;
+                before_cpu = cpu;
+                before_bus = bus;
+                assert(!vs_fast_cannon_proc(&cpu));
+                assert(memcmp(&cpu, &before_cpu, sizeof(cpu)) == 0);
+                assert(memcmp(&bus, &before_bus, sizeof(bus)) == 0);
+                ++checks;
+            }
+    printf("VS existing-bullet fallback: %u no-mutation cases passed\n", checks);
+}
 typedef struct {
     unsigned count;
     uint32_t events[300];
@@ -36,7 +58,9 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
         entry == 0xeac1 || entry == 0xc9ba || entry == 0xd98a ||
         entry == 0xdf17 || entry == 0xe525 || entry == 0xbeea ||
-        entry == 0xeeaa || entry == 0x914a ||
+        entry == 0xeeaa || entry == 0x914a || entry == 0xb8b0 ||
+        entry == 0xbe5c || entry == 0xbe72 || entry == 0xbe97 ||
+        entry == 0xbe9b || entry == 0xbea1 ||
         ((entry == 0xae40 || entry == 0xae71) && x < 256u))
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
@@ -156,7 +180,41 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         unsigned slot = x % 6u;
         want.x = (uint8_t)slot;
         reference.ram[8] = (uint8_t)slot;
-        reference.ram[0x1eu + slot] = 0;
+        reference.ram[0x1eu + slot] = x < 256u ? 0u : (uint8_t)pattern;
+        if (x >= 256u) {
+            static const uint8_t timers[] = {0, 1, 14, 255};
+            reference.ram[0x0796u + slot] = timers[(pattern >> 8) & 3u];
+            reference.ram[0x16u + slot] = (pattern & 0x400u) ? 6u : 0x2eu;
+            reference.ram[0x076a] = (uint8_t)((pattern >> 11) & 1u);
+        }
+        if (x >= 512u)
+            reference.ram[8] = (uint8_t)((slot + 1u) % 6u);
+    }
+    if (entry == 0xbe72 || entry == 0xbe97 || entry == 0xbe9b || entry == 0xbea1) {
+        unsigned slot = x % 6u;
+        want.x = (uint8_t)slot;
+        reference.ram[8] = (uint8_t)slot;
+        reference.ram[0x1eu + slot] = (uint8_t)pattern;
+    }
+    if (entry == 0xbe5c) {
+        reference.ram[0x070e] = (uint8_t)(x & 1u);
+        reference.ram[0x0747] = (uint8_t)((x >> 1) & 1u);
+        reference.ram[0x0709] = (uint8_t)(pattern >> 8);
+    }
+    if (entry == 0xb8b0) {
+        static const uint8_t timers[] = {0, 1, 14, 128, 255};
+        reference.ram[0x074e] = (uint8_t)(x & 3u);
+        reference.ram[0x06cc] = (uint8_t)((x >> 2) & 1u);
+        reference.ram[0x0747] = (uint8_t)((x >> 3) & 1u);
+        for (unsigned slot = 0; slot < 3u; ++slot) {
+            reference.ram[0x0fu + slot] = (uint8_t)((pattern >> slot) & 1u);
+            reference.ram[0x16u + slot] = 6u;
+            reference.ram[0x07a8u + slot] = (uint8_t)(pattern + slot * 37u);
+        }
+        for (unsigned cannon = 0; cannon < 6u; ++cannon) {
+            reference.ram[0x046bu + cannon] = (uint8_t)((x >> (4u + cannon % 4u)) & 1u);
+            reference.ram[0x047du + cannon] = timers[(pattern >> (cannon * 2u)) % 5u];
+        }
     }
     if (entry == 0xeac1) {
         reference.ram[8] = (uint8_t)(x % 6u);
@@ -374,6 +432,7 @@ int main(int argc, char **argv) {
     FILE *f = fopen(argv[1], "rb"); assert(f);
     assert(fseek(f, 16, SEEK_SET) == 0);
     assert(fread(data, 1, sizeof(data), f) == sizeof(data)); fclose(f);
+    check_cannon_fallback(data);
     for (unsigned y = 0; y < 256; ++y) for (unsigned x = 0; x < 512; ++x)
         compare(data, 0xf1e7, x, y, (x * 17 + y * 31) & 255);
     for (unsigned y = 0; y < 256; y += 4) for (unsigned status = 0; status < 256; ++status)
@@ -406,6 +465,20 @@ int main(int argc, char **argv) {
         compare(data, 0xae40, seed >> 8, seed, seed * 193);
         compare(data, 0xae71, seed >> 8, seed, seed * 197);
     }
+    /* Complete common-enemy states and shared gravity wrappers, not just the
+     * earlier stationary-on-ground specialization. Cannon timers include
+     * simultaneous candidates, underflow boundaries, stopped time and water. */
+    for (unsigned seed = 0; seed < 65536; ++seed) {
+        compare(data, 0xc9ba, 256u + seed % 6u, seed >> 8, seed * 223);
+        compare(data, 0xbe5c, seed >> 8, seed, seed * 227);
+        compare(data, 0xbe72, seed % 6u, seed, seed * 229);
+        compare(data, 0xbe97, seed % 6u, seed, seed * 233);
+        compare(data, 0xbe9b, seed % 6u, seed, seed * 239);
+        compare(data, 0xbea1, seed % 6u, seed, seed * 241);
+        compare(data, 0xb8b0, seed >> 8, seed, seed * 251);
+    }
+    for (unsigned seed = 0; seed < 4096; ++seed)
+        compare(data, 0xc9ba, 512u + seed % 6u, seed, seed * 257);
     /* Also retain the literal scroll path for wrapped/aliased stack layouts. */
     for (unsigned seed = 0; seed < 4096; ++seed) {
         compare(data, 0xae40, 256u + (seed >> 4), seed, seed * 199);
