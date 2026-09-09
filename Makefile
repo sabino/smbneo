@@ -11,7 +11,7 @@ ci: test web-test vs-test
 
 .PHONY: vs-test vs-reference
 vs-test:
-	$(MAKE) -C variants/vs test
+	$(MAKE) -C variants/vs test native-test
 
 vs-reference:
 	$(MAKE) -C variants/vs reference

@@ -56,6 +56,77 @@ class NmSymbolTests(unittest.TestCase):
             )
 
 
+class VariantSymbolPolicyTests(unittest.TestCase):
+    def test_home_policy_keeps_legacy_contract(self) -> None:
+        required = set(checker.REQUIRED_SYMBOLS)
+        self.assertEqual(
+            checker.validate_variant_symbols(required, variant="home"),
+            required,
+        )
+
+    def test_translated_vs_policy_keeps_legacy_runtime_contract(self) -> None:
+        required = set(checker.VS_TRANSLATED_REQUIRED_SYMBOLS)
+        self.assertEqual(
+            checker.validate_variant_symbols(required, variant="vs"),
+            required,
+        )
+
+    def test_native_policy_requires_cpu_free_entrypoint_boundary(self) -> None:
+        required = set(checker.VS_NATIVE_REQUIRED_SYMBOLS)
+        self.assertEqual(
+            checker.validate_variant_symbols(required, variant="vs-native"),
+            required,
+        )
+        missing = required - {"vs_native_platform_init"}
+        with self.assertRaisesRegex(checker.ElfCheckError, "missing symbols"):
+            checker.validate_variant_symbols(missing, variant="vs-native")
+
+    def test_native_policy_rejects_translated_runtime_symbols(self) -> None:
+        required = set(checker.VS_NATIVE_REQUIRED_SYMBOLS)
+        for symbol in (
+            "vs_program_run",
+            "VsCpu",
+            "vs_fast_table_jump",
+            "vs_page_dispatch",
+            "vs_push",
+            "vs_pop",
+            "data_stack",
+            "data_sp",
+            "data_underflow",
+            "native_push",
+            "native_pop",
+            "vs_pc_dispatch",
+            "vs_fuel_step",
+        ):
+            with self.subTest(symbol=symbol):
+                with self.assertRaisesRegex(
+                    checker.ElfCheckError,
+                    "translated CPU/runtime",
+                ):
+                    checker.validate_variant_symbols(
+                        required | {symbol}, variant="vs-native"
+                    )
+
+    def test_native_policy_rejects_local_translated_helper_in_nm_dump(self) -> None:
+        required = set(checker.VS_NATIVE_REQUIRED_SYMBOLS)
+        with self.assertRaisesRegex(checker.ElfCheckError, "helper present"):
+            checker.validate_variant_symbols(
+                required,
+                variant="vs-native",
+                symbol_dump="00001000 t vs_page_dispatch\n",
+            )
+
+    def test_native_diagnostics_are_not_mistaken_for_cpu_runtime(self) -> None:
+        required = set(checker.VS_NATIVE_REQUIRED_SYMBOLS)
+        self.assertEqual(
+            checker.validate_variant_symbols(
+                required | {"vs_debug_pc", "vs_debug_fault"},
+                variant="vs-native",
+            ),
+            required,
+        )
+
+
 class StartupLayoutTests(unittest.TestCase):
     def test_models_ngdevkit_dbf_loop_sizes_exactly(self) -> None:
         self.assertEqual(checker.ngdevkit_bss_clear_size(0), 32)

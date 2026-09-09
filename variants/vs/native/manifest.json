@@ -1,0 +1,149 @@
+{
+  "backend": "smbneo-direct-c-v1",
+  "covered_instruction_count": 12151,
+  "direct_call_graph": {
+    "game_proc": [
+      "actor_proc",
+      "bg_score_disp_incs_end",
+      "block_flatten",
+      "block_proc",
+      "cannon_proc",
+      "game_init_area_music",
+      "meta_color_rotate",
+      "misc_proc",
+      "player_proc",
+      "player_proc_firefl_do",
+      "player_proc_firefl_do_2",
+      "pole_proc",
+      "pos_bits_get_player",
+      "pos_calc_x_rel_player",
+      "proj_proc",
+      "render_player",
+      "stats_time_proc",
+      "whirlpool_proc"
+    ],
+    "nmi": [
+      "ppu_displist_write",
+      "ppu_displist_write_scc_h_v"
+    ],
+    "start": [
+      "game_init_clearram",
+      "nt_init",
+      "oam_init",
+      "ppu_displist_write_ctlr0",
+      "vs_read_dips",
+      "vs_setbank_low"
+    ],
+    "sys_game": [
+      "tbljmp"
+    ],
+    "sys_title": [
+      "tbljmp"
+    ],
+    "title_proc": [
+      "game_proc",
+      "title_demo"
+    ]
+  },
+  "function_entry_count": 522,
+  "marked_instruction_count": 12151,
+  "prg_size": 32768,
+  "runtime_contract": {
+    "context": "SmbNeoNativeContext",
+    "dispatch": "C switch and static labels",
+    "forbidden": [
+      "runtime PC",
+      "fuel",
+      "page dispatcher",
+      "emulated call-return stack"
+    ],
+    "migration_registers": "A/X/Y/status; balanced saves are scalar C locals",
+    "returns": "ordinary C return",
+    "rom_data": "not embedded"
+  },
+  "saved_value_report": {
+    "ambiguous_depths": [],
+    "hardware_frame_discards": [
+      "0x8208",
+      "0x8209",
+      "0x820a"
+    ],
+    "max_local_values": 2,
+    "possible_data_underflow": [],
+    "tsx_txs": [],
+    "unbalanced_exits": []
+  },
+  "semantic_routines": {
+    "0x8212": "vs_native_fast_nmi_oam_shuffle",
+    "0x826e": "vs_native_fast_oam_init",
+    "0x8273": "vs_native_fast_oam_init_all",
+    "0x8aaf": "vs_native_fast_meta_render_area",
+    "0xad6e": "vs_native_fast_game_proc",
+    "0xbe11": "vs_native_fast_motion_x",
+    "0xbe18": "vs_native_fast_motion_x_player",
+    "0xbe1e": "vs_native_fast_motion_x_do",
+    "0xbe97": "vs_native_fast_motion_fall_fast",
+    "0xbe9b": "vs_native_fast_motion_fall_slow",
+    "0xbea1": "vs_native_fast_motion_fall_mid",
+    "0xbea5": "vs_native_fast_motion_fall",
+    "0xbebe": "vs_native_fast_motion_gravity_do",
+    "0xbeea": "vs_native_fast_motion_gravity",
+    "0xc9ba": "vs_native_fast_actor_proc_base",
+    "0xd5bd": "vs_native_fast_actor_oob_proc",
+    "0xe1f2": "vs_native_fast_col_box_proc",
+    "0xe348": "vs_native_fast_col_box_buffer",
+    "0xe7da": "vs_native_fast_render_actor",
+    "0xeb07": "vs_native_fast_render_actor_chr_pair",
+    "0xeb0f": "vs_native_fast_render_chr_pair",
+    "0xf114": "vs_native_fast_pos_bits_get_actor",
+    "0xf13c": "vs_native_fast_pos_bits_proc",
+    "0xf15b": "vs_native_fast_pos_bits_get_do_x"
+  },
+  "semantic_slices": {
+    "0x810a:0x817e": {
+      "conditional": false,
+      "continuation": "0x81a3",
+      "function": "vs_native_fast_nmi_timers"
+    },
+    "0x810a:0x81a3": {
+      "conditional": false,
+      "continuation": "0x81c0",
+      "function": "vs_native_fast_nmi_random"
+    },
+    "0x810a:0x81d9": {
+      "conditional": false,
+      "continuation": "0x81de",
+      "function": "vs_native_fast_nmi_hblank_delay"
+    },
+    "0x9195:0x914a": {
+      "conditional": true,
+      "continuation": "0x9195",
+      "function": "vs_native_fast_ppu_displist_command"
+    }
+  },
+  "source": {
+    "defines": [
+      "VS",
+      "VS_2C04_0004",
+      "VS_SMB",
+      "SMBV1"
+    ],
+    "module_count": 640
+  },
+  "symbols": {
+    "game_mode_proc": 44382,
+    "game_proc": 44398,
+    "nmi": 33034,
+    "start": 32768,
+    "sys_game": 44368,
+    "sys_title": 33409,
+    "title_proc": 33475
+  },
+  "synthetic_region_entries": [
+    "0x81fe",
+    "0xa074",
+    "0xbeb0",
+    "0xe2e8"
+  ],
+  "table_call_count": 21
+}

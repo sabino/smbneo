@@ -3,6 +3,7 @@
 #include "ppu_render_state.h"
 #include "video.h"
 #include "apu.h"
+#include "audio_cadence.h"
 #include "input_policy.h"
 #include <ngdevkit/neogeo.h>
 #include <ngdevkit/asm/bios-ram.h>
@@ -58,6 +59,7 @@ static void present(void) {
     ppu_render();
 }
 int main(void) {
+    uint16_t audio_vblank;
     /* VS owns its complete attract/credit/start state machine. Keep the BIOS
      * in game mode even on the VS title, otherwise an MVS coin restarts main
      * through USER request 3 and erases the VS credit that just arrived.
@@ -80,8 +82,13 @@ int main(void) {
     /* Forward boot APU state, then preserve every subsequent register write. */
     for (unsigned i = 0; i < 24; ++i)
         if (i != 20 && i != 22) apu_write((uint16_t)(0x4000 + i), machine.apu[i]);
+    audio_vblank = neogeo_video_current_vblank();
     for (;;) {
+        uint16_t game_frame_vblank;
         uint16_t began = neogeo_video_current_vblank();
+        audio_vblank = neogeo_audio_prepare_game_frame(
+            audio_vblank, &game_frame_vblank
+        );
         vs_debug_stage = 5;
         uint8_t p1 = controls(*REG_P1CNT), p2 = controls(*REG_P2CNT);
         uint8_t system = *REG_STATUS_B, coin = 0;
@@ -95,7 +102,10 @@ int main(void) {
         }
         /* AES has no coin slots: P1 Start + either run button inserts a coin. */
         if ((p1 & 6) == 6) { coin |= 0x20; p1 &= (uint8_t)~4; }
-        if (vs_machine_frame(&machine, p1, p2, coin)) apu_step_frame();
+        if (vs_machine_frame(&machine, p1, p2, coin)) {
+            apu_step_frame();
+            audio_vblank = game_frame_vblank;
+        }
         vs_debug_logic_vblanks = (uint16_t)(neogeo_video_current_vblank() - began);
         vs_debug_stage = 4; debug_state();
         began = neogeo_video_current_vblank();

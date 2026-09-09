@@ -47,6 +47,21 @@ class HardwareContractTests(unittest.TestCase):
         self.assertIn('bss_restore_guard[32]', main)
         self.assertIn('(void)bss_restore_guard[0]', main)
 
+    def test_native_lto_keeps_cartridge_data_symbols_external(self):
+        make = (ROOT / 'variants/vs/neogeo.mk').read_text()
+        native_rule = make.split('$(BUILD)/vssmbneo.elf:', 1)[1].split('\n\n', 1)[0]
+        legacy_rule = make.split('$(BUILD)/vssmbneo-legacy.elf:', 1)[1].split(
+            '\n\n', 1
+        )[0]
+
+        # The ELF safety checker and packager need these generated arrays by
+        # name.  LTO otherwise internalizes both despite their external C
+        # declarations, so retain them at the native link boundary.
+        self.assertIn('-Wl,-u,vs_chr', native_rule)
+        self.assertIn('-Wl,-u,vs_prg', native_rule)
+        self.assertNotIn('-Wl,-u,vs_chr', legacy_rule)
+        self.assertNotIn('-Wl,-u,vs_prg', legacy_rule)
+
     def test_vs_credit_owner_and_hardware_coin_gate(self):
         main = (ROOT / 'variants/vs/neogeo_main.c').read_text()
         self.assertIn('*(volatile uint8_t *)BIOS_USER_MODE = 2;', main)

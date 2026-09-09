@@ -35,6 +35,38 @@ REQUIRED_SYMBOLS = {
     "nametable",
     "ram",
 }
+# The direct-C entrypoint is deliberately checked by its public ABI rather
+# than by implementation details.  ``vs_native_platform_init`` is the
+# CPU-free platform-state initializer owned by neogeo_native_main.c.
+VS_TRANSLATED_REQUIRED_SYMBOLS = {
+    "main",
+    "nametable",
+    "machine",
+    "vs_prg",
+    "vs_chr",
+    "vs_program_run",
+}
+VS_NATIVE_REQUIRED_SYMBOLS = {
+    "main",
+    "vs_prg",
+    "vs_chr",
+    "smbneo_native_boot",
+    "smbneo_native_frame",
+    "vs_native_platform_init",
+}
+VS_NATIVE_FORBIDDEN_SYMBOLS = {
+    "VsCpu",
+    "data_stack",
+    "data_sp",
+    "data_underflow",
+    "native_push",
+    "native_pop",
+    "vs_program_run",
+    "vs_fast_table_jump",
+    "vs_page_dispatch",
+    "vs_push",
+    "vs_pop",
+}
 MINIMUM_TRANSLATED_CORE_SIZE = 64 * 1024
 STARTUP_SYMBOLS = {
     "__bss_end",
@@ -69,6 +101,68 @@ LSPC_REGISTER_NAMES = {
 
 class ElfCheckError(ValueError):
     """The linked cartridge violates a hardware-safety invariant."""
+
+
+def validate_variant_symbols(
+    present_symbols: set[str],
+    *,
+    variant: str,
+    symbol_dump: str = "",
+) -> set[str]:
+    """Validate the ABI symbols and runtime model selected by *variant*.
+
+    Native direct-C images must expose the platform/core boundary and must
+    not accidentally link the resumable 6502 translator runtime.  Keeping
+    this policy separate makes it unit-testable without an ELF or ROM.
+    """
+
+    if variant == "home":
+        required = REQUIRED_SYMBOLS
+    elif variant == "vs":
+        required = VS_TRANSLATED_REQUIRED_SYMBOLS
+    elif variant == "vs-native":
+        required = VS_NATIVE_REQUIRED_SYMBOLS
+        forbidden = sorted(
+            name for name in present_symbols
+            if name in VS_NATIVE_FORBIDDEN_SYMBOLS
+            or re.search(
+                r"(?:^|_)(?:vs_(?:cpu|pc|fuel|page|dispatch|call|return_stack)"
+                r"|data_(?:stack|sp|underflow)|native_(?:push|pop))"
+                r"(?:_|$)",
+                name,
+                re.IGNORECASE,
+            )
+            or re.match(r"^VsCpu(?:_|$)", name)
+        )
+        if forbidden:
+            raise ElfCheckError(
+                "native core contract failed; translated CPU/runtime symbols "
+                "linked: " + ", ".join(forbidden)
+            )
+        # A local/static symbol can be present in the complete nm listing even
+        # when it is not represented in the global ABI set.
+        if symbol_dump and re.search(
+            r"\b(?:VsCpu|vs_program_run|vs_fast_table_jump|vs_page_dispatch"
+            r"|data_stack|data_sp|data_underflow|native_push|native_pop)\b",
+            symbol_dump,
+        ):
+            raise ElfCheckError(
+                "native core contract failed; translated CPU/runtime helper "
+                "present in symbol dump"
+            )
+    else:
+        raise ElfCheckError(f"unknown ELF variant: {variant}")
+
+    missing = sorted(required - present_symbols)
+    if missing:
+        label = "native" if variant == "vs-native" else (
+            "translated" if variant == "vs" else "home"
+        )
+        raise ElfCheckError(
+            f"{label} core reachability check failed; missing symbols: "
+            + ", ".join(missing)
+        )
+    return set(required)
 
 
 def parse_nm_symbols(output: str) -> dict[str, int]:
@@ -444,7 +538,9 @@ def parse_sections(output: str) -> dict[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("elf", type=Path)
-    parser.add_argument("--variant", choices=("home", "vs"), default="home")
+    parser.add_argument(
+        "--variant", choices=("home", "vs", "vs-native"), default="home"
+    )
     parser.add_argument(
         "--prefix",
         default="m68k-neogeo-elf-",
@@ -473,7 +569,11 @@ def main() -> int:
     try:
         # VS translation helpers can legitimately have same-named local copies
         # in separate translation units. Linker contract symbols are global.
-        values_text = run([f"{args.prefix}nm", "-g", str(args.elf)]) if args.variant == "vs" else symbols
+        values_text = (
+            run([f"{args.prefix}nm", "-g", str(args.elf)])
+            if args.variant in {"vs", "vs-native"}
+            else symbols
+        )
         symbol_values = parse_nm_symbols(values_text)
     except ElfCheckError as error:
         raise SystemExit(str(error)) from error
@@ -494,17 +594,17 @@ def main() -> int:
             + ", ".join(forbidden)
         )
 
-    required = ({"main", "nametable", "machine", "vs_prg", "vs_chr", "vs_program_run"}
-                if args.variant == "vs" else REQUIRED_SYMBOLS)
-    missing = sorted(required - present_symbols)
-    if missing:
-        raise SystemExit(
-            "translated core reachability check failed; missing symbols: "
-            + ", ".join(missing)
+    try:
+        required = validate_variant_symbols(
+            present_symbols,
+            variant=args.variant,
+            symbol_dump=symbols,
         )
+    except ElfCheckError as error:
+        raise SystemExit(str(error)) from error
     if text_size < MINIMUM_TRANSLATED_CORE_SIZE:
         raise SystemExit(
-            "translated core reachability check failed: "
+            "core reachability check failed: "
             f"ROM image is only {text_size} bytes"
         )
     if static_ram > STATIC_RAM_GUARD:
@@ -518,8 +618,13 @@ def main() -> int:
 
     try:
         startup = validate_startup_layout(symbol_values)
-        ngh_id = validate_ngh_id(symbol_values, expected=0x2027 if args.variant == "vs" else EXPECTED_NGH_ID)
-        if args.variant == "vs":
+        ngh_id = validate_ngh_id(
+            symbol_values,
+            expected=0x2027
+            if args.variant in {"vs", "vs-native"}
+            else EXPECTED_NGH_ID,
+        )
+        if args.variant in {"vs", "vs-native"}:
             title_data_address = symbol_values["vs_chr"]
             if title_data_address & 1:
                 raise ElfCheckError("VS CHR/data payload is not word aligned")
@@ -553,10 +658,12 @@ def main() -> int:
         f"Stack/heap headroom below $10F300: {ram_headroom:,} bytes "
         f"of {NEOGEO_USER_RAM:,}"
     )
-    print(
-        "Translated core reachability: "
-        f"{', '.join(sorted(REQUIRED_SYMBOLS))} retained"
-    )
+    core_label = {
+        "home": "Home core",
+        "vs": "Translated VS core",
+        "vs-native": "Native VS core",
+    }[args.variant]
+    print(f"{core_label} reachability: {', '.join(sorted(required))} retained")
     print(
         "Startup RAM writes: "
         f"BSS clear ends at ${bss_clear_end:06x}, "

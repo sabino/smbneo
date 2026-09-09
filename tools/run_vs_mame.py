@@ -12,6 +12,27 @@ import tempfile
 _DEBUG_MARKER = re.compile(r"^VS frame=(?P<display>\d+).*?frames=(?P<game>[0-9a-fA-F]+)\s*$")
 
 
+def symbol_environment(symbols: str) -> dict[str, str]:
+    """Map either the legacy or native public state anchor for Lua checks."""
+    result: dict[str, str] = {}
+    anchors: list[str] = []
+    for line in symbols.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        address, _, name = fields
+        if name.startswith('vs_debug_'):
+            result[name.upper()] = '0x' + address
+        if name in ('machine', 'platform'):
+            anchors.append('0x' + address)
+    if len(anchors) != 1:
+        raise ValueError(
+            f"expected exactly one VS state anchor, found {len(anchors)}"
+        )
+    result['VS_MACHINE_ADDRESS'] = anchors[0]
+    return result
+
+
 def gameplay_metrics(log: str, label: str = "vs", start_tick: int = 600,
                      end_tick: int = 1200) -> dict:
     """Extract the bounded gameplay interval from the Lua debug markers."""
@@ -72,12 +93,10 @@ def main():
         if a.system != 'ng_mv1': p.error('--real-coin requires MVS')
         env['VS_REAL_COIN'] = '1'
     symbols = subprocess.check_output(['m68k-neogeo-elf-nm', str(build / 'vssmbneo.elf')], text=True)
-    for line in symbols.splitlines():
-        fields = line.split()
-        if len(fields) != 3: continue
-        address, _, name = fields
-        if name.startswith('vs_debug_'): env[name.upper()] = '0x' + address
-        if name == 'machine': env['VS_MACHINE_ADDRESS'] = '0x' + address
+    try:
+        env.update(symbol_environment(symbols))
+    except ValueError as exc:
+        p.error(str(exc))
     if a.reference_frame:
         env['VS_STOP_GAMEFRAME'] = str(a.reference_frame)
         env['VS_DUMP_PATH'] = str(build / f'neo{a.reference_frame}.ram')
