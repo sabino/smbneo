@@ -14,6 +14,8 @@ typedef struct {
     void *context;
     uint8_t (*ppu_read)(void *, uint16_t);
     void (*ppu_write)(void *, uint16_t, uint8_t);
+    /* Decoded data-port run; source bytes are ordinary read-only RAM. */
+    void (*ppu_run)(void *, const uint8_t *, uint8_t, uint8_t);
     void (*apu_write)(void *, uint16_t, uint8_t);
     void (*oam_dma)(void *, uint16_t);
 } VsBus;

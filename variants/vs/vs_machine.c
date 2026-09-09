@@ -59,6 +59,32 @@ static void machine_apu_write(void *ctx, uint16_t a, uint8_t v) {
     VsMachine *m = ctx;
     if (a >= 0x4000 && a <= 0x4017) { m->apu[a - 0x4000] = v; ++m->apu_writes; }
 }
+static void machine_ppu_run(void *ctx, const uint8_t *source,
+                            uint8_t count, uint8_t repeat) {
+    VsMachine *m = ctx;
+    uint16_t destination = m->address;
+    uint16_t increment = (m->ctrl & 4u) != 0u ? 32u : 1u;
+    unsigned source_step = repeat != 0u ? 0u : 1u;
+
+    /* The shared Neo Geo sink batches dirty tracking as well as data. Keep
+     * palette, pattern and wrapped runs on the existing byte-write path. */
+    if (count != 0u && destination >= 0x2000u && destination < 0x3f00u &&
+        (uint32_t)destination + (uint32_t)(count - 1u) * increment < 0x3f00u &&
+        m->video_run && m->video_run(m->video_context, destination, source,
+                                    count, increment, repeat)) {
+        for (unsigned i = 0; i < count; ++i) {
+            m->nametable[destination & 0x07ffu] = *source;
+            source += source_step;
+            destination = (uint16_t)(destination + increment);
+        }
+        m->address = destination & 0x3fffu;
+        return;
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        machine_ppu_write(m, 0x2007u, *source);
+        source += source_step;
+    }
+}
 static void machine_oam_dma(void *ctx, uint16_t a) {
     VsMachine *m = ctx;
 #if defined(SMB_VS) && !defined(VS_REFERENCE_DMA)
@@ -83,6 +109,7 @@ void vs_machine_init_dips(VsMachine *m, const uint8_t *prg, const uint8_t *chr, 
     memset(m, 0, sizeof(*m)); vs_bus_init(&m->bus, prg, chr);
     m->bus.dips = dips;
     m->bus.context = m; m->bus.ppu_read = machine_ppu_read; m->bus.ppu_write = machine_ppu_write;
+    m->bus.ppu_run = machine_ppu_run;
     m->bus.apu_write = machine_apu_write; m->bus.oam_dma = machine_oam_dma;
     vs_cpu_init(&m->cpu, &m->bus);
     vs_program_run(&m->cpu, 200000);

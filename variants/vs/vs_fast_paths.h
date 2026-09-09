@@ -19,6 +19,62 @@ static inline int vs_fast_stride_fill(VsCpu *c, unsigned base, uint8_t fill) {
     return 1;
 }
 
+/* Decode one ordinary RAM display-list record and transfer its whole payload.
+ * The source occupies page $03, separate from CPU scratch/stack and video RAM.
+ * Other aliases and the special zero-count loop use the original routine. */
+static inline int vs_fast_ppu_displist_command(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint16_t source = (uint16_t)(ram[0] | ((uint16_t)ram[1] << 8));
+    uint8_t command;
+    uint8_t count;
+    uint8_t repeat;
+    uint8_t control;
+    uint16_t next;
+
+    if (c->y != 0u || c->s < 0x40u || source < 0x0300u || source > 0x03fcu)
+        return 0;
+    command = ram[source + 2u];
+    count = command & 0x3fu;
+    repeat = (command & 0x40u) != 0u;
+    if (count == 0u || source + 3u + (repeat ? 0u : count - 1u) > 0x03ffu)
+        return 0;
+
+    vs_wr(c, 0x2006u, c->a);
+    vs_wr(c, 0x2006u, ram[source + 1u]);
+    vs_push(c, (uint8_t)(command << 1));
+    control = (uint8_t)((ram[0x0778] & 0xfbu) |
+        ((command & 0x80u) != 0u ? 4u : 0u));
+    /* JSR ppu_displist_write_ctlr0 at $9161 stores $9163. */
+    vs_push(c, 0x91);
+    vs_push(c, 0x63);
+    vs_wr(c, 0x2000u, control);
+    ram[0x0778] = control;
+    vs_fast_return(c);
+    (void)vs_pop(c);
+
+    if (c->bus->ppu_run) {
+        c->bus->ppu_run(c->bus->context, ram + source + 3u, count, repeat);
+    } else {
+        for (unsigned i = 0; i < count; ++i)
+            vs_wr(c, 0x2007u, ram[source + 3u + (repeat ? 0u : i)]);
+    }
+
+    c->x = 0u;
+    c->y = repeat ? 3u : (uint8_t)(count + 2u);
+    next = (uint16_t)(source + c->y + 1u);
+    ram[0] = (uint8_t)next;
+    ram[1] = (uint8_t)(next >> 8);
+    vs_wr(c, 0x2006u, 0x3fu);
+    vs_wr(c, 0x2006u, 0u);
+    vs_wr(c, 0x2006u, 0u);
+    vs_wr(c, 0x2006u, 0u);
+    /* The final pointer-high ADC clears overflow and carry for page $03. */
+    c->p &= (uint8_t)~(VS_C | VS_V);
+    c->a = vs_nz(c, 0u);
+    c->pc = 0x9195;
+    return 1;
+}
+
 /* Batch the ordinary 13-metatile background column.  This is the same
  * semantic rendering pass used by the regular game core, adapted to retain
  * the VS CPU's complete observable register, scratch-RAM and status state.

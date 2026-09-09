@@ -498,6 +498,20 @@ static void compare_accepted_helper_case(
     capture_state(&actual);
     assert_state_equal(&expected, &actual, "direct helper increment/dirty state");
     ++helper_comparisons;
+
+    /* VS supplies an ordinary source pointer and maintains its own PPU
+     * address register. The shared sink changes only tile/dirty state. */
+    prepare_helper_case(
+        seed, source_pointer, destination, length, repeat, vertical
+    );
+    assert(neogeo_ppu_write_nametable_run(
+        destination, ram + source_pointer + 3u, length,
+        vertical ? 32u : 1u, repeat ? 1u : 0u
+    ));
+    expected.vram_addr = destination;
+    capture_state(&actual);
+    assert_state_equal(&expected, &actual, "external source run/dirty state");
+    ++helper_comparisons;
 }
 
 static void compare_helper_increment_and_dirty_state(void) {
@@ -586,6 +600,22 @@ static void compare_rejected_helper_is_noop(void) {
     capture_state(&actual);
     assert_state_equal(&expected, &actual, "zero-length 256-write fallback");
     ++helper_comparisons;
+
+    for (index = 0u; index < 5u; ++index) {
+        prepare_state(seed);
+        capture_state(&expected);
+        prepare_state(seed++);
+        assert(!neogeo_ppu_write_nametable_run(
+            index == 4u ? 0x3effu : 0x2400u,
+            index == 0u ? NULL : ram + 0x0310u,
+            index == 1u ? 0u : 3u,
+            index == 2u ? 0u : index == 3u ? 2u : 1u,
+            0u
+        ));
+        capture_state(&actual);
+        assert_state_equal(&expected, &actual, "rejected external source run");
+        ++helper_comparisons;
+    }
 }
 
 int main(void) {

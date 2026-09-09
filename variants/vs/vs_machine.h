@@ -13,6 +13,9 @@ typedef struct {
     uint32_t apu_writes, frames;
     void *video_context;
     void (*video_write)(void *, uint16_t, uint8_t);
+    /* Optional nametable batch sink. A false return must leave it unchanged. */
+    uint8_t (*video_run)(void *, uint16_t, const uint8_t *, uint8_t,
+                         uint16_t, uint8_t);
 } VsMachine;
 void vs_machine_init(VsMachine *m, const uint8_t *prg, const uint8_t *chr);
 void vs_machine_init_dips(VsMachine *m, const uint8_t *prg, const uint8_t *chr, uint8_t dips);

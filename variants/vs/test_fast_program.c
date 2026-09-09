@@ -5,9 +5,27 @@
 void vs_program_reference(VsCpu *, unsigned);
 
 static unsigned cases;
+typedef struct {
+    unsigned count;
+    uint32_t events[300];
+} PpuTrace;
+
+static void trace_ppu_write(void *ctx, uint16_t address, uint8_t value) {
+    PpuTrace *trace = ctx;
+    assert(trace->count < sizeof(trace->events) / sizeof(trace->events[0]));
+    trace->events[trace->count++] = ((uint32_t)address << 8) | value;
+}
+
+static void trace_ppu_run(void *ctx, const uint8_t *source,
+                          uint8_t count, uint8_t repeat) {
+    for (unsigned i = 0; i < count; ++i)
+        trace_ppu_write(ctx, 0x2007u, source[repeat ? 0u : i]);
+}
+
 static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, unsigned pattern) {
     VsBus reference, optimized;
     VsCpu want, got;
+    PpuTrace expected_writes, actual_writes;
     vs_bus_init(&reference, prg, prg + 32768);
     for (unsigned i = 0; i < 2048; ++i) reference.ram[i] = (uint8_t)(i * 13 + pattern);
     reference.ram[3] = (uint8_t)((pattern & ~2u) | ((x & 256u) ? 2u : 0u));
@@ -18,7 +36,7 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     if (entry == 0xd5bd || entry == 0xe7da || entry == 0xe9a8 ||
         entry == 0xeac1 || entry == 0xc9ba || entry == 0xd98a ||
         entry == 0xdf17 || entry == 0xe525 || entry == 0xbeea ||
-        entry == 0xeeaa)
+        entry == 0xeeaa || entry == 0x914a)
         want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
@@ -30,6 +48,21 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     reference.coin_service = (uint8_t)(pattern & 0x64u);
     if (entry == 0xba8a)
         memset(reference.ram + 0x2a, 0, 9);
+    if (entry == 0x914a) {
+        unsigned pointer = 0x0300u + (y & 255u);
+        unsigned count = 1u + (pattern % 63u);
+        unsigned repeat = (pattern >> 6) & 1u;
+        unsigned next = pointer + (repeat ? 4u : count + 3u);
+        reference.ram[0] = (uint8_t)pointer;
+        reference.ram[1] = (uint8_t)(pointer >> 8);
+        reference.ram[pointer] = (uint8_t)(0x20u | (x & 31u));
+        reference.ram[pointer + 1u] = (uint8_t)pattern;
+        reference.ram[pointer + 2u] = (uint8_t)(count |
+            (repeat << 6) | ((pattern >> 1) & 0x80u));
+        reference.ram[next] = 0u;
+        want.a = reference.ram[pointer];
+        want.y = 0u;
+    }
     if (entry == 0x8aaf) {
         reference.ram[0x0340] = x >= 256u ? (uint8_t)x : 0;
         reference.ram[0x071f] = (uint8_t)(pattern & 7u);
@@ -233,8 +266,20 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
         }
     }
     optimized = reference; got = want; got.bus = &optimized;
+    if (entry == 0x914a) {
+        expected_writes.count = actual_writes.count = 0u;
+        reference.context = &expected_writes;
+        optimized.context = &actual_writes;
+        reference.ppu_write = optimized.ppu_write = trace_ppu_write;
+        optimized.ppu_run = (x & 1u) ? trace_ppu_run : NULL;
+    }
     vs_program_reference(&want, 200000);
     vs_program_run(&got, 200000);
+    if (entry == 0x914a) {
+        assert(expected_writes.count == actual_writes.count);
+        assert(memcmp(expected_writes.events, actual_writes.events,
+                      expected_writes.count * sizeof(uint32_t)) == 0);
+    }
     if (!(want.fault && got.pc == want.pc && got.fault)) {
         fprintf(stderr,
                 "entry=%04x seed=%u/%u/%u terminal want=%04x/%u got=%04x/%u\n",
@@ -299,6 +344,8 @@ int main(int argc, char **argv) {
         compare(data, 0xba8a, seed >> 8, seed, seed * 47);
     for (unsigned seed = 0; seed < 65536; ++seed)
         compare(data, 0x8aaf, seed >> 8, seed, seed * 151);
+    for (unsigned seed = 0; seed < 65536; ++seed)
+        compare(data, 0x914a, seed >> 8, seed, seed * 173);
     /* Nonempty offsets can alias the attribute buffer. Check every offset's
      * fallback, both column parities and both metatile sides. */
     for (unsigned offset = 1; offset < 256; ++offset)

@@ -358,6 +358,16 @@ def semantic_fast_paths(code, named_entries):
     # chain retains the reviewed instruction shape.
     chained_routines = (
         (
+            'ppu_displist_write_do',
+            (
+                ('ppu_displist_write_do', 40,
+                 'df68b2f9c2ffaf8b0b2c615ea5964721e93c53d4696c2feb8124bb7ddc221b47'),
+                ('ppu_displist_write_ctlr0', 3,
+                 'e263115cf8e9b468233d0d2f2a5d4b2885e73dd2addd4a16cf245fd16a2b9c8a'),
+            ),
+            'if (vs_fast_ppu_displist_command(c)) return;',
+        ),
+        (
             'pos_calc_x_rel_player',
             (
                 ('pos_calc_x_rel_player', 3,

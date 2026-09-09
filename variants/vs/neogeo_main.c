@@ -1,5 +1,6 @@
 #include "vs_machine.h"
 #include "ppu.h"
+#include "ppu_render_state.h"
 #include "video.h"
 #include "apu.h"
 #include "input_policy.h"
@@ -28,6 +29,11 @@ static void video_write(void *ctx, uint16_t addr, uint8_t value) {
     (void)ctx;
     /* Shared PPU RAM/dirty tracking only; physical VRAM remains VBlank-safe. */
     ppu_write(addr, value);
+}
+static uint8_t video_run(void *ctx, uint16_t addr, const uint8_t *source,
+                         uint8_t count, uint16_t increment, uint8_t repeat) {
+    (void)ctx;
+    return neogeo_ppu_write_nametable_run(addr, source, count, increment, repeat);
 }
 static uint8_t controls(uint8_t raw) {
     uint8_t v = 0;
@@ -69,6 +75,7 @@ int main(void) {
         if ((i & 0x13) != 0x10) ppu_write((uint16_t)(0x3f00 + i), machine.palette[i]);
     }
     machine.video_write = video_write;
+    machine.video_run = video_run;
     machine.bus.apu_write = sound_write;
     /* Forward boot APU state, then preserve every subsequent register write. */
     for (unsigned i = 0; i < 24; ++i)

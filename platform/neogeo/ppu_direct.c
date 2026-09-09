@@ -249,6 +249,34 @@ void ppu_write_data(uint8_t value) {
     vram_addr = normalize_ppu_address((uint16_t)(vram_addr + increment));
 }
 
+uint8_t neogeo_ppu_write_nametable_run(
+    uint16_t destination,
+    const uint8_t *source,
+    uint8_t count,
+    uint16_t increment,
+    uint8_t repeat
+) {
+    unsigned source_step = repeat != 0u ? 0u : 1u;
+
+    if (!source || count == 0u || (increment != 1u && increment != 32u) ||
+        destination < 0x2000u || destination >= 0x3f00u ||
+        (uint32_t)destination + (uint32_t)(count - 1u) * increment >= 0x3f00u)
+        return 0u;
+
+    for (unsigned index = 0; index < count; ++index) {
+        uint16_t physical_index = (uint16_t)(destination & 0x07ffu);
+        uint8_t value = *source;
+
+        if (nametable[physical_index] != value) {
+            nametable[physical_index] = value;
+            mark_nametable_changed(physical_index);
+        }
+        source += source_step;
+        destination = (uint16_t)(destination + increment);
+    }
+    return 1u;
+}
+
 uint8_t ppu_write_buffer_run(
     uint16_t source_pointer,
     uint8_t length,
@@ -259,7 +287,6 @@ uint8_t ppu_write_buffer_run(
     uint32_t source_last;
     uint32_t destination_last;
     uint16_t destination;
-    uint16_t run_index;
 
 #if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
     if (neogeo_ppu_batch_test_enabled == 0u) {
@@ -306,19 +333,10 @@ uint8_t ppu_write_buffer_run(
         goto rejected;
     }
 
-    for (run_index = 0u; run_index < count; ++run_index) {
-        uint16_t physical_index = nametable_index(destination);
-        uint16_t source_index = (uint16_t)(
-            source_pointer + 3u + (repeat != 0u ? 0u : run_index)
-        );
-        uint8_t value = ram[source_index];
-
-        if (nametable[physical_index] != value) {
-            nametable[physical_index] = value;
-            mark_nametable_changed(physical_index);
-        }
-        destination = (uint16_t)(destination + increment);
-    }
+    (void)neogeo_ppu_write_nametable_run(
+        destination, ram + source_pointer + 3u, length, increment, repeat
+    );
+    destination = (uint16_t)(destination + count * increment);
     vram_addr = normalize_ppu_address(destination);
 
 #if defined(SMB_NEOGEO_VRAM_BATCH_TEST)
