@@ -56,6 +56,7 @@ a:hover {
 a:focus-visible,
 .file-button:focus-visible,
 .download-button:focus-visible,
+.edition-picker input:focus-visible + span,
 input:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 4px;
@@ -168,6 +169,73 @@ nav {
   padding: clamp(20px, 4vw, 34px);
   border: 1px solid var(--border);
   background: rgb(19 27 58 / 96%);
+}
+
+.edition-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 22px;
+  padding: 0;
+  border: 0;
+}
+
+.edition-picker legend {
+  grid-column: 1 / -1;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.edition-picker label {
+  min-width: 0;
+  cursor: pointer;
+}
+
+.edition-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.edition-picker span {
+  display: block;
+  height: 100%;
+  padding: 11px 12px;
+  border: 2px solid var(--border);
+  background: var(--ink);
+}
+
+.edition-picker strong,
+.edition-picker small {
+  display: block;
+}
+
+.edition-picker strong {
+  font-size: 0.9rem;
+}
+
+.edition-picker small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.edition-picker input:checked + span {
+  border-color: var(--coin);
+  background: #2b3562;
+  box-shadow: inset 0 -4px 0 var(--brick-light);
+}
+
+.edition-picker input:disabled + span {
+  cursor: wait;
+  opacity: 0.64;
 }
 
 .launcher-title {
@@ -436,6 +504,10 @@ footer p {
     max-height: none;
   }
 
+  #game-wrap:not(.is-running) {
+    min-height: 500px;
+  }
+
   #launcher {
     grid-template-columns: 1fr;
   }
@@ -485,6 +557,10 @@ footer p {
   .launcher-panel {
     margin: 10px;
     padding: 18px;
+  }
+
+  .edition-picker {
+    grid-template-columns: 1fr;
   }
 
   .control-grid {

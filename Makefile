@@ -23,6 +23,8 @@ test:
 
 web-test:
 	node --test tools/test_web_compat.mjs
+	node --check web/player.mjs
+	python3 -m unittest tools.test_build_web_player
 
 # Full target verification requires MoonBit and the ngdevkit cross-toolchain.
 verify:

@@ -678,6 +678,30 @@ _GAME_PROC_BODY = _address_tuple("""
     ae04 ae06 ae08 ae09 ae0a ae0b ae0e ae11 ae14 ae16 ae18 ae1a
 """)
 
+_ACTOR_PROC_BODY = _address_tuple("""
+    bf60 bf62 bf63 bf64 bf66 bf67 bf69 bf6c bf6f bf71 bf73 bf75 bf78 bf79
+    bf7b bf7c bf7f bf81 bf83 bfea bfed bfef bff2 bff4 bff6 bff7 bff9 bffc
+    bfff c001 c004 c007 c009 c00b c00e c010 c012 c014 c016 c019 c01b c01d
+    c020 c023 c026 c028 c02a c02d c02f c031 c033 c036 c038 c03a c03d c040
+    c042 c045 c048 c04a c04d c050 c052 c054 c056 c058 c05a c05c c05f c062
+    c064 c067 c06a c06c c06e c070 c073 c075 c077 c079 c07b c07d c07e c080
+    c083 c085 c087 c089 c08b c08c c08f c090 c092 c094 c096 c099 c09b c09d
+    c0a0 c0a1 c0a3 c0a6 c0a8 c0a9 c0ab c0ae c0b0 c0b3 c0b6 c0b7 c0b9 c0bc
+    c0be c0c0 c0c2 c0c4 c0c7 c0c9 c0ca c0cc c0cf c0d1 c0d3 c0d6 c0d9 c0dc
+    c0df c0e2 c0e4 c0e7 c0ea c0ec c0ee c0f1 c0f3 c0f5 c0f7 c0fa c0fc c0ff
+    c101 c103 c106 c108 c10a c10c c10e c111 c113 c115 c117 c119 c11b c11d
+    c11f c121 c124 c126 c127 c128 c129 c12a c12c c12e c130 c131 c133 c136
+    c138 c13a c13c c13e c140 c142 c144 c146 c148 c14b c14d c14f c150 c153
+    c155 c158 c15a c15c c15e c167 c168 c16b c16d c170 c171 c172 c174 c175
+    c176 c177 c178 c179 c17c c17e c17f c181 c184 c186 c189 c18a c18c c18e
+    c191 c194 c196 c199 c19c c19e c1a0 c1a2 c1a4 c1a7 c1aa c1ad c1af c1b2
+    c1b4 c65e c660 c661 c663 c664 c666 c668 c669 c66b c66e c670 c672 c673
+    c675 c677 c679 c67b c67d c67f c682 c684 c687 c689 c68b c68c c68d c68f
+    c690 c693 c695 c696 c698 c69a c69c c69e c6a0 c6a2 c6a4 c6a6 c6a8 c6aa
+    c6ab c6ad c6af c6b1 c6b3 c6b5 c6b7 c6b9 c6bb c6bd c6bf c6c2 c6c5 c6c7
+    c7c5 c7c7 c7c9 c7cb c7cd c7cf c7d0 c7d2
+""")
+
 
 _NATIVE_SEMANTIC_ROUTINES = {
     0x8aaf: NativeSemanticRoutine(
@@ -690,6 +714,11 @@ _NATIVE_SEMANTIC_ROUTINES = {
         _GAME_PROC_BODY,
         "f783e2dcbab8c15349e66708e5cf7b752b39d9e2ca68071f571b470578683e39",
         "vs_native_fast_game_proc", "vs_native_fast_game.h",
+    ),
+    0xbf60: NativeSemanticRoutine(
+        _ACTOR_PROC_BODY,
+        "441517384e59ff6ac0ea07fccd67a75dc093adf7ce2ee773fc2a1cedcc675920",
+        "vs_native_fast_actor_proc", "vs_native_fast_actor_loop.h",
     ),
     0x8212: NativeSemanticRoutine(
         _address_tuple("""

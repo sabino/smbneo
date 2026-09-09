@@ -1,40 +1,47 @@
-# Direct-C backend prototype
+# Direct-C backend development
 
-This directory is the first isolated native-C backend milestone for Vs.
-Super Mario Bros. It is intentionally separate from the verified translated
-oracle in `variants/vs/build/`.
+The VS production cartridge uses the generated direct-C core checked in at
+`../native/`. This directory contains a small ROM-free host harness for working
+on that backend; it is not a second release runtime.
 
-`tools/native_codegen.py` consumes the linked 32 KiB VS PRG, its ca65 debug
-map, and the structured source checkout only as verification inputs. It emits
-direct C functions for the complete marked instruction graph, including
-static labels, direct calls, ordinary returns, and compile-time table
-switches. It does not copy ROM bytes, source text, or copyrighted assets into
-the repository.
+`tools/native_codegen.py` consumes a locally reconstructed 32 KiB VS program,
+its ca65 debug map, and the structured source checkout as verification inputs.
+It emits ordinary C functions, direct calls, static labels, and compile-time
+table switches. It does not copy program bytes, source text, graphics, palette
+data, or any other copyrighted asset into the generated C.
 
-The generated ABI uses `SmbNeoNativeContext` and ordinary C functions. The
-context takes `SmbNeoNativeRead8`/`SmbNeoNativeWrite8` callbacks plus an
-opaque platform pointer, so a NeoGeo bus/PPU adapter can own memory and I/O.
-The prototype has no emulated program counter, instruction budget, page
-dispatcher, 6502 JSR/RTS return frames, runtime data stack, or dependency on
-`VsCpu`. Balanced source saves are proven during generation and become
-ordinary scalar C locals. Title and game mode selection are explicit C
-switches. A/X/Y/status remain migration state while individual routine bodies
-are replaced incrementally with reviewed semantic C.
+The generated ABI uses `SmbNeoNativeContext` with platform read/write
+callbacks. The release core has no `VsCpu`, runtime program counter,
+instruction fuel, page dispatcher, emulated JSR/RTS return frames, or runtime
+6502 data stack. A/X/Y/status remain explicit migration state, while balanced
+source save/restore sequences become bounded scalar C locals. Reviewed semantic
+C modules replace hot routines only when their complete instruction
+fingerprints match.
 
-Example (using a local reference checkout):
+## Regenerate and verify
+
+Use the pinned local reference checkout documented in the
+[VS edition guide](../README.md):
 
 ```sh
-python3 tools/native_codegen.py \
-  --prg /path/to/vsmain.vs.bin \
-  --debug /path/to/vs.dbg \
-  --source-root /path/to/vs-reference \
-  --output-dir variants/vs/native_codegen/generated
-python3 tools/check_native_codegen.py \
-  variants/vs/native_codegen/generated/smbneo_native.c
-cc -std=c99 -Wall -Wextra -Werror \
-  -Ivariants/vs/native_codegen/generated -c \
-  variants/vs/native_codegen/generated/smbneo_native.c
+make -C variants/vs native-reproducible \
+  VS_PRG=/path/to/vs-reference/vsmain.vs.bin \
+  VS_DEBUG=/path/to/vs-reference/vs.dbg \
+  VS_SOURCE=/path/to/vs-reference
 ```
 
-The generated directory is for local experiments and should remain ignored;
-the test suite uses synthetic ROM-free fixtures.
+That command generates into the ignored `variants/vs/build/` tree, runs the
+architecture checker, and compares all generated files with `../native/`.
+Only reviewed, reproducible generator output should update the checked-in core.
+
+The ROM-free generator and harness checks are:
+
+```sh
+make -C variants/vs native-test
+make -C variants/vs/native_codegen test
+```
+
+The former also checks that the production generated file contains none of the
+forbidden runtime machinery. The complete owned-ROM behavioral comparison is
+`make -C variants/vs native-differential`; the instruction-level translated
+runtime exists only as its development oracle.

@@ -33,3 +33,44 @@ jobs:
 
       - name: Run ROM-free regression suite
         run: make ci
+
+  web-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Neo Geo toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            jq \
+            software-properties-common
+          sudo add-apt-repository -y ppa:dciabrin/ngdevkit
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ngdevkit
+
+      - name: Cross-build both ROM-free browser editions
+        run: |
+          make web
+          jq -e '
+            .project == "SMBNeo" and
+            .fbneo_driver == "puzzledp" and
+            .editions.home.title == "Super Mario Bros. Neo" and
+            .editions.home.downloads.canonical.filename == "smbneo.zip" and
+            .editions.vs.title == "VS. Super Mario Bros. Neo" and
+            .editions.vs.source_chips == 7 and
+            .editions.vs.downloads.canonical.filename == "vssmbneo.zip" and
+            .editions.vs.downloads.neosd.filename == "vssmbneo.neo" and
+            .editions.vs.downloads.compatibility.filename == "puzzledp.zip" and
+            .privacy.game_image_included == false and
+            .privacy.generated_graphics_included == false and
+            .privacy.generated_cartridge_included == false
+          ' dist/pages/build-manifest.json
+          test -s dist/pages/assets/smbneo-template.zip
+          test -s dist/pages/assets/vssmbneo-template.zip
+          test -s dist/pages/neogeo.zip

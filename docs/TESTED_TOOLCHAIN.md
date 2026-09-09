@@ -71,6 +71,32 @@ The generated browser site also needs ngdevkit and its cross-toolchain:
 make web
 ```
 
+The VS arcade cartridge uses the same cross-toolchain. Its normal build uses
+the checked-in direct-C runtime and needs only the user-owned, verified arcade
+set; cc65 and the reference checkout are not runtime or release-build
+dependencies:
+
+```bash
+make -C variants/vs neogeo-cart \
+  VS_ROM="/path/to/suprmrio.zip"
+# variants/vs/build/rom/vssmbneo.zip
+# variants/vs/build/rom/vssmbneo.neo
+# variants/vs/build/rom/gngeo_data.zip
+# variants/vs/build/mame/hash/neogeo.xml
+```
+
+cc65 plus the pinned source/debug reference are needed only when regenerating
+or differentially validating that direct-C core:
+
+```bash
+make -C variants/vs native-differential \
+  VS_ROM="/path/to/suprmrio.zip" \
+  VS_REFERENCE="/path/to/vs-reference"
+```
+
+See the [VS edition guide](../variants/vs/README.md) for the exact source-set
+requirements and emulator commands.
+
 The normal cartridge target creates the canonical full native package:
 
 ```bash

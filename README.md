@@ -14,13 +14,22 @@ progress, but the game is playable from the title screen through the ending.
 
 **[Launch SMBNeo in your browser](https://sabino.pro/smbneo/)**
 
-Choose your own supported `.nes` file, ZIP, or locally built
-`smbneo.zip`/`puzzledp.zip`. The file stays in your browser and is never
-uploaded. After conversion, the page offers three local downloads:
+Choose the home or VS arcade edition, then provide your own supported game
+file. The home edition accepts its verified `.nes`/ZIP input; the VS edition
+accepts the verified `suprmrio.zip` arcade set. The file stays in your browser
+and is never uploaded.
+
+The home edition offers three local downloads:
 
 - `smbneo.zip`, the canonical cartridge archive;
 - `smbneo.neo`, the single-file NeoSD/NeoSD Pro image; and
 - `puzzledp.zip`, the optional package for fixed-database emulators.
+
+The **VS Arcade Edition** offers its full `vssmbneo.zip` cartridge,
+`vssmbneo.neo` NeoSD image, and an explicitly optional `puzzledp.zip` for
+fixed-database frontends. EmulatorJS uses that donor identity internally to
+start the VS cartridge in FBNeo, but the page and canonical downloads remain
+branded **VS. Super Mario Bros. Neo**.
 
 Use the arrow keys to move, `A` or `S` to jump, `Q` or `W` to run or throw
 fireballs, `1` to start, and `2` to select.
@@ -57,6 +66,20 @@ fireballs, `1` to start, and `2` to select.
 | Select | Select | `2` |
 
 Press Start on the title screen before trying to move Mario.
+
+## VS arcade edition
+
+The separate [VS. Super Mario Bros. Neo](variants/vs/README.md) edition ports
+the arcade program, stages, attract mode, credits, coinage, and two-player
+selection. Its production cartridge uses a generated direct-C core on the
+MC68000, with reviewed native C paths for performance; the legacy
+instruction-level translation is retained only as a differential-test oracle.
+
+Building the VS edition requires a user-owned, canonical `suprmrio.zip`
+**SM4-4 E** set including `rp2c04-0004.pal`. It creates separate
+`vssmbneo.zip` and `vssmbneo.neo` artifacts and never overwrites the home
+edition. No source ROM, proprietary BIOS, or generated game data is included
+in Git.
 
 ## Build and play
 

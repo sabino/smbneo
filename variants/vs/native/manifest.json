@@ -88,6 +88,7 @@
     "0xbea5": "vs_native_fast_motion_fall",
     "0xbebe": "vs_native_fast_motion_gravity_do",
     "0xbeea": "vs_native_fast_motion_gravity",
+    "0xbf60": "vs_native_fast_actor_proc",
     "0xc9ba": "vs_native_fast_actor_proc_base",
     "0xd5bd": "vs_native_fast_actor_oob_proc",
     "0xe1f2": "vs_native_fast_col_box_proc",

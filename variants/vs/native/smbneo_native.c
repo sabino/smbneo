@@ -2,6 +2,7 @@
 #include "smbneo_native.h"
 #ifdef SMBNEO_NATIVE_FAST_PATHS
 #include "vs_native_fast_actor.h"
+#include "vs_native_fast_actor_loop.h"
 #include "vs_native_fast_actor_policy.h"
 #include "vs_native_fast_collision.h"
 #include "vs_native_fast_game.h"
@@ -12128,6 +12129,10 @@ Lbf59: ;
 
 void smbneo_native_fn_actor_proc_bf60(SmbNeoNativeContext *ctx) {
     SMBNEO_NATIVE_MARK(ctx, 0xbf60u);
+#ifdef SMBNEO_NATIVE_FAST_PATHS
+    vs_native_fast_actor_proc(ctx);
+    return;
+#endif
     uint8_t saved_value_0 = 0u;
     uint8_t saved_value_1 = 0u;
     ctx->a = native_nz(ctx, native_read(ctx, (uint16_t)(uint8_t)(0x0fu + ctx->x)));

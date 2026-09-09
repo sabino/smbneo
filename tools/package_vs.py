@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Package the local experimental VS cartridge without touching home outputs."""
+"""Package and validate the canonical VS Neo Geo cartridge outputs."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -9,6 +8,60 @@ import subprocess
 import zipfile
 from gen_mame_neogeo_software import write_software_list
 from build_neosd import build_image, validate_image
+from check_vs_package import (
+    GNGEO_DATA,
+    MANIFEST,
+    MANUFACTURER,
+    NEOSD_IMAGE,
+    NGH,
+    REGIONS,
+    SHORTNAME,
+    TITLE,
+    ZIP_EXTERNAL_ATTR,
+    ZIP_TIMESTAMP,
+    build_manifest,
+    validate_package,
+)
+
+
+def _zip_info(filename: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(filename, ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = ZIP_EXTERNAL_ATTR
+    return info
+
+
+def write_deterministic_zip(
+    output: Path,
+    entries: list[tuple[str, bytes]],
+) -> None:
+    """Write fixed-order, fixed-metadata ZIP bytes."""
+
+    names = [name for name, _ in entries]
+    if len(names) != len(set(names)):
+        raise ValueError(f"duplicate ZIP member in {output}")
+    temporary = output.with_name(output.name + ".tmp")
+    with zipfile.ZipFile(
+        temporary,
+        "w",
+        zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+    ) as archive:
+        for name, data in entries:
+            archive.writestr(_zip_info(name), data)
+    temporary.replace(output)
+
+
+def canonicalize_zip(path: Path) -> None:
+    """Normalize romtool's GnGeo support archive for reproducible releases."""
+
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError(f"duplicate ZIP member in {path}")
+        entries = [(name, archive.read(name)) for name in sorted(names)]
+    write_deterministic_zip(path, entries)
 
 
 def main():
@@ -33,27 +86,47 @@ def main():
     subprocess.run(['z80-neogeo-ihx-sdobjcopy', '-I', 'ihex', '-O', 'binary',
                     str(args.sound), str(output / 'vssmbneo-m1.m1'), '--pad-to', '131072'], check=True)
     shutil.copyfile(args.samples, output / 'vssmbneo-v1.v1')
-    write_software_list(output, args.build / 'mame/hash/neogeo.xml', 'vssmbneo', 'VS. Super Mario Bros. Neo')
-    names = ['vssmbneo-' + suffix for suffix in ('p1.p1', 's1.s1', 'm1.m1', 'v1.v1', 'c1.c1', 'c2.c2')]
-    with zipfile.ZipFile(output / 'vssmbneo.zip', 'w', zipfile.ZIP_DEFLATED) as z:
-        for name in names:
-            info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0)); info.compress_type = zipfile.ZIP_DEFLATED
-            z.writestr(info, (output / name).read_bytes())
+    write_software_list(
+        output,
+        args.build / 'mame/hash/neogeo.xml',
+        SHORTNAME,
+        TITLE,
+    )
+    names = [region.filename for region in REGIONS]
+    region_files = {name: (output / name).read_bytes() for name in names}
+    write_deterministic_zip(
+        output / f'{SHORTNAME}.zip',
+        [(name, region_files[name]) for name in names],
+    )
     regions = {region: (output / filename).read_bytes()
                for region, filename in zip(('p', 's', 'm', 'v1', 'c1', 'c2'), names)}
-    neo = build_image(regions, name='VS. Super Mario Bros. Neo', ngh=0x2027)
-    validate_image(neo, regions, name='VS. Super Mario Bros. Neo', ngh=0x2027)
-    (output / 'vssmbneo.neo').write_bytes(neo)
+    neo = build_image(
+        regions,
+        name=TITLE,
+        manufacturer=MANUFACTURER,
+        ngh=NGH,
+    )
+    validate_image(
+        neo,
+        regions,
+        name=TITLE,
+        manufacturer=MANUFACTURER,
+        ngh=NGH,
+    )
+    (output / NEOSD_IMAGE).write_bytes(neo)
     subprocess.run(['romtool.py', '-b', 'hash', '-f', 'gngeo',
                     '-p', str(prom), '-s', str(output / names[1]), '-m', str(output / names[2]),
                     '-v', str(output / names[3]), '-c', str(output / names[4]), str(output / names[5]),
-                    '-n', 'vssmbneo', '-l', 'VS. Super Mario Bros. Neo',
-                    '-x', 'gngeo.data=' + str(args.gngeo_data), '-o', str(output / 'gngeo_data.zip')], check=True)
-    (output / 'vs-cart-manifest.json').write_text(json.dumps({
-        'experimental': True, 'shortname': 'vssmbneo',
-        'files': {name: {'size': (output / name).stat().st_size,
-                         'sha256': hashlib.sha256((output / name).read_bytes()).hexdigest()} for name in names}}, indent=2) + '\n')
-    print('Experimental VS cartridge:', output / 'vssmbneo.zip')
+                    '-n', SHORTNAME, '-l', TITLE,
+                    '-x', 'gngeo.data=' + str(args.gngeo_data),
+                    '-o', str(output / GNGEO_DATA)], check=True)
+    canonicalize_zip(output / GNGEO_DATA)
+    (output / MANIFEST).write_text(
+        json.dumps(build_manifest(region_files), indent=2) + '\n',
+        encoding='utf-8',
+    )
+    validate_package(args.build)
+    print('Canonical VS cartridge:', output / f'{SHORTNAME}.zip')
 
 
 if __name__ == '__main__': main()

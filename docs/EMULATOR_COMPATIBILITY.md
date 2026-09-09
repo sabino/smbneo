@@ -242,6 +242,58 @@ asset. It never embeds that BIOS into any downloaded game package. The `.neo`
 file is assembled in browser memory directly from the canonical regions,
 before the separate FBNeo donor conversion occurs.
 
+## VS arcade edition
+
+The VS arcade port has its own custom identity and never replaces the home
+edition's artifacts:
+
+```text
+variants/vs/build/rom/vssmbneo.zip
+variants/vs/build/rom/vssmbneo.neo
+variants/vs/build/rom/gngeo_data.zip
+variants/vs/build/mame/hash/neogeo.xml
+```
+
+Build these from a user-owned canonical `suprmrio.zip` **SM4-4 E** set:
+
+```bash
+make -C variants/vs neogeo-cart \
+  VS_ROM="/path/to/suprmrio.zip"
+```
+
+`vssmbneo.zip` preserves the full 1 MiB P, 128 KiB S/M, 512 KiB V,
+and two 2 MiB C regions. It is the authoritative hardware, MAME, and GnGeo
+cartridge. `vssmbneo.neo` contains the same regions in NeoSD/NeoSD Pro format.
+
+MAME loads the custom software-list entry directly:
+
+```bash
+mame ng_mv1 vssmbneo \
+  -hashpath "$PWD/variants/vs/build/mame/hash" \
+  -rompath "/path/to/mame/roms;$PWD/variants/vs/build/rom"
+```
+
+The project's GnGeo route uses the generated `rom/vssmbneo.drv` inside
+`gngeo_data.zip`:
+
+```bash
+ngdevkit-gngeo --system home \
+  -i "$PWD/variants/vs/build/rom" \
+  -B "/path/to/your/gngeo-bios-directory" \
+  -d "$PWD/variants/vs/build/rom/gngeo_data.zip" \
+  vssmbneo
+```
+
+Both emulators require compatible Neo Geo BIOS data supplied separately. The
+browser likewise accepts the owned `suprmrio.zip`, validates and converts it
+locally, and offers `vssmbneo.zip`, `vssmbneo.neo`, and an explicitly optional
+fixed-database `puzzledp.zip` download without uploading game data. FBNeo uses
+that donor driver only for internal in-page loading; the visible VS identity
+and full canonical downloads are unchanged.
+
+See the [VS edition guide](../variants/vs/README.md) for controls, arcade
+credits and DIP behavior, native-core validation, and hardware safeguards.
+
 ## NeoSD format references
 
 - [TerraOnion NeoBuilder guide](https://wiki.terraonion.com/index.php/Neobuilder_Guide)
@@ -259,6 +311,7 @@ Use a BIOS set that is legal for you to use and compatible with the chosen
 emulator. This repository does not include a proprietary BIOS or original
 game ROM data.
 
-All generated ROM regions, archives, `.neo` images, XML, and GnGeo data live under the
-ignored `platform/neogeo/build/` directory. Do not commit or redistribute
-generated game data unless you have the necessary rights.
+Generated home-edition files live under the ignored
+`platform/neogeo/build/` directory; VS-edition files live under the ignored
+`variants/vs/build/` directory. Do not commit or redistribute generated game
+data unless you have the necessary rights.

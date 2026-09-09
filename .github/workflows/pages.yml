@@ -60,12 +60,23 @@ jobs:
             .downloads.neosd.shortname == "smbneo" and
             .downloads.compatibility.filename == "puzzledp.zip" and
             .downloads.compatibility.shortname == "puzzledp" and
+            .editions.home.title == "Super Mario Bros. Neo" and
+            .editions.home.template.path == "assets/smbneo-template.zip" and
+            .editions.vs.title == "VS. Super Mario Bros. Neo" and
+            .editions.vs.source_chips == 7 and
+            .editions.vs.template.path == "assets/vssmbneo-template.zip" and
+            .editions.vs.downloads.canonical.filename == "vssmbneo.zip" and
+            .editions.vs.downloads.canonical.shortname == "vssmbneo" and
+            .editions.vs.downloads.neosd.filename == "vssmbneo.neo" and
+            .editions.vs.downloads.neosd.shortname == "vssmbneo" and
+            .editions.vs.downloads.compatibility.filename == "puzzledp.zip" and
             .privacy.game_image_included == false and
             .privacy.generated_graphics_included == false and
             .privacy.generated_cartridge_included == false
           ' dist/pages/build-manifest.json
           test -s dist/pages/index.html
           test -s dist/pages/assets/smbneo-template.zip
+          test -s dist/pages/assets/vssmbneo-template.zip
           test -s dist/pages/neogeo.zip
 
       - name: Configure GitHub Pages

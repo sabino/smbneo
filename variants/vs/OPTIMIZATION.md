@@ -1,53 +1,92 @@
-# VS core optimization checkpoints
+# VS native-core optimization
 
-The core remains experimental. These measurements do **not** establish normal
-arcade speed or real AES/MVS hardware compatibility.
+The production VS cartridge runs a CPU-free direct-C game core. Performance
+work therefore targets ordinary C control flow, data access, actor scheduling,
+collision, composition, and Neo Geo presentation. The older instruction-level
+translation is retained only as an exact behavioral oracle.
 
-## Current changes
+## Rules for an optimization
 
-- Conservative flag liveness removes calculations whose results are overwritten
-  before use. Page exits, calls, stack-status operations and idle returns preserve
-  the full status. The unoptimized C path remains available for comparison.
-- Native RAM-to-OAM transfers copy a known contiguous RAM page instead of doing
-  256 general bus reads. Every RAM mirror and OAM wrap offset is tested. Non-RAM
-  transfers keep their original bus semantics, including possible I/O reads.
-- Register-state pointers explicitly describe their non-aliasing contract;
-  copying the entire register state on page transitions was slower and rejected.
+An accepted change must:
 
-None of these changes alter the reviewed physical VRAM/palette routines, remove
-sprites, skip game ticks or overclock the emulated Neo Geo.
+- preserve arcade logic, credits, DIP behavior, level data, PPU-visible state,
+  APU write ordering, and source fixed-point arithmetic;
+- keep the release ELF free of `VsCpu`, runtime PC/fuel fields, page dispatch,
+  and emulated call/return-stack machinery;
+- keep the reviewed hardware renderer, palette reference, startup guard, and
+  memory-card prohibition intact;
+- avoid frame skipping, game-tick skipping, Neo Geo overclocking, sprite-limit
+  emulation, or removal of live actors; and
+- pass an exact differential before replacing a generated routine with a
+  semantic C implementation.
 
-## Measured results
+The generator activates a semantic replacement only when the complete source
+routine or slice fingerprint matches. This prevents a future source change
+from silently selecting an implementation that was reviewed against different
+instructions.
 
-MAME 0.289, MVS at its normal hardware clock, identical generated game input,
-one NMI per game update. The runner disables host throttling only to finish the
-test sooner; performance below counts **simulated display frames**, not wall time.
+## What is native today
 
-| Checkpoint | Before this pass | Optimized |
-| --- | ---: | ---: |
-| Display frames to game frame 600, including startup | 1,537 | 1,176 |
+The checked-in core uses direct C functions and compile-time table selections.
+Reviewed semantic modules cover hot paths including:
 
-A separate controlled comparison keeps the same optimized core and disables
-only the RAM DMA shortcut (`VS_REFERENCE_DMA`). Holding right/run with periodic
-jumps from game frames 600 through 1200 gives:
+- the main game/NMI coordination;
+- actor scheduling, common movement policies, and rendering;
+- fixed-point movement and gravity;
+- collision-box and position calculations;
+- background/meta-tile work and display-list writes; and
+- OAM initialization/shuffling and other repeated video work.
 
-| Moving section | General bus DMA | Native RAM DMA |
-| --- | ---: | ---: |
-| Display frames for 600 game updates | 2,113 | 1,793 |
-
-That is about 18% higher throughput in this moving sequence, but still roughly
-three display periods per game update. More core work is required; do not
-advertise the startup result as gameplay FPS or all-stage performance.
+Unconverted routines still execute as generated direct C. They do not fall
+back to a runtime CPU interpreter or page dispatcher in the release cartridge.
 
 ## Validation
 
-`make program-compare` hashes the same per-frame CPU/RAM/video/APU-register state
-from reference and optimized builds over 24,240 frames: the initial 1,200-frame
-sequence, all eight coinage settings, and 600-frame sequences in all 32 stages.
-These are stage-load/short-play checks, not completed playthroughs or audio
-waveform comparisons. The unchanged fingerprint for the verified local input
-is `e25a9b510e964cc7`.
+Run the ROM-free architecture and semantic-module tests with:
 
-The cartridge also passes the ELF hardware-safety gate, MVS real coin/start,
-AES shortcut coin/start, and a 4 KiB target-versus-host RAM comparison at game
-frame 180. No generated game data belongs in Git.
+```sh
+make -C variants/vs native-test
+```
+
+Run the complete owned-ROM comparison with:
+
+```sh
+make -C variants/vs native-differential \
+  VS_ROM="/path/to/suprmrio.zip" \
+  VS_REFERENCE="/path/to/vs-reference"
+```
+
+That comparison covers all eight coinage modes, every DSW byte, all 32 stage
+loads, long input sequences, exact RAM outside the intentionally unused source
+processor-stack page, PPU/APU state, registers/status, and ordered audio writes.
+
+The final cross build also runs `tools/check_neogeo_elf.py --variant vs-native`.
+It checks ROM/RAM bounds, cartridge identity, required data, safe LSPC access,
+palette setup, startup restoration, no memory-card access, and absence of the
+legacy CPU/dispatcher symbols.
+
+## Measuring cadence
+
+Use MAME at the stock emulated Neo Geo clock and count simulated display
+periods per completed game tick. Host-speed percentage and an unthrottled
+wall-clock benchmark do not measure cartridge cadence. The reproducible runner
+is:
+
+```sh
+python3 tools/run_vs_mame.py \
+  --build variants/vs/build \
+  --bios-dir /path/to/mame/roms \
+  --system ng_mv1 --real-coin --game-frames 1200 \
+  --metrics-json /tmp/vssmbneo-metrics.json \
+  --label cadence
+```
+
+The 600-to-1200 interval excludes most boot/title cost and is more useful than
+the cumulative startup number. Retest crowded stages, moving platforms, and
+audio-active scenes separately: a light World 1-1 sample is not a whole-game
+performance result.
+
+MAME and GnGeo are complementary checks. MAME exercises the generated custom
+software list and stricter hardware behavior; the project GnGeo path checks its
+generated custom driver and interactive cadence. Neither replaces a stock-clock
+AES/MVS flashcart test.

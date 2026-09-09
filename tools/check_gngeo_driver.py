@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import struct
 import sys
 import zipfile
@@ -24,18 +25,38 @@ class ExpectedRom:
     size: int
 
 
-EXPECTED_ROMS = (
-    ExpectedRom("smbneo-p1.p1", 8, 0, 0x100000),
-    ExpectedRom("smbneo-m1.m1", 1, 0, 0x020000),
-    ExpectedRom("smbneo-v1.v1", 3, 0, 0x080000),
-    ExpectedRom("smbneo-s1.s1", 6, 0, 0x020000),
-    ExpectedRom("smbneo-c1.c1", 9, 0, 0x200000),
-    ExpectedRom("smbneo-c2.c2", 9, 1, 0x200000),
+class DriverError(RuntimeError):
+    """The custom GnGeo driver does not describe the canonical cartridge."""
+
+
+ROM_LAYOUT = (
+    ("p1.p1", 8, 0, 0x100000),
+    ("m1.m1", 1, 0, 0x020000),
+    ("v1.v1", 3, 0, 0x080000),
+    ("s1.s1", 6, 0, 0x020000),
+    ("c1.c1", 9, 0, 0x200000),
+    ("c2.c2", 9, 1, 0x200000),
 )
 
 
-class DriverError(RuntimeError):
-    """The custom GnGeo driver does not describe the canonical cartridge."""
+def expected_roms(filename_prefix: str = "smbneo") -> tuple[ExpectedRom, ...]:
+    """Return the canonical full-layout records for one cartridge prefix."""
+
+    if not re.fullmatch(r"[a-z0-9_]{1,16}", filename_prefix):
+        raise DriverError(f"invalid ROM filename prefix {filename_prefix!r}")
+    return tuple(
+        ExpectedRom(
+            f"{filename_prefix}-{suffix}",
+            region,
+            destination,
+            size,
+        )
+        for suffix, region, destination, size in ROM_LAYOUT
+    )
+
+
+# Kept as a public compatibility alias for the canonical Home Edition checks.
+EXPECTED_ROMS = expected_roms()
 
 
 def _text(field: bytes, label: str) -> str:
@@ -54,7 +75,12 @@ def validate_driver(
     *,
     shortname: str = "smbneo",
     title: str = "Super Mario Bros. Neo",
+    filename_prefix: str | None = None,
 ) -> None:
+    if not re.fullmatch(r"[a-z0-9_]{1,16}", shortname):
+        raise DriverError(f"invalid driver shortname {shortname!r}")
+    expected_records = expected_roms(filename_prefix or shortname)
+
     if len(data) < HEADER.size:
         raise DriverError("driver is shorter than its header")
 
@@ -74,10 +100,10 @@ def validate_driver(
         raise DriverError(f"driver title is {long_name!r}, expected {title!r}")
     if year != 2026:
         raise DriverError(f"driver year is {year}, expected 2026")
-    if record_count != len(EXPECTED_ROMS):
+    if record_count != len(expected_records):
         raise DriverError(
             f"driver has {record_count} ROM records, "
-            f"expected {len(EXPECTED_ROMS)}"
+            f"expected {len(expected_records)}"
         )
 
     expected_length = HEADER.size + record_count * RECORD.size
@@ -87,13 +113,13 @@ def validate_driver(
         )
 
     expected_region_sizes = [0] * 10
-    for rom in EXPECTED_ROMS:
+    for rom in expected_records:
         expected_region_sizes[rom.region] += rom.size
     if tuple(region_sizes) != tuple(expected_region_sizes):
         raise DriverError("driver region-size table does not match the full cartridge")
 
     offset = HEADER.size
-    for expected in EXPECTED_ROMS:
+    for expected in expected_records:
         filename_field, region, flags, destination, size, crc = (
             RECORD.unpack_from(data, offset)
         )
@@ -131,7 +157,10 @@ def validate_archive(
     *,
     shortname: str = "smbneo",
     title: str = "Super Mario Bros. Neo",
+    filename_prefix: str | None = None,
 ) -> None:
+    if not re.fullmatch(r"[a-z0-9_]{1,16}", shortname):
+        raise DriverError(f"invalid driver shortname {shortname!r}")
     driver_name = f"rom/{shortname}.drv"
     try:
         with zipfile.ZipFile(data_zip) as archive:
@@ -149,7 +178,13 @@ def validate_archive(
     except (OSError, KeyError, zipfile.BadZipFile) as error:
         raise DriverError(f"cannot read {data_zip}: {error}") from error
 
-    validate_driver(data, rom_dir, shortname=shortname, title=title)
+    validate_driver(
+        data,
+        rom_dir,
+        shortname=shortname,
+        title=title,
+        filename_prefix=filename_prefix,
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -158,6 +193,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rom-dir", type=Path, required=True)
     parser.add_argument("--shortname", default="smbneo")
     parser.add_argument("--title", default="Super Mario Bros. Neo")
+    parser.add_argument(
+        "--filename-prefix",
+        help="ROM filename prefix (defaults to the driver shortname)",
+    )
     return parser.parse_args(argv)
 
 
@@ -169,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             args.rom_dir,
             shortname=args.shortname,
             title=args.title,
+            filename_prefix=args.filename_prefix,
         )
     except DriverError as error:
         print(f"error: {error}", file=sys.stderr)

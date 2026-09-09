@@ -33,10 +33,10 @@
         <h2 id="intro-title">Play the Neo Geo port online</h2>
       </div>
       <p>
-        Choose your own supported <code>.nes</code> file, a ZIP containing it,
-        or a locally built <code>smbneo.zip</code> or
-        <code>puzzledp.zip</code>. The file is processed entirely inside
-        your browser and is never uploaded.
+        Play the Home edition from your supported <code>.nes</code> image, or
+        the VS Arcade Edition from your canonical <code>suprmrio.zip</code>
+        set. Your file is processed entirely inside this browser and is never
+        uploaded.
       </p>
     </section>
 
@@ -49,8 +49,8 @@
         <article>
           <h3>Canonical cartridge</h3>
           <p>
-            Full hardware-native layout for flashcarts, MAME, and the
-            project’s custom GnGeo driver.
+            Full hardware-native layout for flashcarts and the edition’s
+            custom MAME or GnGeo metadata.
           </p>
           <button id="download-canonical" class="download-button" type="button" disabled>
             Download smbneo.zip
@@ -90,9 +90,26 @@
             alt="SMBNeo title screen"
           >
           <div class="launcher-panel">
-            <p class="launcher-title">Ready when you are</p>
-            <p class="launcher-copy">
-              Select your local game image to prepare the Neo Geo cartridge.
+            <fieldset class="edition-picker">
+              <legend>Choose an edition</legend>
+              <label>
+                <input type="radio" name="edition" value="home" checked>
+                <span>
+                  <strong>Home edition</strong>
+                  <small>Original 32-stage game</small>
+                </span>
+              </label>
+              <label>
+                <input type="radio" name="edition" value="vs">
+                <span>
+                  <strong>VS Arcade Edition</strong>
+                  <small>Arcade stages, rules, and credits</small>
+                </span>
+              </label>
+            </fieldset>
+            <p id="launcher-title" class="launcher-title">Home edition</p>
+            <p id="launcher-copy" class="launcher-copy">
+              Choose your supported Super Mario Bros. (World) game image.
             </p>
             <label class="file-button" for="game-file">
               Choose game file
@@ -103,7 +120,7 @@
               accept=".nes,.zip,application/zip,application/x-nes-rom"
             >
             <p id="load-status" class="status" role="status" aria-live="polite">
-              Waiting for a local file.
+              Waiting for a local .nes file or ZIP.
             </p>
           </div>
         </div>
@@ -146,11 +163,11 @@
     <section class="privacy" aria-labelledby="privacy-title">
       <h2 id="privacy-title">Bring your own game</h2>
       <p>
-        This site contains the open-source port and an open Neo Geo BIOS, but
-        no original game ROM or generated cartridge. Graphics are created in
-        memory from the file you select. Nothing is uploaded; generated data
-        disappears when the page is closed unless you explicitly download it.
-        The NeoSD image does not contain a Neo Geo BIOS.
+        This site contains both open-source port runtimes and an open Neo Geo
+        BIOS, but no original game ROM or generated cartridge. Home and VS
+        graphics are created in memory from the file you select. Nothing is
+        uploaded; generated data disappears when the page is closed unless
+        you explicitly download it. NeoSD images do not contain a Neo Geo BIOS.
       </p>
     </section>
 

@@ -186,7 +186,7 @@ class NativeCodegenTests(unittest.TestCase):
                 dependencies,
             )
 
-    def test_meta_and_game_coordinators_are_native_semantics(self):
+    def test_meta_game_and_actor_coordinators_are_native_semantics(self):
         routines = native_codegen._NATIVE_SEMANTIC_ROUTINES
         self.assertTrue(routines[0x8aaf].conditional)
         self.assertEqual(
@@ -198,6 +198,11 @@ class NativeCodegenTests(unittest.TestCase):
             routines[0xad6e].function, "vs_native_fast_game_proc"
         )
         self.assertEqual(len(routines[0xad6e].addresses), 72)
+        self.assertFalse(routines[0xbf60].conditional)
+        self.assertEqual(
+            routines[0xbf60].function, "vs_native_fast_actor_proc"
+        )
+        self.assertEqual(len(routines[0xbf60].addresses), 288)
 
     def test_interior_semantic_slice_is_exact_and_transactional(self):
         code = {

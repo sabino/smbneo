@@ -7,7 +7,7 @@ ifneq ($(filter neogeo-%,$(MAKECMDGOALS)),)
 include neogeo.mk
 endif
 .PHONY: test reference translate host native-test native-c-tests native-python-tests
-$(BUILD)/test_tiles $(BUILD)/test_bus $(BUILD)/test_cpu $(BUILD)/test_machine $(BUILD)/test_program $(BUILD)/test_program_native $(BUILD)/test_native_rules $(BUILD)/test_native_platform $(BUILD)/test_native_fast_motion $(BUILD)/test_native_fast_actor $(BUILD)/test_native_fast_actor_policy $(BUILD)/test_native_fast_collision $(BUILD)/test_native_fast_meta $(BUILD)/test_native_fast_game $(BUILD)/test_native_fast_video $(BUILD)/test_native_fast_nmi $(BUILD)/test_native_audio_cadence: test_check.h
+$(BUILD)/test_tiles $(BUILD)/test_bus $(BUILD)/test_cpu $(BUILD)/test_machine $(BUILD)/test_program $(BUILD)/test_program_native $(BUILD)/test_native_rules $(BUILD)/test_native_platform $(BUILD)/test_native_fast_motion $(BUILD)/test_native_fast_actor $(BUILD)/test_native_fast_actor_policy $(BUILD)/test_native_fast_actor_loop $(BUILD)/test_native_fast_collision $(BUILD)/test_native_fast_meta $(BUILD)/test_native_fast_game $(BUILD)/test_native_fast_video $(BUILD)/test_native_fast_nmi $(BUILD)/test_native_audio_cadence: test_check.h
 
 test: $(BUILD)/test_bus $(BUILD)/test_cpu $(BUILD)/test_tiles $(BUILD)/test_machine
 	$(BUILD)/test_bus
@@ -15,7 +15,8 @@ test: $(BUILD)/test_bus $(BUILD)/test_cpu $(BUILD)/test_tiles $(BUILD)/test_mach
 	$(BUILD)/test_tiles
 	$(BUILD)/test_machine
 	cd ../../tools && python3 -m unittest test_vs_pipeline test_vs_hardware_contract \
-		test_vs_assets test_vs_stack_usage test_run_vs_mame
+		test_vs_assets test_vs_stack_usage test_run_vs_mame \
+		test_check_gngeo_driver test_check_vs_package
 
 $(BUILD)/test_tiles: test_tiles.c ../../platform/neogeo/oam_tiles.h ../../platform/neogeo/hud_update.h
 	mkdir -p $(BUILD)
@@ -82,12 +83,13 @@ $(BUILD)/vs_host: host.c vs_machine.c vs_machine.h vs_bus.c vs_bus.h vs_cpu.h $(
 # BIOS, cross SDK, or generated translated core, so they are safe on a host.
 native-test: native-c-tests native-python-tests
 
-native-c-tests: $(BUILD)/test_native_rules $(BUILD)/test_native_platform $(BUILD)/test_native_fast_motion $(BUILD)/test_native_fast_actor $(BUILD)/test_native_fast_actor_policy $(BUILD)/test_native_fast_collision $(BUILD)/test_native_fast_meta $(BUILD)/test_native_fast_game $(BUILD)/test_native_fast_video $(BUILD)/test_native_fast_nmi $(BUILD)/test_native_audio_cadence
+native-c-tests: $(BUILD)/test_native_rules $(BUILD)/test_native_platform $(BUILD)/test_native_fast_motion $(BUILD)/test_native_fast_actor $(BUILD)/test_native_fast_actor_policy $(BUILD)/test_native_fast_actor_loop $(BUILD)/test_native_fast_collision $(BUILD)/test_native_fast_meta $(BUILD)/test_native_fast_game $(BUILD)/test_native_fast_video $(BUILD)/test_native_fast_nmi $(BUILD)/test_native_audio_cadence
 	$(BUILD)/test_native_rules
 	$(BUILD)/test_native_platform
 	$(BUILD)/test_native_fast_motion
 	$(BUILD)/test_native_fast_actor
 	$(BUILD)/test_native_fast_actor_policy
+	$(BUILD)/test_native_fast_actor_loop
 	$(BUILD)/test_native_fast_collision
 	$(BUILD)/test_native_fast_meta
 	$(BUILD)/test_native_fast_game
@@ -123,6 +125,11 @@ $(BUILD)/test_native_fast_actor_policy: test_native_fast_actor_policy.c vs_nativ
 	$(CC) $(CFLAGS) -O0 -I. test_native_fast_actor_policy.c \
 		vs_native_fast_actor_policy.c vs_native_fast_motion.c \
 		native/smbneo_native.c -o $@
+
+$(BUILD)/test_native_fast_actor_loop: test_native_fast_actor_loop.c vs_native_fast_actor_loop.c vs_native_fast_actor_loop.h native/smbneo_native.c native/smbneo_native.h
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -O1 -I. test_native_fast_actor_loop.c \
+		vs_native_fast_actor_loop.c native/smbneo_native.c -o $@
 
 $(BUILD)/test_native_fast_collision: test_native_fast_collision.c vs_native_fast_collision.c vs_native_fast_collision.h native/smbneo_native.c native/smbneo_native.h
 	mkdir -p $(BUILD)
@@ -185,7 +192,7 @@ native-differential:
 		test_native_differential.c vs_machine.c vs_bus.c \
 		vs_native_platform.c vs_native_fast_motion.c vs_native_fast_actor.c \
 		vs_native_fast_actor_policy.c vs_native_fast_collision.c \
-		vs_native_fast_meta.c vs_native_fast_game.c \
+		vs_native_fast_actor_loop.c vs_native_fast_meta.c vs_native_fast_game.c \
 		vs_native_fast_video.c vs_native_fast_nmi.c \
 		native/smbneo_native.c \
 		"$(BUILD)/vs_program.reference.o" \
@@ -196,7 +203,7 @@ native-differential:
 		test_native_audio_differential.c vs_machine.c vs_bus.c \
 		vs_native_platform.c vs_native_fast_motion.c vs_native_fast_actor.c \
 		vs_native_fast_actor_policy.c vs_native_fast_collision.c \
-		vs_native_fast_meta.c vs_native_fast_game.c \
+		vs_native_fast_actor_loop.c vs_native_fast_meta.c vs_native_fast_game.c \
 		vs_native_fast_video.c vs_native_fast_nmi.c \
 		native/smbneo_native.c "$(BUILD)/vs_program.reference.o" \
 		-o "$(BUILD)/test_native_audio_differential"

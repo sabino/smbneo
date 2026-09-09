@@ -1,145 +1,219 @@
-# VS. Super Mario Bros. Neo — development variant
+# VS. Super Mario Bros. Neo
 
-This is a separate arcade-game port. The normal SMBNeo game and its default
-cartridges remain unchanged. This variant is experimental, not a hardware-tested
-release.
+This edition ports the arcade game to a native Neo Geo cartridge. It keeps the
+arcade stages, title and attract flow, credits, coinage, two-player selection,
+and VS-specific rules. It is separate from the home SMBNeo edition and writes
+its own `vssmbneo.*` artifacts, so building one never replaces the other.
 
-The arcade program is statically translated into C using the named instruction
-boundaries in Matthew Gilmore's [meta-disassembly](https://gitlab.com/segaloco/smb).
-It retains the VS game logic rather than adding arcade-looking menus to the home
-game. No runtime opcode interpreter is used.
+The cartridge is playable in MAME and the project's GnGeo setup. Its inherited
+hardware safeguards are validated at build time, but this edition still needs
+broad testing on real AES/MVS boards and flashcarts.
 
-The target generator recovers named C functions and direct calls from the
-source's call graph and explicit state tables. Handwritten C replacements live
-in `vs_fast_paths.h`; the generator selects them only after checking the complete
-routine's instruction fingerprint. Improving a generated routine also means
-updating its generator or replacement, so rebuilding does not discard the work.
-Generated game source remains a local build product.
+## Native C runtime
 
-## Build locally
+The normal cartridge target uses the checked-in direct-C core under `native/`.
+The MC68000 release binary contains ordinary C functions and direct calls; it
+does not contain a 6502 interpreter, runtime program counter, instruction-fuel
+loop, page dispatcher, emulated call/return stack, or translated `VsCpu`
+machine.
 
-Use your own canonical `suprmrio.zip` (SM4-4 E). A home NES ROM is not accepted.
-The archive must contain the six canonical chips; the Neo Geo graphics build also
-requires its `rp2c04-0004.pal`. All generated game data stays under ignored `build/`
-directories. Never commit it or a BIOS.
+The generator uses the verified arcade program and Matthew Gilmore's
+[meta-disassembly](https://gitlab.com/segaloco/smb) as build-time evidence. Its
+generated C preserves the game behavior while reviewed semantic C modules
+replace hot movement, actor, collision, video, game-loop, and NMI paths. ROM
+bytes are never stored in the generated source.
 
-The current reference revision is `238f61930e2b5024cb17cf70975e637ee0305f8f`.
-Build it in an isolated checkout with cc65 and the explicit VS definitions below;
-`make smb.vs` alone does not select the VS program. After preparing the input with
-the first command, pass `build/assets/vs-reference.nes` to the reference checkout's
-`tools/extract.vs.sh`, then build the reference there:
+The older instruction-level translation remains available as
+`neogeo-legacy-elf`. It is a development oracle for differential tests, not a
+release cartridge and not part of `neogeo-cart`.
+
+## Required game data
+
+Provide your own canonical MAME `suprmrio.zip` set for **SM4-4 E**. A home NES
+ROM is not interchangeable with this edition. A cartridge build requires these
+seven verified members:
+
+- four 8 KiB program chips;
+- two 8 KiB graphics chips; and
+- `rp2c04-0004.pal`, the 192-byte RP2C04-0004 palette data.
+
+The loader verifies every filename, size, CRC32, and SHA-1 before producing
+anything. All extracted data and generated cartridge files stay in ignored
+`build/` directories. Do not commit a source ROM, generated game data, or a
+BIOS.
+
+## Build the cartridge
+
+With ngdevkit and its MC68000/Z80 tools available, run from the repository root:
 
 ```sh
-# From this directory:
-make reference VS_ROM=/path/to/suprmrio.zip
-
-# In the isolated reference checkout, after extracting the prepared input:
-make -B -j2 smb.vs check_vs \
-  ASFLAGS_TGT='-DOG_PAD -DOG_FALL -DVS -DVS_2C04_0004 -DVS_SMB -DSMBV1' \
-  APPFLAGS_TGT='-g -U -I . -I ./include' \
-  LDFLAGS_VS='-C link.vs.ld --dbgfile vs.dbg -Ln vs.lbl -m vs.map'
-
-# Back in this directory, with the ngdevkit toolchain on PATH:
-make translate neogeo-assets \
-  VS_ROM=/path/to/suprmrio.zip VS_REFERENCE=/path/to/reference
-make -j2 neogeo-cart
+make -C variants/vs neogeo-cart \
+  VS_ROM="/path/to/suprmrio.zip"
 ```
 
-The reference must reconstruct the user's PRG exactly before translation is
-allowed. Generated C and data are private build products, not source to add to Git.
+The authoritative outputs are:
 
-Outputs are `build/rom/vssmbneo.zip` and `build/rom/vssmbneo.neo`. Both retain the
-full native cartridge layout; the NeoSD header and P-ROM use packed-BCD ID `2027`.
-The original `smbneo.zip` and `smbneo.neo` are not overwritten.
+```text
+variants/vs/build/rom/vssmbneo.zip
+variants/vs/build/rom/vssmbneo.neo
+variants/vs/build/rom/gngeo_data.zip
+variants/vs/build/mame/hash/neogeo.xml
+```
 
-## Run and test
+`vssmbneo.zip` contains the full hardware-native layout:
 
-MAME uses the generated custom software list, not a donor identity:
+| Region | File | Size |
+| --- | --- | ---: |
+| P | `vssmbneo-p1.p1` | 1 MiB |
+| S | `vssmbneo-s1.s1` | 128 KiB |
+| M | `vssmbneo-m1.m1` | 128 KiB |
+| V | `vssmbneo-v1.v1` | 512 KiB |
+| C1 | `vssmbneo-c1.c1` | 2 MiB |
+| C2 | `vssmbneo-c2.c2` | 2 MiB |
+
+This full P/S/M/V/C layout is the source of truth for MAME, GnGeo, physical
+cartridge/flashcart workflows, and the `.neo` image. The cartridge identity is
+`vssmbneo`, the visible title is **VS. Super Mario Bros. Neo**, and the packed-
+BCD NGH is `0x2027`.
+
+The `.neo` file contains the same full cartridge payload in NeoSD/NeoSD Pro
+format. It does not contain a Neo Geo BIOS.
+
+## Run in MAME
+
+MAME supports an external software list, so this path uses the real `vssmbneo`
+identity rather than pretending to be an existing game. After building, launch
+from the repository root with:
 
 ```sh
 mame ng_mv1 vssmbneo \
-  -hashpath build/mame/hash \
-  -rompath 'build/rom;/path/to/your/bios' -noplugins
+  -hashpath "$PWD/variants/vs/build/mame/hash" \
+  -rompath "/path/to/mame/roms;$PWD/variants/vs/build/rom" \
+  -noplugins
 ```
 
-Supply your own appropriate Neo Geo BIOS separately. The SDK's replacement BIOS
-files may produce checksum warnings against MAME's original BIOS database.
-The generated `build/rom/gngeo_data.zip` supplies the custom GnGeo driver; fixed
-database emulators do not automatically recognize this new archive.
+`/path/to/mame/roms` must contain a compatible, legally obtained `neogeo.zip`.
+The SDK's open replacement BIOS is sufficient for cartridge-side testing, but
+MAME may warn that its checksums differ from the proprietary BIOS entries in
+MAME's database. That warning is about the selected BIOS, not `vssmbneo.zip`.
 
-Neo Geo A/B jump, C/D run or fire. Start selects one player; player-two Start
-selects two players. MVS coin inputs add credits. On AES, hold Start and C or D
-to insert a coin, release them, then press Start. DIP settings currently default
-to the canonical arcade configuration.
-
-There is also a silent SDL diagnostic player for testing the translated C without
-the Neo Geo target: `make host`, then `build/vs_host build/assets 0`. Use arrows,
-Z/Space to jump, X/Left Shift to run, 5 for coin, Enter for one player, 2 for two
-players, and Escape to close. It is a development aid, not the Neo Geo emulator.
-
-`make test` runs ROM-free tests. `make program-test` additionally exercises the
-owned-ROM translation: all DIP combinations, eight coinage settings, startup,
-coin/start, and all 32 stage loads with 600-frame input sequences per stage.
-`make program-test-native` runs those scenarios on the optimized C core.
-`make kernel-compare` checks individual semantic replacements against their
-original instruction-level implementations. ROM-free generated-C tests cover
-nested calls, shared tails, changed return addresses, table dispatch, interrupt
-returns, bounded recursion, and resuming with very small execution budgets.
-Passing these does not mean every stage and ending has been played through.
-
-For a bounded Neo Geo integration test, from the repository root:
+The bounded integration runner exercises the real MVS coin input, credit
+consumption, Start, movement, run, and jump:
 
 ```sh
-python3 tools/run_vs_mame.py --build variants/vs/build \
-  --bios-dir /path/to/your/bios --real-coin --game-frames 1200 \
-  --label my-checkpoint
+python3 tools/run_vs_mame.py \
+  --build variants/vs/build \
+  --bios-dir /path/to/mame/roms \
+  --system ng_mv1 --real-coin --game-frames 1200 \
+  --label local-check
 ```
 
-This tests the actual MVS coin input, credit consumption, and right/run/jump in
-gameplay. It rejects unexpected game restarts and uses a fresh output directory
-for each run. A 1200-tick run also reports the isolated 600-to-1200 gameplay
-interval as display frames per game tick; `--metrics-json path.json` can save
-that result. Omit `--real-coin` to test the AES-friendly shortcut; add
-`--system aes` for the AES machine. The VS integration keeps the BIOS in game
-mode while VS handles its own attract screen and credits, preventing the BIOS
-from restarting the port on coin insertion.
-Physical coin bits are read only in MVS mode; unused AES bits must not be
-interpreted as permanently pressed coin switches.
+Use `--system aes` without `--real-coin` to exercise the AES coin shortcut.
 
-Performance is still work in progress. Measure simulated display frames per
-game frame, not MAME's unthrottled host-speed percentage. The shorter 600-frame
-test includes attract/title screens and is not a standalone gameplay FPS test.
+## Run with the custom GnGeo driver
 
-The C core batches complete background columns and display-list transfers,
-enemy and player sprite composition, and moving-platform rendering. Player
-physics and animation select the arcade game's existing tables directly;
-acceleration, braking, scrolling, gravity and common collision routines use C
-arithmetic. Common-enemy states share one C movement policy, including falling,
-shells, defeat and recovery; cannon scheduling uses a single slot scan. These
-follow the regular port's optimization approach while retaining the arcade game's
-movement and clipping rules. The physical Neo Geo renderer is shared with SMBNeo.
+`gngeo_data.zip` contains the generated `rom/vssmbneo.drv` entry. Keep it
+separate from the game archive and launch the custom shortname explicitly:
 
-Known calls and state-table selections execute as ordinary C calls, without
-returning through a page dispatcher each time. The original RAM stack remains
-authoritative: unusual/computed transfers safely unwind to the fallback path.
-Native call chains are limited to 16 executing C levels. The cross build emits
-and validates the compiler's `build/vs_program.m68k.su` report, rejecting
-unknown/unbounded records or frames above 96 bytes. The fallback can be
-selected for diagnostics with `translate_vs.py --no-native-functions` or
-`-DVS_PAGE_DISPATCH_ONLY`; neither changes the game's frame cadence.
+```sh
+ngdevkit-gngeo -b soft --screen320 --scale 3 --no-resize --sound \
+  --system home \
+  -i "$PWD/variants/vs/build/rom" \
+  -B "/path/to/your/gngeo-bios-directory" \
+  -d "$PWD/variants/vs/build/rom/gngeo_data.zip" \
+  vssmbneo
+```
 
-## Hardware safeguards inherited from SMBNeo
+GnGeo still needs a compatible BIOS supplied separately. Depending on the
+chosen `--system` mode and GnGeo build, that normally means `neogeo.zip` and
+the corresponding AES/MVS BIOS archive in the directory passed with `-B`.
+Neither BIOS belongs inside `vssmbneo.zip` or `gngeo_data.zip`.
 
-The VS renderer reuses the hardware-correct path, including these reviewed fixes:
+## Controls, credits, and DIP rules
 
-- `edcab1b`: full-height LSPC background strips and explicit palette-latch setup.
-- `6369caa`: pre-oriented C-ROM tiles; no shrink-dependent hardware flip bits.
-- `38af616`: timed word-sized VRAM accesses, hidden-buffer updates, bounded live
-  commits, analog palette reference, packed-BCD identity and startup RAM guard.
-- `6a76271`: independent address/data pairs for every OAM visibility write.
-- `9ae243f`: alignment requirements for cartridge-resident patchable data.
+| Action | Neo Geo control |
+| --- | --- |
+| Move | Joystick |
+| Jump / swim | A or B |
+| Run / fire | C or D |
+| One player | P1 Start |
+| Two players | P2 Start |
 
-The cartridge build inspects the linked ELF for RAM bounds, VRAM access forms,
-palette initialization and absence of memory-card access. Regression tests guard
-the reviewed bus routines and both VS graphics banks. Real AES/MVS testing is
-still required; emulator screenshots cannot establish hardware compatibility.
+On MVS, either physical coin slot adds credits according to the arcade coinage
+rule. Service credit is handled separately. On AES, press P1 Start together
+with C or D to insert one credit, release the buttons, then press Start normally.
+
+The current cartridge fixes the decoded DSW byte to `0x10`: 1 coin/1 credit,
+three starting lives, a bonus life at 200 coins, the slow timer, and four lives
+after continue. The native rules tests cover all 256 DSW bytes and all eight
+coinage encodings; exposing a user-selectable cabinet DIP UI is separate work.
+
+## Browser build
+
+The web player accepts the same user-owned `suprmrio.zip` only after
+**VS Arcade Edition** is selected. Validation and conversion happen locally in
+the browser; the selected archive and generated game data are never uploaded.
+
+The VS page offers three clearly named downloads:
+
+- `vssmbneo.zip`, the full canonical cartridge for hardware, MAME, and the
+  custom GnGeo driver; and
+- `vssmbneo.neo`, the same full cartridge in NeoSD/NeoSD Pro format; and
+- `puzzledp.zip`, an optional reduced package for emulators whose fixed
+  database cannot discover `vssmbneo`.
+
+For in-page play, EmulatorJS/FBNeo uses the same known donor identity internally
+because its database cannot discover a custom driver. That loader workaround
+does not change the page title, canonical artifacts, or project identity. The
+page supplies ngdevkit's open replacement BIOS as a separate emulator asset; it
+does not embed a BIOS in any download. No proprietary BIOS or VS game data is
+committed or uploaded.
+
+## Tests and development oracle
+
+ROM-free checks run without a source ROM or BIOS:
+
+```sh
+make -C variants/vs test native-test
+```
+
+With an owned source set and the pinned reference checkout, the full
+differential validates the direct-C runtime against the instruction-level
+oracle across every DIP byte, all eight coinage modes, all 32 stages, gameplay
+input sequences, PPU/APU state, and audio write ordering:
+
+```sh
+make -C variants/vs native-differential \
+  VS_ROM="/path/to/suprmrio.zip" \
+  VS_REFERENCE="/path/to/vs-reference"
+```
+
+Normal users do not need `VS_REFERENCE` to build or play the cartridge. It is
+required only to regenerate or differentially verify the checked-in native C.
+The expected reference revision is
+`238f61930e2b5024cb17cf70975e637ee0305f8f`.
+
+To build the legacy oracle explicitly:
+
+```sh
+make -C variants/vs translate neogeo-legacy-elf \
+  VS_ROM="/path/to/suprmrio.zip" \
+  VS_REFERENCE="/path/to/vs-reference"
+```
+
+## Hardware safeguards
+
+The VS cartridge uses the same reviewed physical renderer as the home edition:
+
+- full-height LSPC background chains and explicit palette-latch setup;
+- pre-oriented C-ROM tiles instead of shrink-sensitive hardware flip bits;
+- word-sized, timing-safe VRAM writes and bounded live updates;
+- `$8000` analog palette reference in both physical banks;
+- independent address/data pairs for OAM visibility writes;
+- aligned cartridge-resident data and guarded startup RAM restoration; and
+- no linked memory-card API or direct backup-RAM/control write.
+
+`neogeo-cart` inspects the final ELF for those contracts, RAM bounds, native
+identity, required data, and the absence of legacy CPU/dispatcher symbols.
+Emulator success cannot replace a physical AES/MVS and flashcart retest, so
+hardware results should always include the board, BIOS, and cartridge device.

@@ -1,8 +1,74 @@
 export const EXPECTED_NES_SHA1 =
   "ea343f4e445a9050d4b4fbac2c77d0693b1d0922";
 
+/* MAME's canonical suprmrio (SM4-4 E) chip identities.  These are
+ * fingerprints only: the browser never ships or uploads their contents. */
+export const VS_SOURCE_CHIPS = Object.freeze([
+  Object.freeze({
+    name: "mds-sm4-4__1dor6d_e.1d or 6d",
+    size: 8192,
+    crc32: 0xbe4d5436,
+    sha1: "08162a7c987f1939d09bebdb676f596c86abf465",
+    region: "prg",
+    order: 0,
+  }),
+  Object.freeze({
+    name: "mds-sm4-4__1cor6c_e.1c or 6c",
+    size: 8192,
+    crc32: 0x5e3fb550,
+    sha1: "de4494e4dd52f7f7b04cf1d9019fd89fb90eaca9",
+    region: "prg",
+    order: 1,
+  }),
+  Object.freeze({
+    name: "mds-sm4-4__1bor6b_e.1b or 6b",
+    size: 8192,
+    crc32: 0xb1b87893,
+    sha1: "8563ceaca664cf4495ef1020c07179ca7e4af9f3",
+    region: "prg",
+    order: 2,
+  }),
+  Object.freeze({
+    name: "mds-sm4-4__1aor6a_e.1a or 6a",
+    size: 8192,
+    crc32: 0x1abf053c,
+    sha1: "f17db88ce0c9bf1ed88dc16b9650f11d10835cec",
+    region: "prg",
+    order: 3,
+  }),
+  Object.freeze({
+    name: "mds-sm4-4__2bor8b_e.2b or 8b",
+    size: 8192,
+    crc32: 0x42418d40,
+    sha1: "22ab61589742cfa4cc6856f7205d7b4b8310bc4d",
+    region: "chr",
+    order: 0,
+  }),
+  Object.freeze({
+    name: "mds-sm4-4__2aor8a_e.2a or 8a",
+    size: 8192,
+    crc32: 0x15506b86,
+    sha1: "69ecf7a3cc8bf719c1581ec7c0d68798817d416f",
+    region: "chr",
+    order: 1,
+  }),
+  Object.freeze({
+    name: "rp2c04-0004.pal",
+    size: 192,
+    crc32: 0x0c2e8e4d,
+    sha1: "0f9090225eb1f08ae5072d40af3e95547cbce05f",
+    region: "palette",
+    order: 0,
+  }),
+]);
+
 const NES_CHR_SIZE = 8 * 1024;
 const NES_CHR_TILES = 512;
+const VS_PRG_SIZE = 32 * 1024;
+const VS_CHR_SIZE = 16 * 1024;
+const VS_CHR_TILES = 1024;
+const VS_PALETTE_SIZE = 192;
+const VS_PALETTE_WORD_BYTES = 128;
 const TITLE_SCREEN_CHR_OFFSET = 0x1ec0;
 const TITLE_SCREEN_CHR_SIZE = 0x013a;
 
@@ -15,6 +81,17 @@ const SROM_TILE_BYTES = 32;
 const SROM_NES_TILE_BASE = 1;
 const SROM_SOLID_TILE = 514;
 const SROM_SIZE = 128 * 1024;
+
+export const VS_CARTRIDGE_ENTRIES = Object.freeze({
+  p: "vssmbneo-p1.p1",
+  m: "vssmbneo-m1.m1",
+  v: "vssmbneo-v1.v1",
+  s: "vssmbneo-s1.s1",
+  c1: "vssmbneo-c1.c1",
+  c2: "vssmbneo-c2.c2",
+});
+
+export const VS_WEB_PROM_ENTRY = "vssmbneo-web-p1.p1";
 
 const CART_ENTRIES = Object.freeze({
   p: "smbneo-p1.p1",
@@ -48,6 +125,15 @@ const NEOSD_DEFAULTS = Object.freeze({
   ngh: 0x2026,
 });
 
+const VS_NEOSD_DEFAULTS = Object.freeze({
+  name: "VS. Super Mario Bros. Neo",
+  manufacturer: "Community port",
+  year: 2026,
+  genre: 5,
+  screenshot: 0,
+  ngh: 0x2027,
+});
+
 const PUZZLEDP_LAYOUT = Object.freeze([
   ["202-p1.bin", 0x080000, 0x2b61415b, "p", 0xff],
   ["202-s1.bin", 0x020000, 0xcd19264f, "s", 0x00],
@@ -79,6 +165,9 @@ function baseName(path) {
 function entriesByBaseName(entries) {
   const output = new Map();
   for (const [path, value] of Object.entries(entries)) {
+    if (path.endsWith("/")) {
+      continue;
+    }
     const name = baseName(path);
     if (output.has(name)) {
       throw new Error(`archive contains more than one ${name}`);
@@ -86,6 +175,118 @@ function entriesByBaseName(entries) {
     output.set(name, asBytes(value));
   }
   return output;
+}
+
+function validateVsChipDefinitions(chips) {
+  if (!Array.isArray(chips) || chips.length !== 7) {
+    throw new Error("VS source profile must describe exactly seven chips");
+  }
+  const names = new Set();
+  const regionOrders = new Set();
+  for (const chip of chips) {
+    if (
+      chip === null ||
+      typeof chip !== "object" ||
+      typeof chip.name !== "string" ||
+      !Number.isInteger(chip.size) ||
+      chip.size <= 0 ||
+      !Number.isInteger(chip.crc32) ||
+      chip.crc32 < 0 ||
+      chip.crc32 > 0xffffffff ||
+      !/^[0-9a-f]{40}$/u.test(chip.sha1) ||
+      !["prg", "chr", "palette"].includes(chip.region) ||
+      !Number.isInteger(chip.order) ||
+      chip.order < 0
+    ) {
+      throw new Error("invalid VS source chip fingerprint");
+    }
+    if (names.has(chip.name)) {
+      throw new Error(`duplicate VS source chip definition ${chip.name}`);
+    }
+    const regionOrder = `${chip.region}:${chip.order}`;
+    if (regionOrders.has(regionOrder)) {
+      throw new Error(`duplicate VS source chip position ${regionOrder}`);
+    }
+    names.add(chip.name);
+    regionOrders.add(regionOrder);
+  }
+  return names;
+}
+
+function concatenateVsRegion(entries, chips, region) {
+  const selected = chips
+    .filter((chip) => chip.region === region)
+    .sort((left, right) => left.order - right.order);
+  const size = selected.reduce((total, chip) => total + chip.size, 0);
+  const output = new Uint8Array(size);
+  let offset = 0;
+  for (const chip of selected) {
+    const bytes = entries.get(chip.name);
+    output.set(bytes, offset);
+    offset += bytes.length;
+  }
+  return output;
+}
+
+function extractVsRomFromEntries(entries, chips) {
+  const expectedNames = validateVsChipDefinitions(chips);
+  const actualNames = new Set(entries.keys());
+  const missing = [...expectedNames].filter((name) => !actualNames.has(name));
+  const unexpected = [...actualNames].filter((name) => !expectedNames.has(name));
+  if (missing.length !== 0 || unexpected.length !== 0) {
+    const details = [];
+    if (missing.length !== 0) {
+      details.push(`missing ${missing.sort().join(", ")}`);
+    }
+    if (unexpected.length !== 0) {
+      details.push(`unexpected ${unexpected.sort().join(", ")}`);
+    }
+    throw new Error(`expected canonical suprmrio.zip contents: ${details.join("; ")}`);
+  }
+
+  for (const chip of chips) {
+    const bytes = entries.get(chip.name);
+    if (bytes.length !== chip.size) {
+      throw new Error(
+        `${chip.name} is ${bytes.length} bytes; expected ${chip.size}`
+      );
+    }
+    const actualCrc = crc32(bytes);
+    if (actualCrc !== (chip.crc32 >>> 0)) {
+      throw new Error(
+        `${chip.name} CRC is ${actualCrc.toString(16).padStart(8, "0")}; ` +
+        `expected ${(chip.crc32 >>> 0).toString(16).padStart(8, "0")}`
+      );
+    }
+    const actualSha1 = sha1HexSync(bytes);
+    if (actualSha1 !== chip.sha1) {
+      throw new Error(
+        `${chip.name} SHA-1 is ${actualSha1}; expected ${chip.sha1}`
+      );
+    }
+  }
+
+  const rom = {
+    prg: concatenateVsRegion(entries, chips, "prg"),
+    chr: concatenateVsRegion(entries, chips, "chr"),
+    palette: concatenateVsRegion(entries, chips, "palette"),
+  };
+  if (
+    rom.prg.length !== VS_PRG_SIZE ||
+    rom.chr.length !== VS_CHR_SIZE ||
+    rom.palette.length !== VS_PALETTE_SIZE
+  ) {
+    throw new Error(
+      `VS source profile assembled ${rom.prg.length} PRG, ` +
+      `${rom.chr.length} CHR and ${rom.palette.length} palette bytes`
+    );
+  }
+  return rom;
+}
+
+/** Extract and fingerprint a canonical, already-unzipped suprmrio set. */
+export function extractVsRom(entries, chips = VS_SOURCE_CHIPS) {
+  return extractVsRomFromEntries(entriesByBaseName(entries), chips);
 }
 
 function looksLikeZip(bytes) {
@@ -101,7 +302,7 @@ function looksLikeZip(bytes) {
   );
 }
 
-export function classifyInput(input, unzipSync) {
+export function classifyInput(input, unzipSync, options = {}) {
   const bytes = asBytes(input);
   if (!looksLikeZip(bytes)) {
     return { kind: "nes", rom: bytes };
@@ -164,6 +365,17 @@ export function classifyInput(input, unzipSync) {
     return { kind: "cartridge", profile: "compatibility", cartridge };
   }
 
+  const vsChips = options.vsChips ?? VS_SOURCE_CHIPS;
+  const vsNames = validateVsChipDefinitions(vsChips);
+  const hasVsChip = [...entries.keys()].some((name) => vsNames.has(name));
+  if (hasVsChip) {
+    return {
+      kind: "vs",
+      profile: "canonical",
+      rom: extractVsRomFromEntries(entries, vsChips),
+    };
+  }
+
   const nesEntries = [...entries.entries()].filter(([name]) =>
     name.toLowerCase().endsWith(".nes")
   );
@@ -180,6 +392,86 @@ export async function sha1Hex(input) {
   const digest = await globalThis.crypto.subtle.digest("SHA-1", bytes);
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/* Synchronous SHA-1 keeps ZIP classification deterministic in both browsers
+ * and Node without importing a platform-specific crypto package. */
+export function sha1HexSync(input) {
+  const bytes = asBytes(input);
+  const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const paddedView = new DataView(padded.buffer);
+  const bitLength = bytes.length * 8;
+  paddedView.setUint32(
+    paddedLength - 8,
+    Math.floor(bitLength / 0x100000000),
+    false,
+  );
+  paddedView.setUint32(paddedLength - 4, bitLength >>> 0, false);
+
+  let h0 = 0x67452301;
+  let h1 = 0xefcdab89;
+  let h2 = 0x98badcfe;
+  let h3 = 0x10325476;
+  let h4 = 0xc3d2e1f0;
+  const words = new Uint32Array(80);
+  const rotateLeft = (value, count) =>
+    ((value << count) | (value >>> (32 - count))) >>> 0;
+
+  for (let block = 0; block < paddedLength; block += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      words[index] = paddedView.getUint32(block + index * 4, false);
+    }
+    for (let index = 16; index < 80; index += 1) {
+      words[index] = rotateLeft(
+        words[index - 3] ^ words[index - 8] ^
+        words[index - 14] ^ words[index - 16],
+        1,
+      );
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    for (let index = 0; index < 80; index += 1) {
+      let choose;
+      let constant;
+      if (index < 20) {
+        choose = (b & c) | (~b & d);
+        constant = 0x5a827999;
+      } else if (index < 40) {
+        choose = b ^ c ^ d;
+        constant = 0x6ed9eba1;
+      } else if (index < 60) {
+        choose = (b & c) | (b & d) | (c & d);
+        constant = 0x8f1bbcdc;
+      } else {
+        choose = b ^ c ^ d;
+        constant = 0xca62c1d6;
+      }
+      const next = (
+        rotateLeft(a, 5) + choose + e + constant + words[index]
+      ) >>> 0;
+      e = d;
+      d = c;
+      c = rotateLeft(b, 30);
+      b = a;
+      a = next;
+    }
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4]
+    .map((value) => value.toString(16).padStart(8, "0"))
     .join("");
 }
 
@@ -358,6 +650,238 @@ export function buildGraphics(chrInput) {
   };
 }
 
+/** Build the full two-bank VS graphics layout used by gen_vs_assets.py. */
+export function buildVsGraphics(chrInput) {
+  const chr = asBytes(chrInput);
+  if (chr.length !== VS_CHR_SIZE) {
+    throw new Error(`expected ${VS_CHR_SIZE} VS CHR bytes, found ${chr.length}`);
+  }
+
+  const c1 = new Uint8Array(CROM_CHIP_SIZE);
+  const c2 = new Uint8Array(CROM_CHIP_SIZE);
+  const s = new Uint8Array(SROM_SIZE);
+  const tiles = Array.from(
+    { length: VS_CHR_TILES },
+    (_, tileIndex) => decodeNesTile(chr, tileIndex),
+  );
+
+  for (let orientation = 0; orientation < 4; orientation += 1) {
+    for (let tileIndex = 0; tileIndex < VS_CHR_TILES; tileIndex += 1) {
+      const cromOffset = (
+        CROM_NES_TILE_BASE + orientation * VS_CHR_TILES + tileIndex
+      ) * CROM_TILE_BYTES_PER_CHIP;
+      encodeCromTile(
+        expand2x(orientTile(tiles[tileIndex], orientation)),
+        c1,
+        c2,
+        cromOffset,
+      );
+    }
+  }
+
+  for (let tileIndex = 0; tileIndex < VS_CHR_TILES; tileIndex += 1) {
+    encodeSromTile(
+      tiles[tileIndex],
+      s,
+      (SROM_NES_TILE_BASE + tileIndex) * SROM_TILE_BYTES,
+    );
+  }
+
+  const solidTile = new Uint8Array(64);
+  solidTile.fill(1);
+  encodeSromTile(solidTile, s, 1026 * SROM_TILE_BYTES);
+  return { c1, c2, s };
+}
+
+function nearestNeoGeoComponent(value, sharedLow) {
+  let best = 0;
+  let bestError = Infinity;
+  for (let component = 0; component < 32; component += 1) {
+    const error = Math.abs(value - (component * 8 + sharedLow * 4));
+    if (error < bestError) {
+      best = component;
+      bestError = error;
+    }
+  }
+  return best;
+}
+
+function decodeNeoGeoColor(word) {
+  const sharedLow = ((word >>> 15) & 1) ^ 1;
+  const red5 = (((word >>> 8) & 0x0f) << 1) | ((word >>> 14) & 1);
+  const green5 = (((word >>> 4) & 0x0f) << 1) | ((word >>> 13) & 1);
+  const blue5 = ((word & 0x0f) << 1) | ((word >>> 12) & 1);
+  return [red5, green5, blue5].map(
+    (component) => ((component << 1) | sharedLow) << 2,
+  );
+}
+
+function encodeNeoGeoColor(rgb) {
+  let bestKey;
+  let bestWord;
+  for (const sharedLow of [0, 1]) {
+    const [red5, green5, blue5] = rgb.map(
+      (value) => nearestNeoGeoComponent(value, sharedLow),
+    );
+    const word = (
+      ((sharedLow ^ 1) << 15) |
+      ((red5 & 1) << 14) |
+      ((green5 & 1) << 13) |
+      ((blue5 & 1) << 12) |
+      ((red5 >>> 1) << 8) |
+      ((green5 >>> 1) << 4) |
+      (blue5 >>> 1)
+    );
+    const decoded = decodeNeoGeoColor(word);
+    const errors = rgb.map((value, index) =>
+      Math.abs(value - decoded[index])
+    );
+    const key = [
+      errors.reduce((total, error) => total + error * error, 0),
+      Math.max(...errors),
+      word,
+    ];
+    if (
+      bestKey === undefined ||
+      key[0] < bestKey[0] ||
+      (key[0] === bestKey[0] && key[1] < bestKey[1]) ||
+      (key[0] === bestKey[0] && key[1] === bestKey[1] && key[2] < bestKey[2])
+    ) {
+      bestKey = key;
+      bestWord = word;
+    }
+  }
+  return bestWord;
+}
+
+/** Convert rp2c04-0004.pal into 64 big-endian uint16_t logical bytes. */
+export function convertVsPalette(paletteInput) {
+  const palette = asBytes(paletteInput);
+  if (palette.length !== VS_PALETTE_SIZE) {
+    throw new Error(
+      `expected ${VS_PALETTE_SIZE} VS palette bytes, found ${palette.length}`
+    );
+  }
+  const output = new Uint8Array(VS_PALETTE_WORD_BYTES);
+  for (let index = 0; index < 64; index += 1) {
+    const source = palette.subarray(index * 3, index * 3 + 3);
+    if (source.some((value) => value > 0x07)) {
+      throw new Error(`VS palette color ${index} is outside the three-bit range`);
+    }
+    const rgb = [...source].map((value) =>
+      (value << 5) | (value << 2) | (value >>> 1)
+    );
+    const word = encodeNeoGeoColor(rgb);
+    output[index * 2] = word >>> 8;
+    output[index * 2 + 1] = word & 0xff;
+  }
+  return output;
+}
+
+function validateVsRom(vsRom) {
+  if (vsRom === null || typeof vsRom !== "object") {
+    throw new TypeError("expected extracted VS ROM data");
+  }
+  for (const [name, size] of [
+    ["prg", VS_PRG_SIZE],
+    ["chr", VS_CHR_SIZE],
+    ["palette", VS_PALETTE_SIZE],
+  ]) {
+    if (!(name in vsRom)) {
+      throw new Error(`VS source is missing ${name}`);
+    }
+    const bytes = asBytes(vsRom[name]);
+    if (bytes.length !== size) {
+      throw new Error(
+        `VS ${name} is ${bytes.length} bytes; expected ${size}`
+      );
+    }
+  }
+}
+
+function validateWordSwappedRange(prom, payload, offset, label) {
+  if (
+    !Number.isInteger(offset) ||
+    offset < 0 ||
+    (offset & 1) !== 0 ||
+    (payload.length & 1) !== 0 ||
+    offset + payload.length > prom.length
+  ) {
+    throw new Error(`invalid ${label} word-swapped patch range`);
+  }
+}
+
+/** Place logical m68k bytes into an already word-swapped physical P-ROM. */
+export function patchWordSwappedPayload(
+  promInput,
+  payloadInput,
+  offset,
+  label = "payload",
+) {
+  const prom = asBytes(promInput);
+  const payload = asBytes(payloadInput);
+  if (prom.length !== CART_SIZES.p) {
+    throw new Error(`template P-ROM has unexpected size ${prom.length}`);
+  }
+  validateWordSwappedRange(prom, payload, offset, label);
+  const patched = prom.slice();
+  for (let index = 0; index < payload.length; index += 1) {
+    patched[offset + (index ^ 1)] = payload[index];
+  }
+  return patched;
+}
+
+/** Patch the three zero-filled VS data symbols in a ROM-free P template. */
+export function patchVsTemplateProm(promInput, vsRom, offsets) {
+  const prom = asBytes(promInput);
+  validateVsRom(vsRom);
+  if (prom.length !== CART_SIZES.p) {
+    throw new Error(`template P-ROM has unexpected size ${prom.length}`);
+  }
+  if (offsets === null || typeof offsets !== "object") {
+    throw new Error("VS template offsets are missing");
+  }
+  const payloads = [
+    ["prg", asBytes(vsRom.prg), offsets.prg],
+    ["chr", asBytes(vsRom.chr), offsets.chr],
+    ["palette", convertVsPalette(vsRom.palette), offsets.palette],
+  ];
+  for (const [name, payload, offset] of payloads) {
+    validateWordSwappedRange(prom, payload, offset, `VS ${name}`);
+  }
+  const ranges = payloads
+    .map(([name, payload, offset]) => ({
+      name,
+      start: offset,
+      end: offset + payload.length,
+    }))
+    .sort((left, right) => left.start - right.start);
+  for (let index = 1; index < ranges.length; index += 1) {
+    if (ranges[index].start < ranges[index - 1].end) {
+      throw new Error(
+        `VS ${ranges[index - 1].name} and ${ranges[index].name} patches overlap`
+      );
+    }
+  }
+  for (const range of ranges) {
+    for (let index = range.start; index < range.end; index += 1) {
+      if (prom[index] !== 0) {
+        throw new Error(
+          `VS ${range.name} placeholder is not zero-filled at ${index}`
+        );
+      }
+    }
+  }
+
+  const patched = prom.slice();
+  for (const [, payload, offset] of payloads) {
+    for (let index = 0; index < payload.length; index += 1) {
+      patched[offset + (index ^ 1)] = payload[index];
+    }
+  }
+  return patched;
+}
+
 export function patchTemplateProm(promInput, titleInput, titleOffset) {
   const prom = asBytes(promInput);
   const title = asBytes(titleInput);
@@ -462,6 +986,64 @@ export function buildCartridgeFromNes(rom, templateEntries, titleOffset) {
   return cartridge;
 }
 
+/** Build the authoritative full-layout VS cartridge from local source chips. */
+export function buildVsCartridgeFromSource(
+  vsRom,
+  templateEntries,
+  patchOffsets,
+) {
+  validateVsRom(vsRom);
+  const entries = entriesByBaseName(templateEntries);
+  for (const name of [
+    VS_CARTRIDGE_ENTRIES.p,
+    VS_CARTRIDGE_ENTRIES.m,
+    VS_CARTRIDGE_ENTRIES.v,
+  ]) {
+    if (!entries.has(name)) {
+      throw new Error(`browser template is missing ${name}`);
+    }
+  }
+
+  const graphics = buildVsGraphics(vsRom.chr);
+  const cartridge = {
+    p: patchVsTemplateProm(
+      entries.get(VS_CARTRIDGE_ENTRIES.p),
+      vsRom,
+      patchOffsets,
+    ),
+    m: entries.get(VS_CARTRIDGE_ENTRIES.m),
+    v: entries.get(VS_CARTRIDGE_ENTRIES.v),
+    s: graphics.s,
+    c1: graphics.c1,
+    c2: graphics.c2,
+  };
+  validateVsCartridgeParts(cartridge);
+  return cartridge;
+}
+
+/** Replace only the P-ROM with the independently linked FBNeo template. */
+export function adaptVsCartridgeForWeb(
+  vsRom,
+  cartridge,
+  templateEntries,
+  patchOffsets,
+) {
+  validateVsRom(vsRom);
+  validateVsCartridgeParts(cartridge);
+  const entries = entriesByBaseName(templateEntries);
+  if (!entries.has(VS_WEB_PROM_ENTRY)) {
+    throw new Error(`browser template is missing ${VS_WEB_PROM_ENTRY}`);
+  }
+  return {
+    ...cartridge,
+    p: patchVsTemplateProm(
+      entries.get(VS_WEB_PROM_ENTRY),
+      vsRom,
+      patchOffsets,
+    ),
+  };
+}
+
 export function validateCartridgeParts(cartridge) {
   for (const [part, expectedSize] of Object.entries(CART_SIZES)) {
     if (!(part in cartridge)) {
@@ -476,6 +1058,21 @@ export function validateCartridgeParts(cartridge) {
   }
 }
 
+export function validateVsCartridgeParts(cartridge) {
+  for (const [part, expectedSize] of Object.entries(CART_SIZES)) {
+    if (!(part in cartridge)) {
+      throw new Error(`VS cartridge is missing ${VS_CARTRIDGE_ENTRIES[part]}`);
+    }
+    const bytes = asBytes(cartridge[part]);
+    if (bytes.length !== expectedSize) {
+      throw new Error(
+        `${VS_CARTRIDGE_ENTRIES[part]} is ${bytes.length} bytes; ` +
+        `expected ${expectedSize}`
+      );
+    }
+  }
+}
+
 export function buildCanonicalEntries(cartridge) {
   validateCartridgeParts(cartridge);
   const output = {};
@@ -483,6 +1080,21 @@ export function buildCanonicalEntries(cartridge) {
     output[name] = asBytes(cartridge[part]).slice();
   }
   return output;
+}
+
+export function buildVsCanonicalEntries(cartridge) {
+  validateVsCartridgeParts(cartridge);
+  const output = {};
+  for (const [part, name] of Object.entries(VS_CARTRIDGE_ENTRIES)) {
+    output[name] = asBytes(cartridge[part]).slice();
+  }
+  return output;
+}
+
+/** Build a VS-branded NeoSD image while retaining the generic packer API. */
+export function buildVsNeoSdFile(cartridge, metadata = {}) {
+  validateVsCartridgeParts(cartridge);
+  return buildNeoSdFile(cartridge, { ...VS_NEOSD_DEFAULTS, ...metadata });
 }
 
 function padToMultiple(input, multiple) {
