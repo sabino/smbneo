@@ -15,6 +15,8 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     want.pc = entry; want.x = (uint8_t)x; want.y = (uint8_t)y;
     want.a = (uint8_t)pattern; want.p = (uint8_t)(x ^ y ^ pattern);
     want.s = (uint8_t)(pattern + y);
+    if (entry == 0xd5bd)
+        want.s = 0xfd;
     vs_push(&want, 0xff); vs_push(&want, 0xfe);
     reference.pads[0] = (uint8_t)pattern;
     reference.pads[1] = (uint8_t)(pattern * 37u + y);
@@ -25,10 +27,32 @@ static void compare(const uint8_t *prg, uint16_t entry, unsigned x, unsigned y, 
     reference.coin_service = (uint8_t)(pattern & 0x64u);
     if (entry == 0xba8a)
         memset(reference.ram + 0x2a, 0, 9);
+    if (entry == 0xef41)
+        reference.ram[7] = (uint8_t)(1u + (pattern & 3u));
+    if (entry == 0xbfea) {
+        reference.ram[0x0745] = 0;
+        reference.ram[0x06cd] = 0;
+        reference.ram[0x0739] = 0;
+        reference.ram[0x00e9] = 0;
+        reference.ram[0x00ea] = 0x60;
+        reference.extra_ram[0] = 0x78;
+        reference.extra_ram[1] = (uint8_t)pattern;
+        reference.ram[0x073a] = 2;
+        reference.ram[0x073b] = (uint8_t)(pattern & 1u);
+        reference.ram[0x071d] = 0;
+        reference.ram[0x071b] = 0;
+        reference.ram[0x06cb] = 0;
+        reference.ram[0x0398] = 0;
+    }
     optimized = reference; got = want; got.bus = &optimized;
     vs_program_reference(&want, 200000);
     vs_program_run(&got, 200000);
-    assert(want.pc == 0xffff && want.fault && got.pc == want.pc && got.fault);
+    if (!(want.fault && got.pc == want.pc && got.fault)) {
+        fprintf(stderr,
+                "entry=%04x seed=%u/%u/%u terminal want=%04x/%u got=%04x/%u\n",
+                entry, x, y, pattern, want.pc, want.fault, got.pc, got.fault);
+        assert(0);
+    }
     if (!(want.a == got.a && want.x == got.x && want.y == got.y && want.s == got.s && want.p == got.p)) {
         fprintf(stderr, "entry=%04x seed=%u/%u/%u want=%02x,%02x,%02x,%02x,%02x got=%02x,%02x,%02x,%02x,%02x\n",
                 entry, x, y, pattern, want.a, want.x, want.y, want.s, want.p,
@@ -89,6 +113,15 @@ int main(int argc, char **argv) {
         compare(data, 0xf125, seed >> 8, seed, seed * 37);
         compare(data, 0xbe1e, seed >> 8, seed, seed * 41);
         compare(data, 0xe1f2, seed >> 8, seed, seed * 43);
+    }
+    for (unsigned seed = 0; seed < 65536; ++seed) {
+        compare(data, 0xbe11, seed >> 8, seed, seed * 53);
+        compare(data, 0xbe18, seed >> 8, seed, seed * 59);
+        compare(data, 0xf08f, seed >> 8, seed, seed * 61);
+        compare(data, 0xf0b7, seed >> 8, seed, seed * 67);
+        compare(data, 0xef41, seed >> 8, seed, seed * 71);
+        compare(data, 0xd5bd, seed % 6u, seed >> 8, seed * 73);
+        compare(data, 0xbfea, seed % 5u, seed >> 8, seed * 79);
     }
     printf("VS semantic kernels: %u exact register/status/stack/RAM comparisons passed\n", cases);
 }

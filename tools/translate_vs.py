@@ -309,6 +309,18 @@ def semantic_fast_paths(code, named_entries):
         ('misc_proc', 49,
          '84d7bfbe10bb06430f68d1f08e5fbef38716eaee6b226c7d0fc51d90151717f7',
          'if (vs_fast_misc_proc_inactive(c)) return;'),
+        ('motion_x', 4,
+         '7b4d79c3d245d53c9d89b7aaebd8272a7d81380e708388070d15c0f430828655',
+         'vs_fast_motion_x(c); return;'),
+        ('motion_x_player', 41,
+         '6f2ca95dbca2e023a85736f4096ecfec0c6d724d6ac8b23f38aa91be49be6df9',
+         'vs_fast_motion_x_player(c); return;'),
+        ('render_player_tiles', 7,
+         '1bea09ccbed6d3ed6687a55fb92881a7592319611d70d401d93e63b6a0d92510',
+         'if (vs_fast_render_player_tiles(c)) return;'),
+        ('actor_oob_proc', 44,
+         'edb1d0eecc751178f3eb45e32cedb4be1b79cd8733094490c3d4cd20f1c7ca72',
+         'if (vs_fast_actor_oob_proc(c)) return;'),
     ):
         start = named_entries.get(name)
         if start is None:
@@ -323,6 +335,81 @@ def semantic_fast_paths(code, named_entries):
         digest = hashlib.sha256(json.dumps(body, separators=(',', ':')).encode()).hexdigest()
         if len(body) == count and digest == expected:
             result[start] = (action, None)
+
+    # These wrappers are only safe when every member of their shared helper
+    # chain retains the reviewed instruction shape.
+    chained_routines = (
+        (
+            'pos_calc_x_rel_player',
+            (
+                ('pos_calc_x_rel_player', 3,
+                 '48ef85d45f53c47f236c12a72c198f7b45ee6a4a9d8b56e1bc0e456e2a865872'),
+                ('pos_calc_x_rel_a', 3,
+                 '6d8cdfa49ce2f64d8cfec10f743f1e768e5bea79924909a325b986f3029150b8'),
+                ('pos_calc_x_rel_do', 7,
+                 'ba797b0764e36b6dcb49d0b26197f6ab1e4916deb15d9fe6c6a213d285e36710'),
+            ),
+            'vs_fast_pos_calc_x_rel_player(c); return;',
+        ),
+        (
+            'pos_calc_x_rel_actor',
+            (
+                ('pos_calc_x_rel_actor', 3,
+                 '8abb7e5fc19c1b423422d01fd64f1cd4fee47a9d8b43a9bca19625dcb1724182'),
+                ('pos_calc_x_rel_b', 7,
+                 '10ae2fd438dd38958e4120a4da89cf747d099ef164fc542922afde31e4ef2016'),
+                ('pos_calc_x_rel_do', 7,
+                 'ba797b0764e36b6dcb49d0b26197f6ab1e4916deb15d9fe6c6a213d285e36710'),
+            ),
+            'vs_fast_pos_calc_x_rel_actor(c); return;',
+        ),
+    )
+    for entry_name, members, action in chained_routines:
+        valid = True
+        for name, count, expected in members:
+            start = named_entries.get(name)
+            if start is None:
+                valid = False
+                break
+            body, cursor = [], start
+            for _ in range(count):
+                ins = code.get(cursor)
+                if ins is None:
+                    break
+                body.append(ins)
+                cursor += LENGTH[ins[1]]
+            digest = hashlib.sha256(
+                json.dumps(body, separators=(',', ':')).encode()
+            ).hexdigest()
+            if len(body) != count or digest != expected:
+                valid = False
+                break
+        if valid:
+            result[named_entries[entry_name]] = (action, None)
+
+    actor_loop = named_entries.get('actor_loop')
+    actor_init_check = named_entries.get('actor_init_check')
+    actor_group = named_entries.get('actor_group')
+    if actor_loop is not None and actor_init_check is not None and actor_group is not None:
+        loop_body = [
+            code[a] for a in sorted(code) if actor_loop <= a < actor_init_check
+        ]
+        init_body = [
+            code[a] for a in sorted(code) if actor_init_check <= a < actor_group
+        ]
+        loop_digest = hashlib.sha256(
+            json.dumps(loop_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        init_digest = hashlib.sha256(
+            json.dumps(init_body, separators=(',', ':')).encode()
+        ).hexdigest()
+        if (
+            len(loop_body) == 161 and
+            loop_digest == 'f89ce3364798c2ad7d40ecbe50a74829bd9ba09572257ea80421407a9e53b6fa' and
+            len(init_body) == 11 and
+            init_digest == '956ce2485f6ed51dad652d29b7d505e867d8418f872ecd6ce3ded7a3643f9a3d'
+        ):
+            result[actor_loop] = ('if (vs_fast_actor_loop_no_spawn(c)) return;', None)
     start = named_entries.get('tbljmp')
     if start is not None:
         a, body = start, []

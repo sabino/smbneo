@@ -46,6 +46,33 @@ static inline void vs_fast_render_pair_right(VsCpu *c) {
     vs_fast_render_pair(c);
 }
 
+/* Player rows are four two-sprite pairs in ordinary gameplay.  Folding the
+ * reviewed loop avoids re-entering the translated dispatcher for every tile
+ * while retaining the balanced JSR writes that remain observable in page 1. */
+static inline int vs_fast_render_player_tiles(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t rows = ram[7];
+
+    if (rows == 0u || rows > 4u)
+        return 0;
+    do {
+        c->a = vs_nz(c, c->bus->prg[0xed74u - 0x8000u + c->x]);
+        ram[0] = c->a;
+        c->a = vs_nz(c, c->bus->prg[0xed75u - 0x8000u + c->x]);
+        /* JSR render_chr_pair at $ef49 stores $ef4b. */
+        vs_push(c, 0xef);
+        vs_push(c, 0x4b);
+        vs_fast_render_pair_right(c);
+        (void)vs_pop(c);
+        (void)vs_pop(c);
+        rows = (uint8_t)(rows - 1u);
+        ram[7] = rows;
+        (void)vs_nz(c, rows);
+    } while (rows != 0u);
+    vs_fast_return(c);
+    return 1;
+}
+
 static inline void vs_fast_render_actor_pair(VsCpu *c) {
     uint8_t *ram = c->bus->ram;
     const uint8_t *prg = c->bus->prg;
@@ -766,6 +793,258 @@ static inline void vs_fast_motion_x_do(VsCpu *c) {
     c->p = (c->p & ~(VS_C | VS_V | VS_N | VS_Z))
         | (force_carry && pixel_delta == 0xffu ? VS_C : 0)
         | (result & VS_N) | (result == 0 ? VS_Z : 0);
+}
+
+/* Fold the two call-site wrappers around the horizontal motion formula. */
+static inline void vs_fast_motion_x(VsCpu *c) {
+    c->x = vs_nz(c, (uint8_t)(c->x + 1u));
+    /* JSR motion_x_do at $be12 stores $be14. */
+    vs_push(c, 0xbe);
+    vs_push(c, 0x14);
+    vs_fast_motion_x_do(c);
+    (void)vs_pop(c);
+    (void)vs_pop(c);
+    c->x = vs_nz(c, c->bus->ram[8]);
+    vs_fast_return(c);
+}
+
+static inline void vs_fast_motion_x_player(VsCpu *c) {
+    c->a = vs_nz(c, c->bus->ram[0x070e]);
+    if (c->a == 0u) {
+        c->x = vs_nz(c, c->a);
+        vs_fast_motion_x_do(c);
+    }
+    vs_fast_return(c);
+}
+
+/* Relative coordinates are geometry, not an emulated timing primitive.  Keep
+ * the exact zero-page aliases, flag residue and nested JSR stack writes. */
+static inline void vs_fast_pos_calc_x_rel_do(
+    VsCpu *c,
+    uint8_t object_index,
+    uint8_t relative_index
+) {
+    uint8_t *ram = c->bus->ram;
+
+    c->a = vs_nz(c, ram[(uint8_t)(0xceu + object_index)]);
+    ram[0x03b8u + relative_index] = c->a;
+    c->a = vs_nz(c, ram[(uint8_t)(0x86u + object_index)]);
+    c->p |= VS_C;
+    vs_adc(c, (uint8_t)~ram[0x071c]);
+    ram[0x03adu + relative_index] = c->a;
+}
+
+static inline void vs_fast_pos_calc_x_rel_player(VsCpu *c) {
+    c->x = vs_nz(c, 0);
+    c->y = vs_nz(c, 0);
+    /* JSR pos_calc_x_rel_do at $f0a7 stores $f0a9. */
+    vs_push(c, 0xf0);
+    vs_push(c, 0xa9);
+    vs_fast_pos_calc_x_rel_do(c, c->x, c->y);
+    (void)vs_pop(c);
+    (void)vs_pop(c);
+    c->x = vs_nz(c, c->bus->ram[8]);
+    vs_fast_return(c);
+}
+
+static inline void vs_fast_pos_calc_x_rel_actor(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t initial_x = c->x;
+
+    c->a = vs_nz(c, 1);
+    c->y = vs_nz(c, 1);
+    ram[0] = initial_x;
+    c->p &= ~VS_C;
+    vs_adc(c, ram[0]);
+    c->x = vs_nz(c, c->a);
+    /* JSR pos_calc_x_rel_do at $f0d0 stores $f0d2. */
+    vs_push(c, 0xf0);
+    vs_push(c, 0xd2);
+    vs_fast_pos_calc_x_rel_do(c, c->x, c->y);
+    (void)vs_pop(c);
+    (void)vs_pop(c);
+    c->x = vs_nz(c, ram[8]);
+    vs_fast_return(c);
+}
+
+static inline void vs_fast_actor_erase(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+
+    c->a = vs_nz(c, 0);
+    ram[(uint8_t)(0x0fu + slot)] = 0;
+    ram[(uint8_t)(0x16u + slot)] = 0;
+    ram[(uint8_t)(0x1eu + slot)] = 0;
+    ram[(0x0110u + slot) & 0x07ffu] = 0;
+    ram[(0x0796u + slot) & 0x07ffu] = 0;
+    ram[(0x0125u + slot) & 0x07ffu] = 0;
+    ram[(0x03c5u + slot) & 0x07ffu] = 0;
+    ram[(0x078au + slot) & 0x07ffu] = 0;
+}
+
+/* The normal actor slots all use this boundary check once per game tick.  It
+ * contains an intentional 6502 carry chain across both screen edges, so keep
+ * the operations in source order instead of simplifying the arithmetic. */
+static inline int vs_fast_actor_oob_proc(VsCpu *c) {
+    uint8_t *ram = c->bus->ram;
+    uint8_t slot = c->x;
+    uint8_t actor_id;
+
+    /* Low synthetic stack positions can overlap the actor scratch arrays and
+     * deliberately redirect the nested RTS; retain the translated fallback. */
+    if (slot >= 6u || c->s < 0x40u)
+        return 0;
+    actor_id = ram[(uint8_t)(0x16u + slot)];
+    c->a = vs_nz(c, actor_id);
+    vs_cmp(c, c->a, 0x14);
+    if (c->p & VS_Z) {
+        vs_fast_return(c);
+        return 1;
+    }
+
+    c->a = vs_nz(c, ram[0x071c]);
+    c->y = vs_nz(c, actor_id);
+    vs_cmp(c, c->y, 0x05);
+    if (!(c->p & VS_Z))
+        vs_cmp(c, c->y, 0x0d);
+    if (c->p & VS_Z)
+        vs_adc(c, 0x38);
+    vs_adc(c, (uint8_t)~0x48u);
+    ram[1] = c->a;
+
+    c->a = vs_nz(c, ram[0x071a]);
+    vs_adc(c, 0xff);
+    ram[0] = c->a;
+    c->a = vs_nz(c, ram[0x071d]);
+    vs_adc(c, 0x48);
+    ram[3] = c->a;
+    c->a = vs_nz(c, ram[0x071b]);
+    vs_adc(c, 0);
+    ram[2] = c->a;
+
+    c->a = vs_nz(c, ram[(uint8_t)(0x87u + slot)]);
+    vs_cmp(c, c->a, ram[1]);
+    c->a = vs_nz(c, ram[(uint8_t)(0x6eu + slot)]);
+    vs_adc(c, (uint8_t)~ram[0]);
+    if (c->p & VS_N)
+        goto erase;
+
+    c->a = vs_nz(c, ram[(uint8_t)(0x87u + slot)]);
+    vs_cmp(c, c->a, ram[3]);
+    c->a = vs_nz(c, ram[(uint8_t)(0x6eu + slot)]);
+    vs_adc(c, (uint8_t)~ram[2]);
+    if (c->p & VS_N) {
+        vs_fast_return(c);
+        return 1;
+    }
+
+    c->a = vs_nz(c, ram[(uint8_t)(0x1eu + slot)]);
+    vs_cmp(c, c->a, 0x05);
+    if (c->p & VS_Z) {
+        vs_fast_return(c);
+        return 1;
+    }
+    for (unsigned i = 0; i < 4; ++i) {
+        static const uint8_t immune_ids[4] = {0x0d, 0x30, 0x31, 0x32};
+        vs_cmp(c, c->y, immune_ids[i]);
+        if (c->p & VS_Z) {
+            vs_fast_return(c);
+            return 1;
+        }
+    }
+
+erase:
+    /* JSR actor_erase at $d615 stores $d617. */
+    vs_push(c, 0xd6);
+    vs_push(c, 0x17);
+    vs_fast_actor_erase(c);
+    vs_fast_return(c);
+    /* Synthetic stack positions can alias actor_erase's ordinary RAM fields.
+     * In that case the real RTS follows the overwritten address too. */
+    if (c->pc != 0xd618u)
+        return 1;
+    vs_fast_return(c);
+    return 1;
+}
+
+/* Free actor slots spend most frames peeking at the next course entry only to
+ * find that it is still beyond the 48-pixel activation window.  Collapse that
+ * read-only decision while preserving the source's page marker bookkeeping,
+ * controller/bank request, candidate coordinates and final flags. */
+static inline int vs_fast_actor_loop_no_spawn(VsCpu *c) {
+    VsBus *bus = c->bus;
+    uint8_t *ram = bus->ram;
+    uint8_t slot = c->x;
+    uint8_t offset, next_offset, data0, data1;
+    uint8_t actor_page, actor_pixel;
+    uint8_t boundary_pixel, boundary_page;
+    uint16_t pointer, address0, address1;
+    uint16_t actor_position, screen_position, boundary_position, sum;
+
+    /* Preflight without touching emulated state so every unusual course-loop,
+     * swarm, page-command, special-actor and spawn case remains translated. */
+    if (slot >= 5u || ram[0x0745] != 0u || ram[0x06cd] != 0u)
+        return 0;
+    offset = ram[0x0739];
+    next_offset = (uint8_t)(offset + 1u);
+    pointer = (uint16_t)(ram[0x00e9] | ((uint16_t)ram[0x00ea] << 8));
+    address0 = (uint16_t)(pointer + offset);
+    address1 = (uint16_t)(pointer + next_offset);
+    if (address0 < 0x6000u || address1 < 0x6000u ||
+        (address0 >= 0x8000u && !bus->prg) ||
+        (address1 >= 0x8000u && !bus->prg))
+        return 0;
+    data0 = address0 < 0x8000u
+        ? bus->extra_ram[address0 & 0x07ffu]
+        : bus->prg[address0 - 0x8000u];
+    data1 = address1 < 0x8000u
+        ? bus->extra_ram[address1 & 0x07ffu]
+        : bus->prg[address1 - 0x8000u];
+    if (data0 == 0xffu || (data0 & 0x0fu) == 0x0eu ||
+        (data0 & 0x0fu) == 0x0fu)
+        return 0;
+
+    actor_page = ram[0x073a];
+    if ((data1 & 0x80u) != 0u && ram[0x073b] == 0u)
+        actor_page = (uint8_t)(actor_page + 1u);
+    actor_pixel = data0 & 0xf0u;
+    actor_position = (uint16_t)(((uint16_t)actor_page << 8) | actor_pixel);
+    screen_position = (uint16_t)(((uint16_t)ram[0x071b] << 8) | ram[0x071d]);
+    sum = (uint16_t)ram[0x071d] + 48u;
+    boundary_pixel = (uint8_t)sum & 0xf0u;
+    boundary_page = (uint8_t)(ram[0x071b] + (sum > 0xffu ? 1u : 0u));
+    boundary_position = (uint16_t)(
+        ((uint16_t)boundary_page << 8) | boundary_pixel
+    );
+    if (actor_position < screen_position || boundary_position >= actor_position ||
+        ram[0x06cb] != 0u || ram[0x0398] == 1u)
+        return 0;
+
+    /* The five identical VS_REQ writes on this path have only the first
+     * falling-edge effect; one write produces the exact final bus state. */
+    c->a = vs_nz(c, 2);
+    vs_wr(c, 0x4016, c->a);
+    if ((data1 & 0x80u) != 0u && ram[0x073b] == 0u) {
+        ram[0x073b] = (uint8_t)(ram[0x073b] + 1u);
+        ram[0x073a] = actor_page;
+    }
+    ram[7] = boundary_pixel;
+    ram[6] = boundary_page;
+    ram[(uint8_t)(0x6eu + slot)] = actor_page;
+    ram[(uint8_t)(0x87u + slot)] = actor_pixel;
+    c->y = offset;
+
+    /* Materialize the final high-byte SBC's overflow before actor_init_check
+     * replaces only N/Z/C with its CMP #1. */
+    c->a = vs_nz(c, boundary_pixel);
+    vs_cmp(c, c->a, actor_pixel);
+    c->a = vs_nz(c, boundary_page);
+    vs_adc(c, (uint8_t)~actor_page);
+    c->a = vs_nz(c, ram[0x06cb]);
+    c->a = vs_nz(c, ram[0x0398]);
+    vs_cmp(c, c->a, 1);
+    vs_fast_return(c);
+    return 1;
 }
 
 static inline void vs_fast_col_box_proc_alias_exact(VsCpu *c) {
