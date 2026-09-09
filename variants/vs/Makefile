@@ -14,7 +14,7 @@ test: $(BUILD)/test_bus $(BUILD)/test_cpu $(BUILD)/test_tiles $(BUILD)/test_mach
 	$(BUILD)/test_cpu
 	$(BUILD)/test_tiles
 	$(BUILD)/test_machine
-	cd ../../tools && python3 -m unittest test_vs_pipeline test_vs_hardware_contract test_vs_assets
+	cd ../../tools && python3 -m unittest test_vs_pipeline test_vs_hardware_contract test_vs_assets test_vs_stack_usage
 
 $(BUILD)/test_tiles: test_tiles.c ../../platform/neogeo/oam_tiles.h ../../platform/neogeo/hud_update.h
 	mkdir -p $(BUILD)

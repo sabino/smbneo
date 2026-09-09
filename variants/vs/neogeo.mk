@@ -16,6 +16,7 @@ neogeo-elf: $(BUILD)/vssmbneo.elf
 .PHONY: neogeo-cart
 neogeo-cart: neogeo-elf
 	python3 ../../tools/check_neogeo_elf.py $(BUILD)/vssmbneo.elf --variant vs
+	python3 ../../tools/check_vs_stack_usage.py $(BUILD)/vs_program.m68k.su --max-frame 96
 	$(MAKE) -C ../../platform/neogeo verify-sound-driver build/smbneo-triangle-v1.v1
 	python3 ../../tools/package_vs.py --build "$(BUILD)" \
 	 --sound ../../platform/neogeo/build/smbneogeo-sound.ihx \
@@ -38,7 +39,7 @@ $(BUILD)/ng-video.o: ../../platform/neogeo/video.c
 
 $(BUILD)/vs_program.m68k.o: $(BUILD)/vs_program.c vs_cpu.h vs_bus.h vs_fast_paths.h
 	$(NG_CC) $(filter-out -Os,$(NG_FLAGS)) -O3 -mlra -fomit-frame-pointer -fno-jump-tables \
-	 -fira-loop-pressure -frename-registers -fweb -fipa-pta -c $< -o $@
+	 -fira-loop-pressure -frename-registers -fweb -fipa-pta -fstack-usage -c $< -o $@
 
 $(BUILD)/ng-vs_data.o: $(BUILD)/assets/vs_data.c
 	$(NG_CC) $(NG_FLAGS) -c $< -o $@

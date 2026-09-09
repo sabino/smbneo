@@ -9,6 +9,13 @@ boundaries in Matthew Gilmore's [meta-disassembly](https://gitlab.com/segaloco/s
 It retains the VS game logic rather than adding arcade-looking menus to the home
 game. No runtime opcode interpreter is used.
 
+The target generator recovers named C functions and direct calls from the
+source's call graph and explicit state tables. Handwritten C replacements live
+in `vs_fast_paths.h`; the generator selects them only after checking the complete
+routine's instruction fingerprint. Improving a generated routine also means
+updating its generator or replacement, so rebuilding does not discard the work.
+Generated game source remains a local build product.
+
 ## Build locally
 
 Use your own canonical `suprmrio.zip` (SM4-4 E). A home NES ROM is not accepted.
@@ -73,8 +80,11 @@ players, and Escape to close. It is a development aid, not the Neo Geo emulator.
 `make test` runs ROM-free tests. `make program-test` additionally exercises the
 owned-ROM translation: all DIP combinations, eight coinage settings, startup,
 coin/start, and all 32 stage loads with 600-frame input sequences per stage.
-`make program-compare` compares per-frame RAM, video, audio-register and CPU-state
-fingerprints between the instruction-accurate and optimized C implementations.
+`make program-test-native` runs those scenarios on the optimized C core.
+`make kernel-compare` checks individual semantic replacements against their
+original instruction-level implementations. ROM-free generated-C tests cover
+nested calls, shared tails, changed return addresses, table dispatch, interrupt
+returns, bounded recursion, and resuming with very small execution budgets.
 Passing these does not mean every stage and ending has been played through.
 
 For a bounded Neo Geo integration test, from the repository root:
@@ -105,6 +115,15 @@ arithmetic. Common-enemy states share one C movement policy, including falling,
 shells, defeat and recovery; cannon scheduling uses a single slot scan. These
 follow the regular port's optimization approach while retaining the arcade game's
 movement and clipping rules. The physical Neo Geo renderer is shared with SMBNeo.
+
+Known calls and state-table selections execute as ordinary C calls, without
+returning through a page dispatcher each time. The original RAM stack remains
+authoritative: unusual/computed transfers safely unwind to the fallback path.
+Native call chains are limited to 16 executing C levels. The cross build emits
+and validates the compiler's `build/vs_program.m68k.su` report, rejecting
+unknown/unbounded records or frames above 96 bytes. The fallback can be
+selected for diagnostics with `translate_vs.py --no-native-functions` or
+`-DVS_PAGE_DISPATCH_ONLY`; neither changes the game's frame cadence.
 
 ## Hardware safeguards inherited from SMBNeo
 

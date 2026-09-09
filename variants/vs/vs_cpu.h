@@ -93,7 +93,8 @@ static inline void vs_cpu_nmi(VsCpu *c) {
     c->pc = vs_word(c, 0xfffa); c->idle = 0; c->in_nmi = 1;
 }
 /* Generated from verified linked disassembly. Returns on budget, idle or RTI.
- * Host budget counts instructions; target budget counts page/loop boundaries.
+ * Host budget counts instructions; target budget counts routine/page/loop
+ * boundaries. Native C call chains are bounded and unwind to resumable state.
  * Neither is the game's timing source: exactly one NMI drives each game tick. */
 void vs_program_run(VsCpu *c, unsigned budget);
 #endif

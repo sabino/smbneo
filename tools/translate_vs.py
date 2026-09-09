@@ -223,17 +223,25 @@ def emit_instruction(address: int, op: str, mode: str, operand: int, live: int =
         target = (nxt + (operand if operand < 128 else operand - 256)) & 0xffff
         flag, yes = dict(BPL=('N', False), BMI=('N', True), BVC=('V', False), BVS=('V', True),
                          BCC=('C', False), BCS=('C', True), BNE=('Z', False), BEQ=('Z', True))[op]
+        condition = f'{"" if yes else "!"}(c->p & VS_{flag})'
         if target <= address:
+            # Yield after choosing the branch target, so even a one-unit
+            # resumed page budget advances through the loop instead of getting
+            # stuck paying both the page-entry and back-edge charge forever.
             lines += ['#if defined(SMB_VS)',
-                      f'if (!c->fuel) {{ c->pc = 0x{address:04x}; return; }} --c->fuel;', '#endif']
-        body = f'if ({"" if yes else "!"}(c->p & VS_{flag})) goto L{target:04x};'
+                      f'if ({condition}) {{',
+                      f'if (!c->fuel) {{ c->pc = 0x{target:04x}; return; }} --c->fuel;',
+                      f'goto L{target:04x};', '}', '#else',
+                      f'if ({condition}) goto L{target:04x};', '#endif', f'goto L{nxt:04x};']
+            return lines
+        body = f'if ({condition}) goto L{target:04x};'
     elif op == 'JSR':
         lines.append(f'vs_push(c, 0x{(nxt - 1) >> 8:02x}); vs_push(c, 0x{(nxt - 1) & 255:02x}); goto L{operand:04x};')
         return lines
     elif op == 'JMP':
         if mode == 'w' and operand < address:
             lines += ['#if defined(SMB_VS)',
-                      f'if (!c->fuel) {{ c->pc = 0x{address:04x}; return; }} --c->fuel;', '#endif']
+                      f'if (!c->fuel) {{ c->pc = 0x{operand:04x}; return; }} --c->fuel;', '#endif']
         if mode == 'ind':
             lines.append(f'c->pc = vs_rd(c, 0x{operand:04x}) | ((uint16_t)vs_rd(c, 0x{(operand & 0xff00) | ((operand + 1) & 255):04x}) << 8); goto dispatch;')
         elif operand == address:
@@ -841,8 +849,103 @@ def semantic_fast_paths(code, named_entries):
     return result
 
 
-def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) -> tuple[str, int]:
+def native_tables(prg, debug, source_root, code, table_entry):
+    """Read only explicit .addr spans following a verified table-jump call.
+
+    Do not scan untyped ROM bytes for plausible function pointers. Destinations
+    must already be known instruction boundaries. Runtime dispatch still checks
+    the actual target, since the game's RAM return stack can be modified.
+    """
+    segments, files, spans, source_lines, address_spans = {}, {}, [], [], set()
+    for line in debug.splitlines():
+        kind, _, rest = line.partition('\t')
+        fields = dict(re.findall(r'(\w+)=("[^"]*"|[^,]+)', rest))
+        if kind == 'seg': segments[fields['id']] = fields
+        elif kind == 'file':
+            path = (source_root / json.loads(fields['name'])).resolve()
+            if not path.is_relative_to(source_root.resolve()):
+                raise ValueError('Reference source path escapes checkout')
+            files[fields['id']] = path.read_text(encoding='latin1').splitlines()
+        elif kind == 'span': spans.append(fields)
+        elif kind == 'line' and 'span' in fields: source_lines.append(fields)
+    for fields in source_lines:
+        text = files[fields['file']][int(fields['line']) - 1].split(';')[0].strip()
+        text = re.sub(r'^(?:[A-Za-z_][\w]*)?:\s*', '', text)
+        if text.split()[:1] == ['.addr']:
+            address_spans.update(fields['span'].split('+'))
+    words = {}
+    for span in spans:
+        segment = segments[span['seg']]
+        if span['id'] not in address_spans or segment.get('name') != '"CODE"': continue
+        start = int(segment['start'], 0) + int(span['start'], 0)
+        size = int(span['size'], 0)
+        if size % 2 or start < 0x8000 or start + size > 0x10000:
+            raise ValueError('Invalid explicit address-table span')
+        for a in range(start, start + size, 2):
+            words[a] = int.from_bytes(prg[a - 0x8000:a - 0x8000 + 2], 'little')
+    tables = {}
+    for call, ins in code.items():
+        if ins != ('JSR', 'w', table_entry): continue
+        cursor, targets = call + 3, set()
+        while cursor in words and words[cursor] in code and cursor < call + 3 + 256:
+            targets.add(words[cursor])
+            cursor += 2
+        if targets: tables[call] = targets
+    return tables
+
+
+def native_routines(code, named_entries, extra_entries=()):
+    """Recover C routine bodies from explicit calls, not guessed ROM data.
+
+    Calls have a continuation; branches and jumps stay inside the body until
+    another routine entry. Computed transfers escape to the existing dispatcher.
+    Overlapping/shared tails are legal. The original RAM stack stays authoritative
+    even when code changes a return address or borrows its caller's stack frame.
+    """
+    entries = {value for op, mode, value in code.values() if op == 'JSR' and mode == 'w'}
+    entries.update(extra_entries)
+    names = {}
+    for name, address in sorted(named_entries.items()):
+        if address in entries:
+            names.setdefault(address, re.sub(r'[^A-Za-z0-9_]', '_', name))
+    routines = {}
+    for entry in sorted(entries):
+        pending, body = [entry], set()
+        while pending:
+            a = pending.pop()
+            if a in body or a not in code or (a != entry and a in entries):
+                continue
+            body.add(a)
+            op, mode, value = code[a]
+            nxt = a + LENGTH[mode]
+            if mode == 'r':
+                pending += [nxt, (nxt + (value if value < 128 else value - 256)) & 0xffff]
+            elif op == 'JMP':
+                if mode == 'w' and value != a: pending.append(value)
+            elif op not in ('RTS', 'RTI'):
+                pending.append(nxt)
+        routines[entry] = (f'vs_fn_{names.get(entry, "sub")}_{entry:04x}', body)
+    return routines
+
+
+def emit_native_call(name, entry, depth, continuation=None):
+    # Callees return the *actual* emulated PC. Never assume a conventional RTS:
+    # table dispatch, altered return bytes, RTI, idle and fuel exhaustion unwind
+    # the C call chain without losing the resumable original CPU/RAM state.
+    lines = [f'c->pc = 0x{entry:04x}; {name}(c, {depth});']
+    if continuation is None:
+        lines.append('return;')
+    else:
+        lines += [f'if (c->pc != 0x{continuation:04x} || !c->fuel || c->fault || c->idle || c->yielded) return;',
+                  f'goto L{continuation:04x};']
+    return lines
+
+
+def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False,
+              native_functions: bool = True) -> tuple[str, int]:
+    page_bits = 8
     code = instructions(prg, debug, source_root)
+    # Preserve conservative flag-liveness barriers while changing call flow.
     live = live_flags(code)
     # Native dispatch only needs actual source labels, cross-page transfers and
     # return addresses. The host keeps every instruction resumable for tracing.
@@ -858,7 +961,7 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) 
     fast_paths = semantic_fast_paths(code, named_entries)
     native_entries.update(target for _, target in fast_paths.values() if target is not None)
     first_in_page = {}
-    for a in sorted(code): first_in_page.setdefault(a >> 8, a)
+    for a in sorted(code): first_in_page.setdefault(a >> page_bits, a)
     native_entries.update(first_in_page.values())
     for a, (op, mode, operand) in code.items():
         target = None
@@ -870,35 +973,95 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) 
             raise ValueError(f'Unmapped direct transfer {a:04x} -> {target:04x}')
         if target is not None: native_entries.add(target)
         nxt = a + LENGTH[mode]
-        if nxt in code and (op == 'JSR' or a >> 8 != nxt >> 8): native_entries.add(nxt)
+        if nxt in code and (op == 'JSR' or a >> page_bits != nxt >> page_bits): native_entries.add(nxt)
+        # A bounded native loop may yield immediately before its back edge.
+        if target is not None and target <= a: native_entries.add(a)
+    tables = {}
+    table_entry = named_entries.get('tbljmp')
+    if native_functions and fast_paths.get(table_entry) == ('vs_fast_table_jump(c); return;', None):
+        tables = native_tables(prg, debug, source_root, code, table_entry)
+    table_targets = {target for targets in tables.values() for target in targets}
+    routines = native_routines(code, named_entries, table_targets) if native_functions else {}
+    native_entries.update(routines)
     lines = ['/* Generated privately from verified VS input. Do not distribute game data. */',
              '#include "vs_cpu.h"', '#include "vs_fast_paths.h"']
     if profile: lines.append('uint32_t vs_profile[32768];')
-    pages = sorted({a >> 8 for a in code})
+
+    def emitted_body(a, routine=False):
+        op, mode, operand = code[a]
+        emitted = emit_instruction(a, op, mode, operand, live[a])
+        if op == 'JSR' and operand in routines:
+            nxt = a + LENGTH[mode]
+            # Keep the original stack writes, but replace the address-dispatch
+            # hop with an ordinary, statically bound C call on the target.
+            literal = emitted.pop()
+            push, _, _ = literal.partition(' goto L')
+            depth = 'depth + 1u' if routine else '0u'
+            emitted += ['#if defined(SMB_VS) && !defined(VS_PAGE_DISPATCH_ONLY)', push]
+            if a in tables:
+                emitted += ['#if !defined(VS_REFERENCE_KERNELS)', 'vs_fast_table_jump(c);',
+                            'switch (c->pc) {']
+                for target in sorted(tables[a]):
+                    emitted += [f'case 0x{target:04x}:'] + emit_native_call(routines[target][0], target, depth)
+                emitted += ['default: return;', '}', '#else']
+            emitted += emit_native_call(routines[operand][0], operand, depth, nxt)
+            if a in tables: emitted += ['#endif']
+            emitted += ['#else', literal, '#endif']
+        if a in fast_paths:
+            action, target = fast_paths[a]
+            suffix = '' if target is None else f' goto L{target:04x};'
+            emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS)',
+                            f'{action}{suffix}', '#endif']
+        return emitted
+
+    if routines:
+        lines += ['#if defined(SMB_VS) && !defined(VS_PAGE_DISPATCH_ONLY)',
+                  '/* Bounded native call chains; the RAM return stack remains canonical. */']
+        lines += [f'static void {name}(VsCpu *restrict c, unsigned depth);'
+                  for name, _ in routines.values()]
+        for entry, (name, body) in routines.items():
+            lines += [f'static void {name}(VsCpu *restrict c, unsigned depth) {{',
+                      f'if (!c->fuel || depth >= 16u) {{ c->pc = 0x{entry:04x}; return; }}',
+                      '--c->fuel;',
+                      'uint16_t addr = 0; uint8_t v = 0, carry = 0;',
+                      '(void)addr; (void)v; (void)carry;', f'goto L{entry:04x};']
+            def routine_transfer(match):
+                target = int(match[1], 16)
+                if target in body: return match[0]
+                if target in routines:
+                    return '{ ' + ' '.join(emit_native_call(routines[target][0], target, 'depth + 1u')) + ' }'
+                return f'{{ c->pc = 0x{target:04x}; return; }}'
+            for a in sorted(body):
+                lines += [re.sub(r'goto L([0-9a-f]{4});', routine_transfer, line)
+                          .replace('goto dispatch;', 'return;')
+                          for line in emitted_body(a, routine=True)]
+            lines += ['}']
+        lines += ['#endif']
+    pages = sorted({a >> page_bits for a in code})
     for page in pages:
-        page_code = {a: ins for a, ins in code.items() if a >> 8 == page}
+        page_code = {a: ins for a, ins in code.items() if a >> page_bits == page}
         # CPU register state is disjoint from bus RAM/PPU storage. Express that
         # contract without copying the state on every page entry and return.
         lines += [f'static void page_{page:02x}(VsCpu *restrict c) {{',
                   'uint16_t addr = 0; uint8_t v = 0, carry = 0;',
                   '(void)addr; (void)v; (void)carry;',
                   '#if defined(SMB_VS)', 'if (!c->fuel) { return; }', '--c->fuel;', '#endif', 'goto dispatch;',
-                  'dispatch:', f'if ((c->pc >> 8) != 0x{page:02x}) return;',
+                  'dispatch:', f'if ((c->pc >> {page_bits}) != 0x{page:02x}) return;',
                   'switch (c->pc) {']
         for a in sorted(page_code):
             if a not in native_entries: lines.append('#if !defined(SMB_VS)')
+            if a in routines:
+                # The routine charges its own entry. Refund this page wrapper
+                # so a resumed one-unit budget still makes forward progress.
+                lines += ['#if defined(SMB_VS) && !defined(VS_PAGE_DISPATCH_ONLY)',
+                          f'case 0x{a:04x}: ++c->fuel; {routines[a][0]}(c, 0u); return;', '#else']
             lines.append(f'case 0x{a:04x}: goto L{a:04x};')
+            if a in routines: lines.append('#endif')
             if a not in native_entries: lines.append('#endif')
         lines += ['default: c->fault = 1; return;', '}']
         body = []
         for a, (op, mode, operand) in sorted(page_code.items()):
-            emitted = emit_instruction(a, op, mode, operand, live[a])
-            if a in fast_paths:
-                action, target = fast_paths[a]
-                suffix = '' if target is None else f' goto L{target:04x};'
-                emitted[1:1] = ['#if defined(SMB_VS) && !defined(VS_REFERENCE_KERNELS)',
-                                f'{action}{suffix}', '#endif']
-            body.extend(emitted)
+            body.extend(emitted_body(a))
         def transfer(match):
             target = int(match[1], 16)
             if target in page_code:
@@ -908,13 +1071,14 @@ def translate(prg: bytes, debug: str, source_root: Path, profile: bool = False) 
             return f'{{ c->pc = 0x{target:04x}; return; }}'
         lines += [re.sub(r'goto L([0-9a-f]{4});', transfer, line) for line in body]
         lines += ['}']
-    lines += ['typedef void (*VsPage)(VsCpu *);', 'static const VsPage pages[128] = {']
-    lines += [f'[{page - 128}] = page_{page:02x},' for page in pages]
+    first_page = 0x8000 >> page_bits
+    lines += ['typedef void (*VsPage)(VsCpu *);', f'static const VsPage pages[{first_page}] = {{']
+    lines += [f'[{page - first_page}] = page_{page:02x},' for page in pages]
     lines += ['};', 'void vs_program_run(VsCpu *c, unsigned budget) {',
               'c->fuel = budget; c->yielded = 0;',
               'while (c->fuel && !c->fault && !c->idle && !c->yielded) {',
-              'if (c->pc < 0x8000 || !pages[(c->pc >> 8) - 128]) { c->fault = 1; return; }',
-              'pages[(c->pc >> 8) - 128](c);', '}', '}']
+              f'if (c->pc < 0x8000 || !pages[(c->pc >> {page_bits}) - {first_page}]) {{ c->fault = 1; return; }}',
+              f'pages[(c->pc >> {page_bits}) - {first_page}](c);', '}', '}']
     if profile:
         lines = [re.sub(r'^L([0-9a-f]{4}):$',
                         lambda m: m[0] + f' ++vs_profile[0x{int(m[1], 16) - 0x8000:04x}];', line)
@@ -931,17 +1095,22 @@ def main() -> None:
     p.add_argument('--source-root', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--profile', action='store_true', help='host-only instruction counters; use a separate output')
+    p.add_argument('--no-native-functions', action='store_true',
+                   help='diagnostic fallback to page dispatch without direct C calls')
     args = p.parse_args()
     rom = load_vs_rom(args.input)
     if args.reference_prg.read_bytes() != rom.prg:
         raise ValueError('Linked reference PRG differs from verified user input')
     debug = args.debug.read_text()
-    source, count = translate(rom.prg, debug, args.source_root, args.profile)
+    source, count = translate(rom.prg, debug, args.source_root, args.profile,
+                              not args.no_native_functions)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if not args.output.exists() or args.output.read_text() != source:
         args.output.write_text(source)
     args.output.with_suffix('.json').write_text(json.dumps({
-        'instruction_count': count, 'prg_sha256': hashlib.sha256(rom.prg).hexdigest(),
+        'instruction_count': count,
+        'native_functions': not args.no_native_functions,
+        'prg_sha256': hashlib.sha256(rom.prg).hexdigest(),
         'debug_sha256': hashlib.sha256(debug.encode()).hexdigest(),
         'c_sha256': hashlib.sha256(source.encode()).hexdigest()}, indent=2) + '\n')
     print(f'Translated {count} VS instructions to static C')
